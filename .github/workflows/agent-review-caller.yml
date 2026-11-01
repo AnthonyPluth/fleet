@@ -24,6 +24,19 @@ jobs:
       budget-usd: ${{ vars.AGENT_REVIEW_BUDGET_USD || '3' }}
       max-turns: ${{ vars.AGENT_REVIEW_MAX_TURNS || '60' }}
       merge-gate-workflow: ""
+      second-review-always: |
+        .github/workflows/agent-review.yml
+        .github/workflows/agent-review-caller.yml
+        .github/workflows/merge-gate.yml
+        .github/workflows/security.yml
+        .github/workflows/sync.yml
+        .github/workflows/checks.yml
+        .github/scripts/**
+        .github/agent-review/**
+        .github/CODEOWNERS
+        .claude/**
+        plugins/**
+        shim/**
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

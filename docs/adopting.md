@@ -137,6 +137,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | `max-turns` | `60` | The most round trips to the model a review may take |
 | `second-review-labels` | `safety-critical,security` | Labels that make a pull request risky, comma-separated |
 | `second-review-paths` | none | Changed paths that make a pull request risky, one glob per line (`**` spans directories); `.github/**` and `.claude/**` always count. Setting it requires `.github/agent-review/invariants.md` |
+| `second-review-always` | `.github/**` and `.claude/**` | Changed paths that always make a pull request risky, one glob per line. A caller that wants the second review on fewer paths lists them (fleet's own caller names the review, merge-gate, security and sync workflows, the scripts and agent-review files, CODEOWNERS, `.claude/**`, `plugins/**` and `shim/**`) |
 | `second-review-budget-usd` | `10` | The most the second review may spend, in US dollars |
 | `second-review-max-turns` | `120` | The most round trips to the model the second review may take |
 | `merge-gate-workflow` | `merge-gate.yml` | The caller's merge gate workflow file to start once the status is set; empty starts none |

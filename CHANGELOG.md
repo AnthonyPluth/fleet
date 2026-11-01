@@ -6,6 +6,7 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ### Added
 
+- `agent-review.yml` takes `second-review-always` (default `.github/**` and `.claude/**`, as before): the changed paths that always make a pull request risky. Fleet's own caller narrows it to the review, merge-gate, security and sync workflows, the scripts and agent-review files, CODEOWNERS, `.claude/**`, `plugins/**` and `shim/**`, so other `.github` changes (self-test, CI tweaks, docs) skip the second review.
 - A test pinning `security.yml`'s zizmor step (the `zizmor-paths` default, the env mapping, how the paths split) and a fallback to `.` when the input is empty.
 - `security.yml` takes a `zizmor-paths` input (default `.`, the whole tree, as before); fleet's own self-test passes `.github` so workflow files kept as test fixtures aren't audited as the repository's own.
 - The FLEET_REF convention now requires the fleet checkout only in a workflow that runs fleet's own files, after the caller's checkout and before the first fleet file is used. `FLEET_REF` and `fleet-ref` stay on every reusable workflow.

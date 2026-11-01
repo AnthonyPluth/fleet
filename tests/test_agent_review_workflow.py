@@ -52,7 +52,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         call = mapping(mapping(self.workflow["on"])["workflow_call"])
         self.assertEqual(sorted(call["inputs"]), sorted([
             "generated", "first-review", "budget-usd", "max-turns", "merge-gate-workflow", "fleet-ref", "dry-run", "fake-review",
-            "second-review-labels", "second-review-paths", "second-review-budget-usd", "second-review-max-turns", "fake-event",
+            "second-review-labels", "second-review-paths", "second-review-always", "second-review-budget-usd", "second-review-max-turns", "fake-event",
         ]))
         inputs = mapping(call["inputs"])
         self.assertEqual(mapping(inputs["first-review"])["default"], "true")
