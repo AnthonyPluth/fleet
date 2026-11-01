@@ -1,0 +1,2 @@
+# The findings make verify tolerates: <page or flow> @ <width> | <finding> | <reason>
+budget @ phone | tap-target: a small icon button | it sits beside a larger one

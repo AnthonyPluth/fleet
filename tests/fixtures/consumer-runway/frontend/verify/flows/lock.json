@@ -1,0 +1,1 @@
+{"name": "lock", "viewports": ["phone", "landscape"], "steps": [{"goto": "#setup"}, {"screenshot": "locked"}]}
