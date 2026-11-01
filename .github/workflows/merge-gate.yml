@@ -1,0 +1,114 @@
+name: Merge gate
+
+# The reusable merge gate: one commit status, "Merge gate", on a pull request's head, passing once every check on it
+# has passed (the rules are in .github/scripts/merge-gate.sh). An app requires it in a ruleset on main
+# (Settings → Rules → Rulesets → Require status checks to pass → "Merge gate") and it's the one check a merge waits on.
+# It also merges Dependabot's pull requests once it passes, except one that bumps a fleet reference.
+#
+# The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them: its
+# workflow_run list names the app's own workflows, check_suite covers other apps' checks, and workflow_dispatch takes a
+# pull request number. It runs from the caller's main copy with a write token and never checks out or runs a pull
+# request's code: it only reads the pull request's checks and statuses through the API, so it works for pull requests
+# from forks too. The only checkout is fleet's own scripts, at the pinned ref.
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The head commit to decide (from workflow_run or check_suite). Either this or pr.
+        type: string
+        default: ""
+      pr:
+        description: A pull request number to decide (from workflow_dispatch). Either this or sha.
+        type: string
+        default: ""
+      required-workflows:
+        description: Workflows that must have run on the head, one per line. CodeQL is skipped on Dependabot's pull requests.
+        type: string
+        default: |
+          Security scans
+          CodeQL
+      ignored-workflows:
+        description: Workflow names whose runs don't count, as a regex alternation ("Preview|Screenshot diff"). "Merge gate" and "Cancel runs on close" never count.
+        type: string
+        default: ""
+      required-statuses:
+        description: Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests.
+        type: string
+        default: |
+          Agent review
+          Second review
+      ignored-apps:
+        description: Apps whose check runs don't count, as a regex alternation.
+        type: string
+        default: codecov|github-actions
+      poll-seconds:
+        description: How long to wait between looks when only CodeQL is still to come.
+        type: number
+        default: 30
+      poll-attempts:
+        description: How many times to look again for CodeQL before staying pending.
+        type: number
+        default: 20
+      automerge-dependabot:
+        description: Merge Dependabot's pull requests once the gate passes (never one that bumps a fleet reference).
+        type: boolean
+        default: true
+      after-merge-workflows:
+        description: Workflow files to start on main after such a merge, space-separated (a merge made with the token starts none by itself).
+        type: string
+        default: docker.yml security.yml
+      dry-run:
+        description: Print the status posts, the merge and the workflow starts instead of doing them.
+        type: boolean
+        default: false
+      fleet-ref:
+        description: The fleet ref to fetch scripts from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: Decide
+    runs-on: ubuntu-latest   # hosted: runs for every pull request, forks included, with a write token
+    timeout-minutes: 15   # waiting for CodeQL takes up to 10 at the default poll settings (merge-gate.sh)
+    permissions:
+      contents: write          # merge Dependabot's pull requests
+      pull-requests: write     # merge them, and read their commits and files
+      statuses: write          # the "Merge gate" status
+      actions: write           # read the pull request's workflow runs, and start main's release after a merge
+      checks: read             # other apps' check runs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ inputs.sha }}
+          PR: ${{ inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REQUIRED_WORKFLOWS: ${{ inputs.required-workflows }}
+          IGNORED_WORKFLOWS: ${{ inputs.ignored-workflows }}
+          REQUIRED_STATUSES: ${{ inputs.required-statuses }}
+          IGNORED_APPS: ${{ inputs.ignored-apps }}
+          POLL_SECONDS: ${{ inputs.poll-seconds }}
+          POLL_ATTEMPTS: ${{ inputs.poll-attempts }}
+          AUTOMERGE_DEPENDABOT: ${{ inputs.automerge-dependabot }}
+          AFTER_MERGE_WORKFLOWS: ${{ inputs.after-merge-workflows }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: .fleet/.github/scripts/merge-gate.sh
