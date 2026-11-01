@@ -20,8 +20,8 @@ EMPTY = ("", "-", "—")
 MAX_BODY = 65536
 MAX_ROWS = 100
 MAX_CELL = 1000
-FENCE = re.compile(r"^(?:[ \t]*>)*[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?[ \t]*(`{3,}|~{3,})")
-SEPARATOR = re.compile(r"^\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?$")
+SEPARATOR_CELL = re.compile(r":?-+:?")
+LIST_MARKER = re.compile(r"(?:[-*+]|[0-9]{1,9}[.)])[ \t]")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
 
 
@@ -40,17 +40,47 @@ class Dimension:
     evidence: str
 
 
+def fence_of(line: str) -> tuple[str, str] | None:
+    at = 0
+    while True:
+        while at < len(line) and line[at] in " \t":
+            at += 1
+        if at < len(line) and line[at] == ">":
+            at += 1
+            continue
+        break
+    marker = LIST_MARKER.match(line, at)
+    if marker:
+        at = marker.end()
+        while at < len(line) and line[at] in " \t":
+            at += 1
+    if at >= len(line) or line[at] not in "`~":
+        return None
+    char = line[at]
+    end = at
+    while end < len(line) and line[end] == char:
+        end += 1
+    if end - at < 3:
+        return None
+    return line[at:end], line[end:]
+
+
+def is_separator(line: str) -> bool:
+    found = cells(line)
+    return bool(found) and all(SEPARATOR_CELL.fullmatch(cell) for cell in found)
+
+
 def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
     begins: list[int] = []
     ends: list[int] = []
     fence = ""
     for index, line in enumerate(lines, start=1):
-        found = FENCE.match(line)
+        found = fence_of(line)
         if found:
-            marks = found.group(1)
+            marks, rest = found
             if not fence:
                 fence = marks
-            elif marks[0] == fence[0] and len(marks) >= len(fence) and not line[found.end(1):].strip():
+            elif marks[0] == fence[0] and len(marks) >= len(fence) and not rest.strip():
                 fence = ""
             continue
         if fence:
@@ -130,7 +160,7 @@ def parse(body: str) -> list[Dimension]:
     if header.strip() != HEADER:
         raise ParseError(number, f"the table's header isn't exactly `{HEADER}`")
     rows = table[1:]
-    if rows and SEPARATOR.match(rows[0][1].strip()):
+    if rows and is_separator(rows[0][1]):
         rows = rows[1:]
     if len(rows) > MAX_ROWS:
         raise ParseError(rows[MAX_ROWS][0], f"the table has over {MAX_ROWS} rows")

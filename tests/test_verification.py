@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -105,6 +106,19 @@ class Parsing(unittest.TestCase):
         self.assertEqual(caught.exception.line, 1)
         self.assertIn("no closing", caught.exception.rule)
         self.assertEqual([d.dimension for d in parse(record(GAP, before="") + "```\n" + record(ROW, before=""))], ["Live sync"])
+
+    def test_a_very_long_run_of_whitespace_parses_in_linear_time(self) -> None:
+        run = 60000
+        for prefix in ("", "> ", "- ", "1. ", ">> - "):
+            for blank in (" ", "\t", " \t"):
+                with self.subTest(prefix=prefix, blank=blank):
+                    line = prefix + (blank * run)[:run] + "x"
+                    started = time.monotonic()
+                    self.assertEqual([d.dimension for d in parse(line + "\n" + record(GAP, before=""))], ["Live sync"])
+                    self.assertIsNone(verification.fence_of(line))
+                    self.assertFalse(verification.is_separator("|" + " " * run + "x"))
+                    self.assertFalse(verification.is_separator("|" + " " * run + "|"))
+                    self.assertLess(time.monotonic() - started, 0.5)
 
     def test_an_escaped_pipe_is_a_literal_pipe_in_a_cell(self) -> None:
         found = parse(record("| a \\| b | verified | `x \\| y` | out \\| put |"))
