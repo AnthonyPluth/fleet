@@ -1,0 +1,88 @@
+name: Review mining
+
+# The monthly report of review findings that repeat (FLEET-MINING): the rule "a mistake that repeats gets a check"
+# needs someone to notice repeats, and this job notices them without a model. It lists the pull requests updated in the
+# window, reads the "Agent review" and "Second review" comments github-actions[bot] left on them, decodes only the
+# third hidden line of each (the findings record agent-review.yml writes: severity, kind, title, file and the check
+# the reviewer named; everything else in a comment quotes untrusted pull request content and is never read), and
+# counts, per kind of the repository's AGENTS.md "Mistakes that keep coming back" item (and per normalized title for
+# `other`), the pull requests with at least one finding. One issue per repository, "Repeated review findings" (label
+# `review-mining`), is kept open and rewritten each run: a table of kind, state, pull requests, last seen and the
+# proposed check, and below it one checkbox line per row, "becomes an Agent task", with a stable `row:` id, whose tick
+# and link survive the rewrite (FLEET-MINING-TASKS opens the issues). The same table goes to the job summary.
+# `fleet_tools/review_mine.py` decides it all; docs/review-mining.md explains the report.
+#
+# The caller schedules it monthly (`17 6 1 * *`) or weekly (`17 6 * * 1`; the issue is rewritten either way) and may
+# run it by hand. No secrets: the workflow's own token, with `issues: write` for the one issue, `pull-requests: read`
+# for the list of pull requests and `contents: read` for the caller's AGENTS.md. Titles, kinds and checks are defused
+# before posting (no @mentions, no HTML comments), as the reviews' comments are.
+on:
+  workflow_call:
+    inputs:
+      days:
+        description: The window, in days before the run, that a pull request must have been updated in to count.
+        type: string
+        default: "90"
+      dry-run:
+        description: Print the issue that would be opened or rewritten instead of posting it.
+        type: boolean
+        default: false
+      fleet-ref:
+        description: The fleet ref to fetch the tool from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  mine:
+    name: Review mining
+    runs-on: ubuntu-latest   # hosted: holds the write token for the issue; a few API reads and one write
+    timeout-minutes: 15
+    permissions:
+      contents: read           # the caller's AGENTS.md
+      issues: write            # the "Repeated review findings" issue (and reading the comments)
+      pull-requests: read      # the pull requests updated in the window
+    steps:
+      # The caller's AGENTS.md, for each kind's state (checked, partly checked, human-judged): on a schedule this is
+      # the default branch's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          path: app
+          sparse-checkout: AGENTS.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # fleet at the pinned ref: the tool, run from its own checkout so nothing of the caller's is on its path.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: |
+            fleet_tools
+            VERSION
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Rewrite the report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DAYS: ${{ inputs.days }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          flags=()
+          if [ "$DRY_RUN" = true ]; then flags+=(--dry-run); fi
+          cd .fleet || exit 1
+          python3 -E -s -m fleet_tools.cli review-mine --repo "$REPO" --days "$DAYS" \
+            --agents-md "$GITHUB_WORKSPACE/app/AGENTS.md" --summary "$GITHUB_STEP_SUMMARY" "${flags[@]}"
