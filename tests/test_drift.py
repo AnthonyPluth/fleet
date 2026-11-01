@@ -8,7 +8,7 @@ from unittest import mock
 
 from consumers import RUNWAY, WAYPOINT, commit, copy, git, temporary, write
 
-from fleet_tools import agents_md, cli, drift
+from fleet_tools import agents_md, cli, drift, vendor
 
 VERSION = agents_md.own_version()
 PIN_FILE = ".github/workflows/merge-gate.yml"
@@ -43,7 +43,9 @@ class Clean(unittest.TestCase):
             with self.subTest(fixture=fixture.name):
                 code, out, err = run(copy(self, fixture, repository=False))
                 self.assertEqual((code, err), (0, ""))
-                self.assertEqual(out, f"fleet drift: no drift: 4 AGENTS.md blocks and .fleet/version at {VERSION}; "
+                vendored = len(vendor.shipped_at(VERSION) or {})
+                self.assertEqual(out, f"fleet drift: no drift: 4 AGENTS.md blocks, {vendored} vendored files and "
+                                      f".fleet/version at {VERSION}; "
                                       f"fleet workflow pins: {VERSION}.\n")
 
     def test_any_edit_outside_the_blocks_passes(self) -> None:

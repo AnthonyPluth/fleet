@@ -1,0 +1,10 @@
+{
+  "name": "fleet",
+  "version": "0.1.0",
+  "description": "Shared agent skills, the fleet-reviewer agent and the session-start hook for the apps that use fleet.",
+  "author": {
+    "name": "fleet"
+  },
+  "repository": "https://github.com/AnthonyPluth/fleet",
+  "license": "AGPL-3.0-only"
+}

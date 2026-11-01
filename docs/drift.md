@@ -15,7 +15,6 @@ The decisions the backlog made before the extractions; each extraction issue rep
 | Review model | Sonnet | Sonnet ("never Opus", owner decision) | Sonnet first; Fable second on risky PRs | The owner's new rule; recorded in the workflow header |
 | `merge-gate.sh` | Requires no status | Requires Agent review; ignores Preview and Screenshot diff | One script; required and ignored lists are inputs; triggers stay in the caller | Called workflows can't declare triggers |
 | `security.yml` | `vars.RUNS_ON` option | Hosted only; adds `extension/` | Inputs for paths and the runner; `sarif-upload`/`scorecard` switches | Darkroom can't upload SARIF |
-| Session-start hook | Venv-version guard, `npm install --no-save` | `node_modules` completeness check | Union, with `--no-save` | A session must not rewrite a lockfile |
 | AGENTS "Git and PRs" | Open a PR for every change | Open a PR only when asked | Every change | Every push to `main` releases, so all work lands through PRs |
 | `docker.yml`, `tools/control`, verify-* skills | Own | Own | Stay per app (v2 candidates) | Hundreds of lines of app-specific drift |
 
@@ -127,3 +126,12 @@ What each app runs beyond the core, as reusable workflows an app calls or doesn'
 | `cancel-on-close.yml` | Joins `docker-image-refs/pull/N/merge` and `security-refs/pull/N/merge`; `vars.RUNS_ON`; 5 minutes | Those two and `verify-N`; hosted; no timeout | One workflow with a matrix over the `groups` input (JSON patterns with `{0}` for the pull request's number, or prefixes); `runs-on`; 5 minutes. No permission: joining a group is what cancels | The jobs were identical apart from the list of groups |
 | `tidy-releases.yml` | Image `waypoint`; `vars.RUNS_ON`; 10 minutes | Image `runway`; hosted; no timeout | Inputs `image`, `versions`, `retag`, `confirm` (the caller's `workflow_dispatch` passes them through) and `runs-on`; 10 minutes; `github.token`. The `docker-image-refs/heads/main` concurrency group stays in the caller, with its `docker.yml` | Only the image name and the runner differed |
 | `preview.yml` | — | Present: Runway's own image with its sample data behind a Cloudflare quick tunnel | Stays in Runway | Runway-specific deploy; nothing for the others to reuse yet |
+
+## Claude Code plugin (`FLEET-PLUGIN`)
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| Session-start hook | Its own `.claude/hooks/session-start.sh`: Python 3.14 through uv, Poetry, a guard that remakes the venv when Poetry built it on another Python, `npm install --no-save`, libfaketime when its library is missing | The same without the venv guard, `npm install` (no `--no-save`), libfaketime, then a check of `frontend/node_modules` (esrap's types, eslint-plugin-svelte, ESLint starting) that reinstalls with `npm ci` | One hook, vendored as `.claude/hooks/fleet-session-start.sh`: the venv guard, `--no-save`, and the completeness check driven by `fleet.conf`'s `NODE_CHECK` (a package that must import, or a file that must exist); `APT_PACKAGES` checked with `dpkg -s`; `session-start.local.sh` for the rest; `~/.local/bin` on the `PATH` first, so a second session doesn't reinstall uv or Poetry | A session must not rewrite a committed lockfile; the guard and the check each fixed a real failure in one app; Runway's ESLint start-up probe is app-specific, so its `NODE_CHECK` names the two packages the probe was for |
+| Plugin | None | None | Published in fleet's marketplace, vendored by `fleet sync`, not enabled | Cloud sessions don't install a repository's enabled plugins but do load its `.claude/` files; enabled as well, each skill would load twice locally |
+| Skills | `verify-waypoint` | `verify-runway` | Four shared skills (`fix-with-checks`, `design-signoff`, `agent-task`, `review-guidance`), vendored as `fleet-<name>`; the `verify-*` skills stay each app's | The shared ones are rules the owner set for every repository; the verify skills describe each app's driver |
+| `tools/fleet` | None | None | A shim running fleet at `.fleet/version` through `uvx` | The app runs the tools its pins name, without a copy |

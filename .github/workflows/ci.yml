@@ -1,7 +1,8 @@
 name: fleet CI
 
 # `make check` on every pull request and every push to main: ruff, mypy, the tests, fleet self-check, actionlint and
-# zizmor over the workflows, at the versions pyproject.toml and the Makefile pin.
+# zizmor over the workflows, and `claude plugin validate` (the Claude Code .github/agent-review/ locks), at the versions
+# pyproject.toml and the Makefile pin.
 on:
   pull_request:
   push:

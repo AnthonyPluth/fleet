@@ -1,5 +1,5 @@
-# The checks to run before you push: `make check` runs ruff, mypy, the tests, fleet's own self-check, actionlint and
-# zizmor, each once; "fleet CI" (.github/workflows/ci.yml) runs the same. `make setup` first, on a fresh clone.
+# The checks to run before you push: `make check` runs ruff, mypy, the tests, fleet's own self-check, actionlint,
+# zizmor and `claude plugin validate`, each once; "fleet CI" (.github/workflows/ci.yml) runs the same. `make setup` first, on a fresh clone.
 # Python commands go through Poetry, at the tool versions pyproject.toml's dev group pins.
 
 PYTHON ?= poetry run python
@@ -8,6 +8,7 @@ MYPY ?= poetry run mypy
 FLEET ?= poetry run fleet
 ZIZMOR ?= poetry run zizmor
 ACTIONLINT ?= .tools/actionlint
+CLAUDE ?= .tools/claude-code/node_modules/.bin/claude
 
 # actionlint isn't a Python package, so `make setup` downloads its release binary, pinned by version and SHA-256
 # checksum per platform. Change all of them together.
@@ -21,13 +22,13 @@ ACTIONLINT_ARCH := $(subst aarch64,arm64,$(subst x86_64,amd64,$(shell uname -m))
 ACTIONLINT_PLATFORM := $(ACTIONLINT_OS)_$(ACTIONLINT_ARCH)
 ACTIONLINT_TARBALL := actionlint_$(ACTIONLINT_VERSION)_$(ACTIONLINT_PLATFORM).tar.gz
 
-.PHONY: setup check lint test self-check workflows fix
+.PHONY: setup check lint test self-check workflows plugin fix
 
-check: lint test self-check workflows
+check: lint test self-check workflows plugin
 
 # A fresh clone's dependencies: Poetry's environment (the dev tools, and fleet_tools itself for the `fleet` command)
-# and the pinned actionlint.
-setup: .tools/actionlint
+# the pinned actionlint, and the Claude Code the agent review locks (.github/agent-review/), for `make plugin`.
+setup: .tools/actionlint .tools/claude-code/node_modules/.bin/claude
 	poetry install --no-interaction
 
 lint:
@@ -47,6 +48,13 @@ workflows:
 	$(ACTIONLINT)
 	$(ZIZMOR) $(ZIZMOR_FLAGS) .github/workflows/
 
+# The marketplace and the plugin (its manifest, hooks, skills and agent), warnings included.
+plugin:
+	$(CLAUDE) plugin validate --strict .
+	$(CLAUDE) plugin validate --strict plugins/fleet
+	$(CLAUDE) plugin validate --strict plugins/fleet/skills
+	$(CLAUDE) plugin validate --strict plugins/fleet/agents
+
 # Applies ruff's safe fixes (unused imports and the like); review the diff before committing.
 fix:
 	$(RUFF) check --fix .
@@ -58,3 +66,9 @@ fix:
 	echo "$(ACTIONLINT_SHA256_$(ACTIONLINT_PLATFORM))  .tools/$(ACTIONLINT_TARBALL)" | shasum -a 256 -c -
 	tar -xzf .tools/$(ACTIONLINT_TARBALL) -C .tools actionlint
 	rm .tools/$(ACTIONLINT_TARBALL)
+
+.tools/claude-code/node_modules/.bin/claude: .github/agent-review/package.json .github/agent-review/package-lock.json
+	mkdir -p .tools/claude-code
+	cp .github/agent-review/package.json .github/agent-review/package-lock.json .tools/claude-code/
+	cd .tools/claude-code && npm ci --no-audit --no-fund
+	touch $@
