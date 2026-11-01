@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# A fake `gh` for the tests of .github/scripts/merge-gate.sh. Put tests/fakes on PATH and it serves recorded API
+# answers from the directory FAKE_GH_DIR, and appends every invocation, one shell-quoted line each, to FAKE_GH_LOG.
+#
+#   gh api [--paginate] [-X METHOD] [-f k=v]... PATH [--jq FILTER]
+#     A read (no -X) answers with the file for PATH, run through jq -r with FILTER when one is given, as `gh api --jq`
+#     prints raw strings. The file's name is PATH without its query string and its "repos/<owner>/<repo>/" prefix,
+#     with "/" as "__", a 40-digit commit hash as "SHA" and a pull request number as "N":
+#       pulls?state=open&base=main       -> pulls.json
+#       actions/runs?head_sha=...        -> actions__runs.json
+#       commits/<sha>/check-runs         -> commits__SHA__check-runs.json
+#       commits/<sha>/statuses           -> commits__SHA__statuses.json
+#       pulls/12                         -> pulls__N.json
+#       pulls/12/commits                 -> pulls__N__commits.json
+#       pulls/12/files                   -> pulls__N__files.json
+#     An answer that changes between looks (CodeQL arriving while the gate polls) is a numbered series: the first read
+#     of a path answers <name>.1.json, the second <name>.2.json, and so on; the last file in the series answers every
+#     later read. A read with no file fails, so a case that forgot an answer fails loudly.
+#     A write (-X POST, ...) answers {} and is only logged.
+#   gh pr merge ..., gh workflow run ...
+#     Logged, nothing else.
+set -euo pipefail
+
+: "${FAKE_GH_DIR:?set FAKE_GH_DIR to the directory of recorded answers}"
+: "${FAKE_GH_LOG:?set FAKE_GH_LOG to the file to log invocations to}"
+
+printf '%q ' gh "$@" >> "$FAKE_GH_LOG"
+printf '\n' >> "$FAKE_GH_LOG"
+
+case "${1:-}" in
+  api) ;;
+  pr|workflow) exit 0 ;;
+  *) echo "fake gh: unexpected command: $*" >&2; exit 64 ;;
+esac
+shift
+
+method=GET path="" filter=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --paginate) shift ;;
+    -X) method=$2; shift 2 ;;
+    -f|-F|-H) shift 2 ;;
+    --jq) filter=$2; shift 2 ;;
+    -*) echo "fake gh: unexpected option: $1" >&2; exit 64 ;;
+    *) path=$1; shift ;;
+  esac
+done
+
+if [ "$method" != GET ]; then echo '{}'; exit 0; fi
+
+name=${path%%\?*}
+name=$(sed -E -e 's#^repos/[^/]+/[^/]+/##' -e 's#/#__#g' -e 's#[0-9a-f]{40}#SHA#g' -e 's#^pulls__[0-9]+#pulls__N#' <<< "$name")
+file="$FAKE_GH_DIR/$name.json"
+if [ ! -f "$file" ]; then
+  counter="$FAKE_GH_DIR/.$name.reads"
+  reads=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
+  echo "$reads" > "$counter"
+  file="$FAKE_GH_DIR/$name.$reads.json"
+  while [ ! -f "$file" ] && [ "$reads" -gt 1 ]; do reads=$((reads - 1)); file="$FAKE_GH_DIR/$name.$reads.json"; done
+fi
+[ -f "$file" ] || { echo "fake gh: no recorded answer for $path (wanted $file)" >&2; exit 65; }
+
+if [ -n "$filter" ]; then jq -r "$filter" "$file"; else cat "$file"; fi

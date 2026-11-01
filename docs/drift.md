@@ -1,3 +1,8 @@
 # Drift between the apps
 
 Where Waypoint and Runway did the same thing differently, and which way fleet took. Each extraction issue adds its rows. Where the two differ, fleet's own code follows the stricter convention (Waypoint's): no comments or docstrings in Python, actions pinned by SHA with a version comment, `bash -eo pipefail` as each workflow's default shell, and `persist-credentials: false` on every checkout.
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| `merge-gate.sh` | Requires no status (its review is off); ignores `Cancel runs on close` and `Merge gate` | Requires `Agent review`; also ignores `Preview` and `Screenshot diff` | One script, configured by the reusable workflow's inputs (`required-workflows`, `ignored-workflows`, `required-statuses`, `ignored-apps`, polling, Dependabot merging, the workflows started after a merge); `Merge gate` and `Cancel runs on close` always ignored; defaults require `Security scans`, `CodeQL`, `Agent review` and `Second review`. New rule: a Dependabot pull request that changes an `AnthonyPluth/fleet/` reference passes but isn't merged by the gate | The scripts were identical apart from configuration; a fleet bump changes the review and the gate themselves, so the owner merges it |
+| `merge-gate.yml` | `workflow_run` on `Docker image, Security scans, Docs, Control smoke` | `workflow_run` on `Docker image, Security scans, Docs, Verify flows` | The triggers, the job `if:` and the concurrency group stay in each app's caller; the job calls fleet's workflow | A called workflow can't declare triggers |
