@@ -127,6 +127,13 @@ What each app runs beyond the core, as reusable workflows an app calls or doesn'
 | `tidy-releases.yml` | Image `waypoint`; `vars.RUNS_ON`; 10 minutes | Image `runway`; hosted; no timeout | Inputs `image`, `versions`, `retag`, `confirm` (the caller's `workflow_dispatch` passes them through) and `runs-on`; 10 minutes; `github.token`. The `docker-image-refs/heads/main` concurrency group stays in the caller, with its `docker.yml` | Only the image name and the runner differed |
 | `preview.yml` | — | Present: Runway's own image with its sample data behind a Cloudflare quick tunnel | Stays in Runway | Runway-specific deploy; nothing for the others to reuse yet |
 
+## Consumer checks and content sync (`FLEET-SYNC`)
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| `fleet-checks` job | Its own job in `ci.yml` running `tools/fleet_checks.py` | The same | `checks.yml`: `fleet checks` (`--commits <base>..<head>` on a pull request) and `fleet drift`, from fleet at the workflow's pinned ref, the app checked out into `app/`; inputs `runs-on`, `working-directory`, `expect-drift`, `fleet-ref` | The tools moved to fleet; the job that runs them follows. The tools come from the pinned ref, never from a ref the pull request names; `fleet drift` reads the content's version from fleet's history |
+| Keeping the shared content current | By hand, when someone noticed | By hand | `sync.yml`: Dependabot bumps the workflow pins; the sync reads them (they must agree), runs `fleet sync --to <pin>` from fleet at the pin and opens `chore: fleet content vX.Y.Z` from `fleet/sync` with the fleet-bot App's token; a newer major opens a migration issue instead; `fleet sync-plan` plans it | A pull request opened with the workflow's own token starts no checks, so a second bot opens it; the App has no Workflows permission and the sync writes nothing under `.github/workflows/`; a major needs a person |
+
 ## Claude Code plugin (`FLEET-PLUGIN`)
 
 | Piece | Waypoint | Runway | fleet takes | Why |

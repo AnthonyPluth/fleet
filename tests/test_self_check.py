@@ -71,6 +71,15 @@ class FleetRefTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("reusable-tagged.yaml", errors[0])
 
+    def test_a_fleet_checkout_at_any_other_ref_fails(self) -> None:
+        repo = Repo(self)
+        repo.add("reusable-fleet-at-another-ref.yml")
+        errors = self_check.check(repo.root)
+        self.assertEqual(len(errors), 2)
+        self.assertIn("checks out AnthonyPluth/fleet at '${{ steps.version.outputs.ref }}', not `${{ inputs.fleet-ref || env.FLEET_REF }}`", errors[0])
+        self.assertIn("checks out AnthonyPluth/fleet at None", errors[1])
+        self.assertTrue(all(".github/workflows/reusable-fleet-at-another-ref.yml: job run" in error for error in errors))
+
     def test_a_workflow_that_isnt_reusable_needs_no_fleet_ref(self) -> None:
         repo = Repo(self)
         repo.add("plain.yml")

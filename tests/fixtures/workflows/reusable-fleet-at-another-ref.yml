@@ -1,0 +1,41 @@
+name: Reusable checking fleet out at a ref of its own
+
+on:
+  workflow_call:
+    inputs:
+      fleet-ref:
+        description: The fleet ref to fetch scripts from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ steps.version.outputs.ref }}
+          path: .fleet
+          sparse-checkout: fleet_tools
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          path: .fleet-main
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: someone-else/app
+          ref: v1.2.3
+          path: app
+          persist-credentials: false

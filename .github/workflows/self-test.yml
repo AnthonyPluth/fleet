@@ -238,6 +238,102 @@ jobs:
       fleet-ref: ${{ github.sha }}
       groups: '["self-test-cancel-{0}", "self-test-cancel-prefix-"]'
 
+  # The consumer checks (FLEET-SYNC) on a fixture consumer, with the tools from this pull request's commit in place of
+  # the version .fleet/version names: `fleet checks --commits` over this pull request's range and `fleet drift` pass on
+  # the clean fixture, and `fleet drift` must fail on the drifted one (expect-drift inverts that step).
+  checks-clean:
+    name: Checks (clean fixture)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      working-directory: tests/fixtures/consumer-waypoint
+
+  checks-drifted:
+    name: Checks (drifted fixture)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      working-directory: tests/fixtures/drifted
+      expect-drift: true
+
+  # The content sync (FLEET-SYNC) in dry run on fixture consumers built from this commit (fixture implies dry-run: no
+  # App, no push, no pull request, no issue), one case each from the acceptance criteria: pins a minor ahead of the
+  # content, which must change exactly the AGENTS.md blocks, the vendored files and .fleet/version and nothing under
+  # .github/workflows/; pins equal to the content, which does nothing; pins a major ahead, which is the migration issue.
+  # Each case's fixture differs, so the calls land in distinct concurrency groups. The called job asks for
+  # `issues: write`, so the caller grants it.
+  sync-minor:
+    name: Sync (fixture, pins a minor ahead)
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/sync.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      fixture: pins=v1.1.0 content=v1.0.0
+
+  sync-equal:
+    name: Sync (fixture, pins equal to the content)
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/sync.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      fixture: pins=v1.0.0 content=v1.0.0
+
+  sync-major:
+    name: Sync (fixture, pins a major ahead)
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/sync.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      fixture: pins=v2.0.0 content=v1.0.0
+
+  # What each sync case decided, through the reusable workflow's outputs: the files the minor case changed are exactly
+  # the ones a sync owns (tests/sync_fixture.py --expected), the equal case did nothing, the major case has the issue.
+  sync-verdicts:
+    name: Sync (fixture) verdicts
+    needs: [sync-minor, sync-equal, sync-major]
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, a few lines of shell
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Each case reached the plan it should
+        env:
+          MINOR: ${{ needs.sync-minor.outputs.action }}
+          MINOR_TITLE: ${{ needs.sync-minor.outputs.title }}
+          MINOR_CHANGED: ${{ needs.sync-minor.outputs.changed }}
+          EQUAL: ${{ needs.sync-equal.outputs.action }}
+          EQUAL_TITLE: ${{ needs.sync-equal.outputs.title }}
+          MAJOR: ${{ needs.sync-major.outputs.action }}
+          MAJOR_TITLE: ${{ needs.sync-major.outputs.title }}
+          MAJOR_BODY: ${{ needs.sync-major.outputs.body }}
+        run: |
+          echo "minor: $MINOR ($MINOR_TITLE); equal: $EQUAL ($EQUAL_TITLE); major: $MAJOR ($MAJOR_TITLE)"
+          [ "$MINOR" = sync ] || { echo "::error::Pins a minor ahead gave $MINOR, not sync"; exit 1; }
+          [ "$MINOR_TITLE" = "chore: fleet content v1.1.0" ] || { echo "::error::The pull request's title is '$MINOR_TITLE'"; exit 1; }
+          base64 -d <<< "$MINOR_CHANGED" | sort > changed.txt
+          python3 -E -s tests/sync_fixture.py --expected | sort > expected.txt
+          if ! diff -u expected.txt changed.txt; then echo "::error::The sync commit's files aren't exactly the AGENTS blocks, the vendored files and .fleet/version"; exit 1; fi
+          if grep -q '^\.github/workflows/' changed.txt; then echo "::error::The sync changed a workflow"; exit 1; fi
+          if ! { [ "$EQUAL" = none ] && [ -z "$EQUAL_TITLE" ]; }; then echo "::error::Pins equal to the content gave $EQUAL ($EQUAL_TITLE), not none"; exit 1; fi
+          [ "$MAJOR" = migration ] || { echo "::error::Pins a major ahead gave $MAJOR, not migration"; exit 1; }
+          [ "$MAJOR_TITLE" = "fleet v2 needs a migration: see CHANGELOG" ] || { echo "::error::The issue's title is '$MAJOR_TITLE'"; exit 1; }
+          base64 -d <<< "$MAJOR_BODY" > body.md
+          grep -q "another major version" body.md || { echo "::error::The issue's body doesn't say why"; exit 1; }
+          grep -q "fleet sync --to v2.0.0" body.md || { echo "::error::The issue's body doesn't say how"; exit 1; }
+
   # The second review on this pull request in dry run, with the stub reviewer and a faked event (fake-event, honoured
   # only with fake-review), one case each from FLEET-SECOND-REVIEW's acceptance criteria. The first review is off in
   # these (first-review: false), and each case's inputs differ, so the calls land in distinct concurrency groups.

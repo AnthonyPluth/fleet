@@ -1,0 +1,281 @@
+name: Sync fleet content
+
+# The consumer-side sync (FLEET-SYNC). Each app carries two kinds of pin: the workflow pins
+# (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<sha>   # vX.Y.Z`), which Dependabot bumps, and the content
+# (the AGENTS.md blocks, the vendored .claude/ files and tools/fleet, .fleet/version), which Dependabot can't edit. This
+# reads every fleet pin in the caller's workflows (they must agree; if not, it fails naming the files), compares with
+# .fleet/version and, when the pins are newer in the same major, runs `fleet sync --to <pin>` from fleet at that
+# version and opens or updates the pull request `chore: fleet content vX.Y.Z` from the branch fleet/sync, with the
+# CHANGELOG entries in between in its body. Pins at a newer major open an issue instead ("fleet vN needs a migration:
+# see CHANGELOG"), because a major release changes something the app must adapt to first. fleet_tools/sync_workflow.py
+# (`fleet sync-plan`) decides all of it; the workflow only moves files and calls the API.
+#
+# Two bots: a pull request created with a workflow's own token starts no workflows, so nothing would check it. The
+# pull request is therefore pushed and opened with the fleet-bot GitHub App's installation token
+# (actions/create-github-app-token from the caller's FLEET_BOT_APP_ID variable and FLEET_BOT_PRIVATE_KEY secret, passed
+# by name), narrowed to contents and pull requests on this repository and revoked when the job ends. The App has no
+# Workflows permission, so a push that touched .github/workflows/ would be refused; the workflow checks that nothing
+# there changed before it commits anyway. The token appears in one step, which runs no code of the consumer's: by then
+# the content is written. Nothing is merged here: the merge gate and the owner decide, as for any pull request. The
+# migration issue needs no App: the workflow's own token with `issues: write` opens it.
+#
+# The caller (docs/adopting.md has the snippet) runs it on push to main touching .github/workflows/**, weekly and by
+# hand, and keeps a concurrency group. Nothing from a pull request is read: the sync runs on the default branch's
+# content, the versions it handles are checked to be vX.Y.Z before they reach a command, and the branch name, the
+# title and the body are fleet's own text.
+on:
+  workflow_call:
+    inputs:
+      app-id:
+        description: The fleet-bot App's id (the caller's FLEET_BOT_APP_ID variable). Needed unless dry-run.
+        type: string
+        default: ""
+      dry-run:
+        description: Print the plan, the diff and the pull request or issue instead of pushing and opening them; mints no token.
+        type: boolean
+        default: false
+      fixture:
+        description: Self-test only. Build a fixture consumer in place of the caller's checkout ("pins=v1.1.0 content=v1.0.0") and sync it from this fleet stamped at the pins' version; implies dry-run.
+        type: string
+        default: ""
+      fleet-ref:
+        description: The fleet ref to fetch the planner from (the self-test passes its own commit).
+        type: string
+        default: ""
+    secrets:
+      FLEET_BOT_PRIVATE_KEY:
+        description: The fleet-bot App's private key, to push the branch and open the pull request with. Not needed for dry-run.
+        required: false
+    outputs:
+      action:
+        description: none, sync (a pull request) or migration (an issue).
+        value: ${{ jobs.sync.outputs.action }}
+      title:
+        description: The pull request's or the issue's title; empty for none.
+        value: ${{ jobs.sync.outputs.title }}
+      changed:
+        description: The files the sync commit changes, one per line, base64; empty unless action is sync.
+        value: ${{ jobs.sync.outputs.changed }}
+      body:
+        description: The pull request's or the issue's body, base64; empty for none.
+        value: ${{ jobs.sync.outputs.body }}
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    name: Sync fleet content
+    runs-on: ubuntu-latest   # hosted: holds the App token
+    timeout-minutes: 15
+    # One run at a time per repository, whatever ref started it (the content always comes from the default branch): two
+    # would race on the fleet/sync branch. The self-test's cases differ by fixture.
+    concurrency:
+      group: fleet-sync-${{ github.repository }}-${{ inputs.fixture }}
+      cancel-in-progress: false
+    permissions:
+      contents: read           # the caller's checkout; the pull request is pushed with the App token
+      issues: write            # the migration issue
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      title: ${{ steps.plan.outputs.title }}
+      changed: ${{ steps.content.outputs.changed }}
+      body: ${{ steps.body.outputs.body }}
+    steps:
+      # The caller's default branch, whatever ref the run was started from: its workflows (the pins) and its content,
+      # which is what the pull request is built from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        if: inputs.fixture == ''
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: app
+          persist-credentials: false
+
+      # fleet at the pinned ref, after the caller's checkout: the planner, the fixture builder the self-test uses, and
+      # (since the self-test copies this checkout as its "fleet at the pin") everything `fleet sync` and the body need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: |
+            fleet_tools
+            agents-md
+            plugins
+            shim
+            tests/consumers.py
+            tests/sync_fixture.py
+            tests/fixtures/consumer-waypoint
+            CHANGELOG.md
+            VERSION
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Self-test only: a consumer built from fleet's fixture with its pins and its content at the given versions.
+      - name: Build the fixture consumer (self-test)
+        if: inputs.fixture != ''
+        env:
+          SPEC: ${{ inputs.fixture }}
+        run: python3 -E -s .fleet/tests/sync_fixture.py --out app --spec "$SPEC"
+
+      # none, sync or migration (fleet_tools/sync_workflow.py). Pins that disagree, a pin without its version comment,
+      # no .fleet/version or content newer than the pins fail here, naming the files.
+      - name: Plan
+        id: plan
+        run: |
+          cd .fleet || exit 1
+          python3 -E -s -m fleet_tools.cli sync-plan --root "$GITHUB_WORKSPACE/app" | tee -a "$GITHUB_OUTPUT"
+
+      # fleet at the pins' version, in .fleet-pin/: `fleet sync --to <pin>` must run from the fleet that ships that
+      # version's content, and the CHANGELOG there lists what changed. A plain clone of the public repository at the
+      # tag the planner validated (vX.Y.Z, read from the caller's own workflows on its default branch), no token; the
+      # one checkout of fleet by the action stays at this workflow's pinned ref. The self-test has no such tag, so it
+      # takes a copy of this fleet, with its VERSION stamped to the pin.
+      - name: fleet at the pins' version
+        if: steps.plan.outputs.action != 'none'
+        env:
+          PIN: ${{ steps.plan.outputs.pin }}
+          FIXTURE: ${{ inputs.fixture }}
+        run: |
+          if ! [[ "$PIN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The planned pin '${PIN:0:40}' isn't a version"
+            exit 1
+          fi
+          if [ -n "$FIXTURE" ]; then
+            cp -a .fleet .fleet-pin
+            echo "${PIN#v}" > .fleet-pin/VERSION
+          else
+            git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin
+          fi
+          echo "fleet $(cat .fleet-pin/VERSION) in .fleet-pin"
+
+      - name: Write the pull request's or the issue's body
+        id: body
+        if: steps.plan.outputs.action != 'none'
+        run: |
+          cd .fleet || exit 1
+          python3 -E -s -m fleet_tools.cli sync-plan --root "$GITHUB_WORKSPACE/app" \
+            --changelog "$GITHUB_WORKSPACE/.fleet-pin/CHANGELOG.md" --body "$RUNNER_TEMP/body.md" > /dev/null
+          echo "body=$(base64 -w0 < "$RUNNER_TEMP/body.md")" >> "$GITHUB_OUTPUT"
+          echo "The body:"
+          cat "$RUNNER_TEMP/body.md"
+
+      # The content at the pin, staged. Nothing under .github/workflows/ may change (the App couldn't push it, and the
+      # sync has no business there); a sync that changes nothing is an error too, since the versions differ.
+      - name: Sync the content
+        id: content
+        if: steps.plan.outputs.action == 'sync'
+        env:
+          PIN: ${{ steps.plan.outputs.pin }}
+        run: |
+          (cd .fleet-pin && python3 -E -s -m fleet_tools.cli sync --to "$PIN" --root "$GITHUB_WORKSPACE/app")
+          cd app || exit 1
+          git add -A
+          if [ -n "$(git diff --cached --name-only -- .github/workflows)" ]; then
+            echo "::error::The sync changed files under .github/workflows/, which it never may"
+            git diff --cached --name-only -- .github/workflows
+            exit 1
+          fi
+          git diff --cached --name-only > "$RUNNER_TEMP/changed.txt"
+          if [ ! -s "$RUNNER_TEMP/changed.txt" ]; then
+            echo "::error::fleet sync --to $PIN changed nothing, though the content is at another version"
+            exit 1
+          fi
+          echo "Changed:"
+          cat "$RUNNER_TEMP/changed.txt"
+          git diff --cached --stat
+          echo "changed=$(base64 -w0 < "$RUNNER_TEMP/changed.txt")" >> "$GITHUB_OUTPUT"
+
+      - name: The App is configured
+        if: steps.plan.outputs.action == 'sync' && !inputs.dry-run && inputs.fixture == ''
+        env:
+          APP_ID: ${{ inputs.app-id }}
+          HAS_KEY: ${{ secrets.FLEET_BOT_PRIVATE_KEY != '' }}
+        run: |
+          if [ -z "$APP_ID" ] || [ "$HAS_KEY" != true ]; then
+            echo "::error::The sync pull request needs the fleet-bot App: pass app-id (vars.FLEET_BOT_APP_ID) and the FLEET_BOT_PRIVATE_KEY secret, or dry-run: true"
+            exit 1
+          fi
+
+      # The App's installation token for this repository, narrowed to what the push and the pull request need, revoked
+      # when the job ends. The private key is read by this step alone.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510   # v3.3.0
+        id: token
+        if: steps.plan.outputs.action == 'sync' && !inputs.dry-run && inputs.fixture == ''
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.FLEET_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # The one step with the token: commit as the App's bot, rewrite the fleet/sync branch (the workflow's own; each
+      # run rebuilds it from the default branch's content) and open the pull request, or update the open one's title
+      # and body. The token reaches git as a header, never on a command line; the title and body are fleet's text.
+      - name: Push the branch and open or update the pull request
+        if: steps.plan.outputs.action == 'sync' && !inputs.dry-run && inputs.fixture == ''
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          BASE: ${{ github.event.repository.default_branch }}
+          BRANCH: ${{ steps.plan.outputs.branch }}
+          TITLE: ${{ steps.plan.outputs.title }}
+          PIN: ${{ steps.plan.outputs.pin }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bot_id=$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          [[ "$bot_id" =~ ^[0-9]+$ ]] || { echo "::error::Couldn't read the App's bot user"; exit 1; }
+          cd app || exit 1
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          printf '%s\n\nfleet content at %s, the version the workflow pins carry: the AGENTS.md blocks, the vendored files and .fleet/version, by the sync workflow (%s).\n' \
+            "$TITLE" "$PIN" "$RUN_URL" | git commit -q -F -
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            git push --force --quiet "https://github.com/$REPO" "HEAD:refs/heads/$BRANCH"
+          existing=$(gh api --paginate "repos/$REPO/pulls?state=open&head=$OWNER:$BRANCH&base=$BASE&per_page=100" --jq '.[].number')
+          existing=${existing%%$'\n'*}
+          python3 -I -c 'import json, os, sys; print(json.dumps({"title": os.environ["TITLE"], "body": open(sys.argv[1], encoding="utf-8").read(), "head": os.environ["BRANCH"], "base": os.environ["BASE"]}))' \
+            "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/pull.json"
+          if [[ "$existing" =~ ^[0-9]+$ ]]; then
+            gh api -X PATCH "repos/$REPO/pulls/$existing" --input "$RUNNER_TEMP/pull.json" --jq .html_url
+          else
+            gh api -X POST "repos/$REPO/pulls" --input "$RUNNER_TEMP/pull.json" --jq .html_url
+          fi
+
+      # A newer major: one issue with the migration title, unless one is open. The workflow's own token.
+      - name: Open the migration issue unless one is open
+        if: steps.plan.outputs.action == 'migration' && !inputs.dry-run && inputs.fixture == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TITLE: ${{ steps.plan.outputs.title }}
+        run: |
+          open=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" \
+                   --jq '.[] | select(has("pull_request") | not) | select(.title == env.TITLE) | .number')
+          if [ -n "$open" ]; then
+            echo "Issue #${open%%$'\n'*} is open; nothing to do"
+            exit 0
+          fi
+          python3 -I -c 'import json, os, sys; print(json.dumps({"title": os.environ["TITLE"], "body": open(sys.argv[1], encoding="utf-8").read()}))' \
+            "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/issue.json"
+          gh api -X POST "repos/$REPO/issues" --input "$RUNNER_TEMP/issue.json" --jq .html_url
+
+      - name: Dry run
+        if: steps.plan.outputs.action != 'none' && (inputs.dry-run || inputs.fixture != '')
+        env:
+          ACTION: ${{ steps.plan.outputs.action }}
+          TITLE: ${{ steps.plan.outputs.title }}
+        run: |
+          case "$ACTION" in
+            sync) echo "(dry run) would push fleet/sync and open or update the pull request: $TITLE" ;;
+            migration) echo "(dry run) would open the issue: $TITLE" ;;
+          esac

@@ -1,0 +1,115 @@
+name: Checks
+
+# The reusable fleet checks (FLEET-SYNC): `fleet checks` over the consumer (with `--commits <base>..<head>` on a pull
+# request, so the commit trailers, the removed or skipped tests and the added images are checked too; plain on main)
+# and `fleet drift` (the AGENTS.md blocks, the vendored files and .fleet/version against fleet's, and that version
+# within the workflow pins). It replaces each app's own `fleet-checks` job. `contents: read` only, no secrets.
+#
+# The tools run from fleet at this workflow's own pinned ref (inputs.fleet-ref || FLEET_REF, the FLEET_REF convention),
+# never from a ref the pull request names: a pull request could otherwise pick which fleet checks it. The consumer's
+# .fleet/version is data to `fleet drift`, which reads the blocks and the vendored files of that version from fleet's
+# history (the checkout brings the tags), so the content may trail the workflow pins within one major while a sync pull
+# request (sync.yml) is open. The consumer is checked out into app/, beside fleet's .fleet/, so a consumer's own
+# .fleet/version at its root is never touched by the fleet checkout.
+#
+# The caller (docs/adopting.md has the snippet) keeps the triggers (pull requests and pushes to main) and the
+# concurrency group, and passes its runner as `runs-on`.
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: The runner, as JSON ('"ubuntu-latest"', or a label array). Waypoint passes its vars.RUNS_ON expression.
+        type: string
+        default: '"ubuntu-latest"'
+      working-directory:
+        description: The consumer's root within its checkout (the self-test passes a fixture consumer).
+        type: string
+        default: "."
+      expect-drift:
+        description: Self-test only. The drift step passes only when `fleet drift` fails.
+        type: boolean
+        default: false
+      fleet-ref:
+        description: The fleet ref to run the tools from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    name: fleet checks
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # The consumer with its history (the pull request's range needs its base and head), in app/.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          path: app
+          fetch-depth: 0
+          persist-credentials: false
+
+      # fleet at the pinned ref: the tools, and, with its history and tags, the AGENTS.md sections and plugin files of
+      # every released version, which fleet drift compares the consumer's content against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          fetch-depth: 0
+          fetch-tags: true
+          sparse-checkout: |
+            fleet_tools
+            agents-md
+            plugins
+            shim
+            VERSION
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The commit range comes from the event, not the pull request's text, and is checked to be two commit ids.
+      - name: fleet checks
+        env:
+          DIR: ${{ inputs.working-directory }}
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          args=()
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = pull_request_target ]; then
+            if ! [[ "$BASE" =~ ^[0-9a-f]{40}$ && "$HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::The pull request's base and head aren't commit ids"
+              exit 1
+            fi
+            args=(--commits "$BASE..$HEAD")
+          fi
+          root=$(cd "app/$DIR" && pwd)
+          cd .fleet || exit 1
+          python3 -E -s -m fleet_tools.cli checks --root "$root" "${args[@]}"
+
+      - name: fleet drift
+        env:
+          DIR: ${{ inputs.working-directory }}
+          EXPECT_DRIFT: ${{ inputs.expect-drift }}
+        run: |
+          root=$(cd "app/$DIR" && pwd)
+          cd .fleet || exit 1
+          if [ "$EXPECT_DRIFT" = true ]; then
+            if python3 -E -s -m fleet_tools.cli drift --root "$root"; then
+              echo "::error::fleet drift passed on the drifted fixture"
+              exit 1
+            fi
+            echo "fleet drift failed on the drifted fixture, as it should."
+            exit 0
+          fi
+          python3 -E -s -m fleet_tools.cli drift --root "$root"
