@@ -344,8 +344,8 @@ jobs:
             exit 0
           fi
           [ "$LABEL" = blocking ] || { echo "::error::The labelled case gave $LABEL, not blocking"; exit 1; }
-          [ "$PATH_V" = pass ] && [[ "$PATH_WHY" == "No blocking findings"* ]] || { echo "::error::The path case gave $PATH_V ($PATH_WHY)"; exit 1; }
-          [ "$GITHUB_V" = pass ] && [[ "$GITHUB_WHY" == "No blocking findings"* ]] || { echo "::error::The .github case gave $GITHUB_V ($GITHUB_WHY)"; exit 1; }
-          [ "$NOT_RISKY" = pass ] && [ "$NOT_RISKY_WHY" = "Not a risky pull request" ] || { echo "::error::The not-risky case gave $NOT_RISKY ($NOT_RISKY_WHY)"; exit 1; }
+          if ! { [ "$PATH_V" = pass ] && [[ "$PATH_WHY" == "No blocking findings"* ]]; }; then echo "::error::The path case gave $PATH_V ($PATH_WHY)"; exit 1; fi
+          if ! { [ "$GITHUB_V" = pass ] && [[ "$GITHUB_WHY" == "No blocking findings"* ]]; }; then echo "::error::The .github case gave $GITHUB_V ($GITHUB_WHY)"; exit 1; fi
+          if ! { [ "$NOT_RISKY" = pass ] && [ "$NOT_RISKY_WHY" = "Not a risky pull request" ]; }; then echo "::error::The not-risky case gave $NOT_RISKY ($NOT_RISKY_WHY)"; exit 1; fi
           [ "$OTHER" = skip ] || { echo "::error::A non-owner's unlabeled event gave $OTHER, not skip"; exit 1; }
-          [ "$OWNER" = pass ] && [ "$OWNER_WHY" = "Not a risky pull request" ] || { echo "::error::The owner's unlabeled event gave $OWNER ($OWNER_WHY)"; exit 1; }
+          if ! { [ "$OWNER" = pass ] && [ "$OWNER_WHY" = "Not a risky pull request" ]; }; then echo "::error::The owner's unlabeled event gave $OWNER ($OWNER_WHY)"; exit 1; fi
