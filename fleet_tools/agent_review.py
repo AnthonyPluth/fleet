@@ -69,8 +69,8 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
   agent_review.py detect                          commit messages (JSON lines) on stdin, $BODY: true or false
   agent_review.py wanted ACTION                   the head's statuses ([context, state, creator, description] JSON
                                                   lines) on stdin, $SENDER, $OWNER, $LABEL, $LABELS, $TRIGGER_LABELS
-                                                  ($FAKE_EVENT, self-test only): wanted=true|false, reason=... and
-                                                  reviewed=true|false for $GITHUB_OUTPUT
+                                                  ($FAKE_EVENT, self-test only): wanted=true|false, reason=...,
+                                                  reviewed=true|false and pending=true|false for $GITHUB_OUTPUT
   agent_review.py previous COMMENTS.jsonl OUT.md  the last review's commit and verdict, its text to OUT.md
   agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff);
                                                   mode, description, incremental
@@ -116,9 +116,14 @@ def reviewed_here(statuses: Sequence[Sequence[str]], review: Review) -> bool:
         if len(status) >= 3 and status[0] == review.context and status[2] == BOT:
             if review is FIRST:
                 return True
-            if status[1] in ("success", "failure") and (len(status) < 4 or status[3] != NOT_RISKY):
-                return True
+            return status[1] in ("success", "failure") and (len(status) < 4 or status[3] != NOT_RISKY)
     return False
+
+
+def pending_first(action: str, statuses: Sequence[Sequence[str]], review: Review, event: dict[str, Any]) -> bool:
+    if review is FIRST or action not in LABEL_EVENTS:
+        return False
+    return wanted(action, statuses, review, event)[0] and not reviewed_here(statuses, review)
 
 
 def wanted(action: str, statuses: Sequence[Sequence[str]], review: Review = FIRST,
@@ -484,6 +489,7 @@ def main(argv: list[str]) -> int:
         print(f"wanted={'true' if yes else 'false'}")
         print(f"reason={reason}")
         print(f"reviewed={'true' if reviewed_here(statuses, review) else 'false'}")
+        print(f"pending={'true' if pending_first(action, statuses, review, event) else 'false'}")
         return 0
     if len(argv) == 3 and argv[0] == "previous":
         with open(argv[1], encoding="utf-8") as f:

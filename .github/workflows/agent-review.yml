@@ -438,6 +438,63 @@ jobs:
             run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
           fi
 
+  # Before a label event's second review (FLEET-SECOND-REVIEW): a head that was reviewed before the label came may
+  # already carry a passing "Second review" and a passing "Merge gate", and the review below can take a while, so
+  # this job first sets "Second review" to pending on the head and asks the merge gate to decide again. The gate then
+  # waits for the verdict second-report posts (a review that fails or errors still gets a final state from it), and
+  # the pull request can't merge on the old status while the review runs. Only when the review will run: not for a
+  # label the review doesn't react to, nor for a head already reviewed a second time (agent_review.py wanted, the same
+  # decision second-review makes). It holds the write token and never sees the pull request's code or the secrets.
+  second-pending:
+    name: Second review pending
+    if: >-
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !(github.event.action == 'unlabeled' && github.event.sender.login != github.repository_owner) &&
+      (contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) || inputs.fake-review != '' && inputs.fake-event != '')
+    runs-on: ubuntu-latest   # hosted: holds the write token for the status
+    timeout-minutes: 5
+    permissions:
+      contents: read           # check out fleet's tools
+      statuses: write          # the pending "Second review" status (and reading the head's)
+      actions: write           # start the merge gate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: fleet_tools
+          persist-credentials: false
+      - name: Mark the second review pending while it runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
+          OWNER: ${{ github.repository_owner }}
+          LABEL: ${{ github.event.label.name }}
+          TRIGGER_LABELS: ${{ inputs.second-review-labels }}
+          FAKE_EVENT: ${{ inputs.fake-review != '' && inputs.fake-event || '' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MERGE_GATE: ${{ inputs.merge-gate-workflow }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          run() { if [ "$DRY_RUN" = true ]; then echo "(dry run) $*"; else "$@" > /dev/null; fi; }
+          statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" \
+                       --jq '.[] | [.context, .state, .creator.login, (.description // "")] | @json')
+          python3 -I .fleet/fleet_tools/agent_review.py second wanted "$ACTION" <<< "$statuses" | tee "$RUNNER_TEMP/wanted.txt"
+          if ! grep -qx 'pending=true' "$RUNNER_TEMP/wanted.txt"; then
+            echo "No second review will run on this event; the status stays as it is."
+            exit 0
+          fi
+          run gh api -X POST "repos/$REPO/statuses/$HEAD" -f state=pending -f context="Second review" \
+            -f description="A second review is running after a label change" -f target_url="$RUN_URL"
+          if [ -n "$MERGE_GATE" ]; then
+            run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
+          fi
+
   # The second review, on risky pull requests only (FLEET-SECOND-REVIEW): the same shape as `review`, isolated the same
   # way (read-only tools confined to its directory, no settings, hooks, plugins or MCP servers, a hosted runner, the
   # secrets only in its Review step), on claude-fable-5-1 with its own budget and turns, its own comment (marker
@@ -445,9 +502,12 @@ jobs:
   # second-report. It runs on label events too, which `review` ignores; an unlabeled event from anyone but the
   # repository owner never starts it. Its concurrency group is the job's and tells label events apart from pushes, so
   # a label event can't cancel a running review of a push (two label events replace each other: the later state wins).
+  # On a label event it runs after second-pending, which marks the head's "Second review" pending first.
   second-review:
     name: Second review
+    needs: second-pending   # the pending status goes up first; skipped or failed, the review still runs
     if: >-
+      !cancelled() &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       !(github.event.action == 'unlabeled' && github.event.sender.login != github.repository_owner)
     runs-on: ubuntu-latest   # hosted: reads untrusted pull request content with secrets in reach

@@ -81,7 +81,7 @@ class ReusableWorkflowTest(unittest.TestCase):
 
     def test_every_job_runs_hosted_with_the_reason_and_the_least_permissions(self) -> None:
         jobs = mapping(self.workflow["jobs"])
-        self.assertEqual(sorted(jobs), ["report", "review", "second-report", "second-review"])
+        self.assertEqual(sorted(jobs), ["report", "review", "second-pending", "second-report", "second-review"])
         for job in jobs:
             self.assertRegex(job_source(self.text, job), r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
         for job in REVIEW_JOBS:
@@ -111,8 +111,8 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertEqual(len(trusted), 2)
             for inputs in trusted:
                 self.assertIn(inputs["ref"], ("${{ github.event.pull_request.base.sha }}", "${{ inputs.fleet-ref || env.FLEET_REF }}"))
-        self.assertEqual(self.text.count("actions/checkout@"), 6)
-        self.assertEqual(self.text.count("persist-credentials: false"), 6)
+        self.assertEqual(self.text.count("actions/checkout@"), 7)
+        self.assertEqual(self.text.count("persist-credentials: false"), 7)
 
     def test_the_secrets_appear_only_in_the_review_steps_which_run_nothing_from_the_pull_request(self) -> None:
         for job in REVIEW_JOBS:
@@ -203,7 +203,8 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertNotIn("needs.review.", second)
         self.assertNotIn("needs.second-review.", first)
         self.assertEqual(self.text.count('-f context="Agent review"'), 1)
-        self.assertEqual(self.text.count('-f context="Second review"'), 1)
+        self.assertEqual(self.text.count('-f context="Second review"'), 2)
+        self.assertIn('-f context="Second review"', job_source(self.text, "second-pending"))
 
     def test_label_events_dependabot_and_first_review_off_run_neither_first_review_job(self) -> None:
         for job in ("review", "report"):
@@ -225,8 +226,40 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertNotIn("contains(fromJSON", condition)
             self.assertIn("github.event.pull_request.user.login != 'dependabot[bot]' &&", condition)
             self.assertIn("!(github.event.action == 'unlabeled' && github.event.sender.login != github.repository_owner)", condition)
-            if job == "second-report":
-                self.assertIn("!cancelled() &&", condition)
+            self.assertIn("!cancelled() &&", condition)
+        self.assertEqual(mapping(mapping(self.workflow["jobs"])["second-review"])["needs"], "second-pending")
+
+    def test_a_label_event_marks_the_second_review_pending_before_the_review_runs(self) -> None:
+        job = mapping(mapping(self.workflow["jobs"])["second-pending"])
+        self.assertEqual(job["permissions"], {"contents": "read", "statuses": "write", "actions": "write"})
+        self.assertNotIn("needs", job)
+        found = re.search(r"^    if: >-\n((?:      .*\n)+)", job_source(self.text, "second-pending"), re.MULTILINE)
+        assert found
+        condition = found.group(1)
+        self.assertIn("github.event.pull_request.user.login != 'dependabot[bot]' &&", condition)
+        self.assertIn("!(github.event.action == 'unlabeled' && github.event.sender.login != github.repository_owner) &&", condition)
+        self.assertIn("contains(fromJSON('[\"labeled\", \"unlabeled\"]'), github.event.action)", condition)
+        self.assertIn("inputs.fake-review != '' && inputs.fake-event != ''", condition)
+        source = job_source(self.text, "second-pending")
+        self.assertIsNone(SECRET.search(source))
+        self.assertNotIn(PR_CHECKOUT, source)
+        self.assertNotIn("head.sha }}\n          path", source)
+        checkouts = [step for step in steps_of(self.workflow, "second-pending") if str(step.get("uses", "")).startswith("actions/checkout@")]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(mapping(checkouts[0]["with"])["repository"], "AnthonyPluth/fleet")
+        self.assertEqual(mapping(checkouts[0]["with"])["sparse-checkout"], "fleet_tools")
+        step = next(c for c in step_sources(self.text, "second-pending") if c.startswith("name: Mark"))
+        self.assertIn("agent_review.py second wanted \"$ACTION\"", step)
+        self.assertIn("grep -qx 'pending=true'", step)
+        self.assertIn("-f state=pending", step)
+        self.assertIn('-f context="Second review"', step)
+        self.assertIn('if [ -n "$MERGE_GATE" ]', step)
+        self.assertIn("DRY_RUN", step)
+        env = mapping(next(s for s in steps_of(self.workflow, "second-pending") if step_name(s).startswith("Mark"))["env"])
+        self.assertEqual(env["FAKE_EVENT"], "${{ inputs.fake-review != '' && inputs.fake-event || '' }}")
+        self.assertEqual(env["HEAD"], "${{ github.event.pull_request.head.sha }}")
+        for name in ("SENDER", "OWNER", "LABEL", "TRIGGER_LABELS", "MERGE_GATE"):
+            self.assertIn(name, env)
 
     def test_the_second_review_s_decisions_come_from_data_in_the_environment(self) -> None:
         who = next(s for s in steps_of(self.workflow, "second-review") if s.get("id") == "who")

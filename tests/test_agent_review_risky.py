@@ -217,13 +217,50 @@ class Wanted(unittest.TestCase):
                 mock.patch("builtins.print") as printed:
             self.assertEqual(ar.main(["second", "wanted", "unlabeled"]), 0)
         self.assertEqual([c.args[0] for c in printed.call_args_list],
-                         ["wanted=false", f"reason={ar.NOT_WANTED['not_owner']}", "reviewed=false"])
+                         ["wanted=false", f"reason={ar.NOT_WANTED['not_owner']}", "reviewed=false", "pending=false"])
         env["SENDER"] = "octocat"
         statuses = json.dumps(["Second review", "failure", ar.BOT, "1 blocking finding(s)"]) + "\n"
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdin", io.StringIO(statuses)), \
                 mock.patch("builtins.print") as printed:
             self.assertEqual(ar.main(["second", "wanted", "unlabeled"]), 0)
-        self.assertEqual([c.args[0] for c in printed.call_args_list], ["wanted=true", "reason=", "reviewed=true"])
+        self.assertEqual([c.args[0] for c in printed.call_args_list], ["wanted=true", "reason=", "reviewed=true", "pending=false"])
+
+    def test_only_the_newest_second_review_status_counts(self) -> None:
+        blocking = ["Second review", "failure", ar.BOT, "1 blocking finding(s); see the comment"]
+        not_risky = ["Second review", "success", ar.BOT, ar.NOT_RISKY]
+        self.assertTrue(ar.reviewed_here([blocking], ar.SECOND))
+        self.assertFalse(ar.reviewed_here([not_risky, blocking], ar.SECOND), "the label was removed since that verdict")
+        self.assertTrue(ar.reviewed_here([blocking, not_risky], ar.SECOND))
+        pending = ["Second review", "pending", ar.BOT, "A second review is running after a label change"]
+        self.assertFalse(ar.reviewed_here([pending, blocking], ar.SECOND))
+        self.assertTrue(ar.reviewed_here([["Second review", "success", "someone", "x"], blocking], ar.SECOND),
+                        "someone else's newer status doesn't hide the bot's, and the bot's newest is a verdict")
+        self.assertTrue(ar.reviewed_here([["Agent review", "success", ar.BOT, "x"], blocking], ar.SECOND))
+
+    def test_re_adding_a_label_after_its_removal_reviews_again(self) -> None:
+        blocking = ["Second review", "failure", ar.BOT, "1 blocking finding(s); see the comment"]
+        not_risky = ["Second review", "success", ar.BOT, ar.NOT_RISKY]
+        event = self.event(sender="octocat")
+        self.assertEqual(ar.wanted("labeled", [not_risky, blocking], ar.SECOND, event), (True, ""))
+        self.assertFalse(ar.reviewed_here([not_risky, blocking], ar.SECOND))
+        self.assertTrue(ar.pending_first("labeled", [not_risky, blocking], ar.SECOND, event))
+        lines = "\n".join(json.dumps(s) for s in (not_risky, blocking)) + "\n"
+        env = {"ACTION": "labeled", "SENDER": "someone", "OWNER": "octocat", "LABEL": "security", "LABELS": '["security"]'}
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdin", io.StringIO(lines)), mock.patch("builtins.print") as printed:
+            self.assertEqual(ar.main(["second", "wanted", "labeled"]), 0)
+        self.assertEqual([c.args[0] for c in printed.call_args_list], ["wanted=true", "reason=", "reviewed=false", "pending=true"])
+
+    def test_pending_goes_up_only_before_a_label_event_s_review_that_will_run(self) -> None:
+        event = self.event(sender="octocat")
+        self.assertTrue(ar.pending_first("labeled", [], ar.SECOND, event))
+        self.assertTrue(ar.pending_first("unlabeled", [], ar.SECOND, event))
+        self.assertFalse(ar.pending_first("unlabeled", [], ar.SECOND, self.event(sender="someone")))
+        self.assertFalse(ar.pending_first("labeled", [], ar.SECOND, self.event(label="docs")))
+        verdict = [["Second review", "success", ar.BOT, "No blocking findings (0 advisory)"]]
+        self.assertFalse(ar.pending_first("labeled", verdict, ar.SECOND, event))
+        for action in ("opened", "synchronize", "reopened", "ready_for_review"):
+            self.assertFalse(ar.pending_first(action, [], ar.SECOND, event), action)
+        self.assertFalse(ar.pending_first("labeled", [], ar.FIRST, event))
 
 
 class Comment(unittest.TestCase):
