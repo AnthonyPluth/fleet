@@ -99,6 +99,14 @@ Neither app had one. The second review is new, in the same reusable workflow as 
 | --- | --- | --- | --- | --- |
 | A second review | — | — ("every review uses Sonnet and never Opus", owner decision) | The `second-review` job on `claude-fable-5-1`, fixed, on risky pull requests only: a label in `second-review-labels` (`safety-critical,security`) or a path in `second-review-paths` (`.github/**`, `.claude/**` always); its own "Second review" status and `<!-- second-review -->` comment; "Not a risky pull request" passes so the gate can require it everywhere; `labeled`/`unlabeled` run only it, and only the owner's `unlabeled` re-evaluates; budget 10, turns 120; the app's `invariants.md` required with `second-review-paths` | The owner's new rule supersedes Runway's; the first review stays Sonnet |
 
+## Review mining (`FLEET-MINING`)
+
+Neither app counted its review findings; both carried the rule that a repeated mistake becomes a check, with nobody to notice the repeats. The report is new ([review-mining.md](review-mining.md)).
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| Noticing repeats | By hand, when someone remembered | By hand | `review-mining.yml` and `fleet review-mine`: the reviews' hidden findings records (now with the reviewer's `check`), counted per AGENTS.md kind over the pull requests of the window, into one "Repeated review findings" issue rewritten each run, with a stable `row:` id and a "becomes an Agent task" checkbox per row; monthly by default, weekly as an option; no model, no secrets | The rule needs a counter, and counting needs no judgement |
+
 ## Opt-in workflows (`FLEET-OPTIONAL`)
 
 What each app runs beyond the core, as reusable workflows an app calls or doesn't ([adopting.md](adopting.md)). Each keeps its triggers, path filters and concurrency group in the caller.
