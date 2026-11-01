@@ -2,8 +2,7 @@ name: Self-test
 
 # Calls each of fleet's reusable workflows by local path, with `fleet-ref: ${{ github.sha }}` so it fetches its scripts
 # from this pull request's own commit rather than its FLEET_REF, and with test inputs. Each extraction issue adds its
-# case here; `fleet self-check` fails on a call without that fleet-ref. Until the first one lands, a no-op job keeps
-# the check present.
+# case here; `fleet self-check` fails on a call without that fleet-ref.
 on:
   pull_request:
 
@@ -19,10 +18,57 @@ defaults:
     shell: bash
 
 jobs:
-  noop:
-    name: No reusable workflows yet
+  # The security scans over fleet itself, in the mode a repository without code scanning uses (`sarif-upload: false`:
+  # a finding fails the job): Semgrep over fleet's own code and scripts, Trivy over the files, zizmor over the
+  # workflows; no web app, no image, no Scorecard (it never runs on a pull request anyway). The called jobs ask for
+  # `security-events: write`, so the caller grants it.
+  security:
+    name: Security scans
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/security.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      code-paths: ^(fleet_tools|\.github/scripts)/
+      semgrep-paths: fleet_tools .github/scripts
+      sarif-upload: false
+      scorecard: false
+
+  # With `sarif-upload: false`, the planted finding in the fixture tree (its own .semgrep rule flags its one line)
+  # must fail the Semgrep step: the step passes only when the script exits non-zero.
+  planted-finding:
+    name: A planted Semgrep finding fails without SARIF upload
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - run: echo "No reusable workflows to call yet; each extraction issue adds its case."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Semgrep over the planted fixture tree
+        env:
+          ROOT: tests/fixtures/security/planted
+          SARIF_UPLOAD: "false"
+          SEMGREP: pipx run semgrep==1.146.0
+        run: |
+          if .github/scripts/security-semgrep.sh; then
+            echo "::error::Semgrep passed over the planted finding"
+            exit 1
+          fi
+          echo "Semgrep failed on the planted finding, as it should."
+
+  # The deep-scan reminder in dry run on fleet itself: it reads fleet's issues and prints the issue it would open (or
+  # that one is open) without opening anything. The called job asks for `issues: write`, so the caller grants it.
+  deep-scan-due:
+    name: Deep scan due (dry run)
+    permissions:
+      issues: write
+    uses: ./.github/workflows/deep-scan-due.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
