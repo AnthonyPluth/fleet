@@ -1,0 +1,212 @@
+name: Screenshot diff
+
+# The reusable screenshot diff: which pixels of the committed screenshots a pull request changed (`fleet screenshot-diff`,
+# fleet_tools/screenshot_diff.py):
+#   - report.html, one self-contained page (no network, every image inline) with, for each changed screenshot, the tabs
+#     Reference, Actual and Slider and boxes around what changed. It is uploaded as an artifact that is not zipped
+#     (`archive: false`);
+#   - the sticky comment: the link to that page, one line of counts and a note, no list of screenshots;
+#   - summary.json (the facts for each file), uploaded the same way, for tools that want them.
+# Informational: it never fails a pull request for a diff, and the merge gate ignores it (its caller lists
+# "Screenshot diff" in `ignored-workflows`). Nothing is committed and no image is hosted anywhere. The artifact's link
+# works only for someone logged in to GitHub with access to the repository, so the comment says so.
+#
+# The caller (docs/adopting.md has the snippet) keeps the trigger and the concurrency group. It runs on every pull
+# request, not only on ones whose files include the screenshots: a push that reverts the last screenshot change leaves a
+# pull request with no screenshot in its diff, which a `paths:` filter would never run for, and its comment would keep
+# saying there were changes. A pull request without screenshot changes, and without an earlier comment, stops after a
+# git diff and one API call.
+#
+# `pull_request`, not `pull_request_target`: the token can only write the comment (a fork's is read-only, so the
+# comment is skipped there, and the job summary and the artifact are still made). The tool runs from fleet's checkout at
+# the pinned ref, installed with its Pillow extra and run with `python -I` (the pull request's checkout is not on the
+# path), so a pull request can't change the tool that reports on it. The images are the only pull request content it
+# reads, straight from git's objects, through Pillow with its decompression-bomb limit.
+on:
+  workflow_call:
+    inputs:
+      dir:
+        description: Where the committed screenshots live ("screenshots/" for Runway, "docs/src/assets/screenshots/" for Waypoint).
+        type: string
+        default: screenshots/
+      comment-marker:
+        description: The hidden first line the comment is found again by. Change it only if another comment in the repository already uses it.
+        type: string
+        default: "<!-- screenshot-diff -->"
+      runs-on:
+        description: The runner, as JSON ('"ubuntu-latest"', or a label array).
+        type: string
+        default: '"ubuntu-latest"'
+      dry-run:
+        description: Print the comment to the log instead of posting it; the report and summary.json are still uploaded.
+        type: boolean
+        default: false
+      fixture:
+        description: Two directories of PNGs in the caller's checkout, space-separated ("before after"), compared in a made-up repository instead of the pull request (fleet's self-test only).
+        type: string
+        default: ""
+      fleet-ref:
+        description: The fleet ref to run the tool from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step (without it, only
+# the last command in a pipeline counts, and a failed gh or curl passes silently).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  diff:
+    name: Compare
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read         # check out the pull request
+      pull-requests: write   # the comment
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      DIR: ${{ inputs.dir }}
+      MARKER: ${{ inputs.comment-marker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0   # the merge base of the pull request's base and head
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: |
+            fleet_tools
+            pyproject.toml
+            README.md
+            LICENSE
+          persist-credentials: false
+      # The self-test's stand-in for a pull request: the "before" set committed on main, the "after" set on a branch,
+      # in a repository of its own under the runner's temporary directory.
+      - name: Build the fixture repository
+        if: inputs.fixture != ''
+        id: fixture
+        env:
+          FIXTURE: ${{ inputs.fixture }}
+          FIXTURE_REPO: ${{ runner.temp }}/screenshot-diff-fixture
+        run: |
+          read -r before after <<< "$FIXTURE"
+          git init -q -b main "$FIXTURE_REPO"
+          git -C "$FIXTURE_REPO" config user.name fixture
+          git -C "$FIXTURE_REPO" config user.email fixture@example.invalid
+          mkdir -p "$FIXTURE_REPO/$DIR"
+          cp "$before"/*.png "$FIXTURE_REPO/$DIR"
+          git -C "$FIXTURE_REPO" add -A && git -C "$FIXTURE_REPO" commit -q -m before
+          git -C "$FIXTURE_REPO" checkout -q -b change
+          rm -f "${FIXTURE_REPO:?}/${DIR:?}"/*.png
+          cp "$after"/*.png "$FIXTURE_REPO/$DIR"
+          git -C "$FIXTURE_REPO" add -A && git -C "$FIXTURE_REPO" commit -q -m after
+          {
+            echo "repo=$FIXTURE_REPO"
+            echo "base=$(git -C "$FIXTURE_REPO" rev-parse main)"
+            echo "head=$(git -C "$FIXTURE_REPO" rev-parse change)"
+          } >> "$GITHUB_OUTPUT"
+      - name: See whether there is anything to do
+        id: look
+        env:
+          REPO_PATH: ${{ steps.fixture.outputs.repo || github.workspace }}
+          BASE_SHA: ${{ steps.fixture.outputs.base || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ steps.fixture.outputs.head || github.event.pull_request.head.sha }}
+        run: |
+          merge_base=$(git -C "$REPO_PATH" merge-base "$BASE_SHA" "$HEAD_SHA")
+          if [ -n "$(git -C "$REPO_PATH" diff --name-only "$merge_base" "$HEAD_SHA" -- "$DIR")" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The comment an earlier run left (the newest, if there are several): made by Actions and carrying the marker.
+          # Comment bodies are other people's text: jq only tests them for the marker, nothing of them is printed or run.
+          ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+                  --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains(env.MARKER))) | .id')
+          echo "comment=$(tail -n 1 <<< "$ids")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
+        if: steps.look.outputs.changed == 'true' || steps.look.outputs.comment != ''
+        with:
+          python-version: "3.13"
+      # fleet with its `images` extra (Pillow, pinned in fleet's pyproject.toml), from the checkout at the pinned ref.
+      - name: Install fleet with its image tools
+        if: steps.look.outputs.changed == 'true' || steps.look.outputs.comment != ''
+        run: python -m pip install --quiet "./.fleet[images]"
+      - name: Compare the screenshots
+        if: steps.look.outputs.changed == 'true' || steps.look.outputs.comment != ''
+        env:
+          OUT: ${{ runner.temp }}/screenshot-diff   # the runner context isn't available in a job's env, only in steps
+          REPO_PATH: ${{ steps.fixture.outputs.repo || github.workspace }}
+          BASE_SHA: ${{ steps.fixture.outputs.base || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ steps.fixture.outputs.head || github.event.pull_request.head.sha }}
+        run: |
+          python -I -m fleet_tools.cli screenshot-diff --repo "$REPO_PATH" --dir "$DIR" --marker "$MARKER" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --out "$OUT" --run-url "$RUN_URL"
+      # The page alone, not zipped: a zip would bury it. With `archive: false` the artifact is named after the file (the
+      # `name` input is ignored) and `artifact-url` is the link to it.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        id: report
+        if: steps.look.outputs.changed == 'true'
+        with:
+          path: ${{ runner.temp }}/screenshot-diff/report.html
+          archive: false
+          retention-days: 14
+          if-no-files-found: warn
+      # summary.json, the facts for each file, apart from the report. Nothing reads it today; it is kept for tools that might.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: steps.look.outputs.changed == 'true'
+        with:
+          path: ${{ runner.temp }}/screenshot-diff/summary.json
+          archive: false
+          retention-days: 14
+          if-no-files-found: warn
+      # The comment's link to the report is only known now, so the comment is rendered again from summary.json.
+      - name: Put the report's link in the comment
+        if: steps.look.outputs.changed == 'true' && steps.report.outputs.artifact-url != ''
+        env:
+          OUT: ${{ runner.temp }}/screenshot-diff
+          REPORT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: python -I -m fleet_tools.cli screenshot-diff --from-json "$OUT/summary.json" --out "$OUT" --run-url "$RUN_URL" --report-url "$REPORT_URL"
+      - name: Add the summary to the job
+        if: steps.look.outputs.changed == 'true'
+        env:
+          OUT: ${{ runner.temp }}/screenshot-diff
+        run: cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      # One comment, found again by its marker: each push updates it, and a push that leaves no screenshot change turns
+      # it into "no screenshot changes" rather than leaving it stale. A pull request that never had a comment and has no
+      # change gets none. A fork's token can't write, and a failure here (a permission, the API) must not fail the pull
+      # request: it only loses the comment. In dry run the comment goes to the log.
+      - name: Post or update the comment
+        if: steps.look.outputs.changed == 'true' || steps.look.outputs.comment != ''
+        continue-on-error: true
+        env:
+          COMMENT: ${{ steps.look.outputs.comment }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          OUT: ${{ runner.temp }}/screenshot-diff
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            echo "Dry run: the comment would be"
+            cat "$OUT/summary.md"
+            exit 0
+          fi
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::notice::A pull request from a fork has a read-only token: the comment is skipped (see the job summary and the artifact)."
+            exit 0
+          fi
+          if [ -n "$COMMENT" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$COMMENT" -F body=@"$OUT/summary.md" --silent
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$OUT/summary.md" --silent
+          fi

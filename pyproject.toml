@@ -7,6 +7,11 @@ license = "AGPL-3.0-only"
 requires-python = ">=3.11"
 dependencies = []   # standard library only, so a runner's system python3 runs it without Poetry
 
+# `fleet screenshot-diff` is the one command that needs more: Pillow, as the optional extra `images`
+# (`pip install "fleet[images]"`, which screenshot-diff.yml installs from fleet's checkout). Everything else stays standard library.
+[project.optional-dependencies]
+images = ["pillow>=12,<14"]
+
 [project.scripts]
 fleet = "fleet_tools.cli:main"
 
@@ -22,6 +27,7 @@ ruff = "0.17.2"
 mypy = "2.4.0"
 coverage = "7.17.0"
 zizmor = "1.31.1"
+pillow = "13.0.0"   # the `images` extra, pinned for the tests of fleet_tools/screenshot_diff.py
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

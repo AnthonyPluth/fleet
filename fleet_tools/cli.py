@@ -10,6 +10,7 @@ from fleet_tools import (
     drift,
     next_version,
     no_comments,
+    screenshot_diff,
     self_check,
     sync,
     test_timings,
@@ -43,6 +44,7 @@ register("next-version", Command(next_version.HELP, next_version.configure, next
 register("test-timings", Command(test_timings.HELP, test_timings.configure, test_timings.run))
 register("sync", Command(sync.HELP, sync.configure, sync.run))
 register("drift", Command(drift.HELP, drift.configure, drift.run))
+register("screenshot-diff", Command(screenshot_diff.HELP, screenshot_diff.configure, screenshot_diff.run))
 
 
 def version() -> str:
