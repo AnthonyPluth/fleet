@@ -215,8 +215,8 @@ class FindingsLine(unittest.TestCase):
         self.assertTrue(lines[1].startswith("<!-- agent-review-state "))
         self.assertTrue(lines[2].startswith("<!-- agent-review-findings "))
         self.assertEqual(ar.previous_findings(comment), [
-            {"severity": "blocking", "kind": "Failure paths", "title": "Drops rows", "file": "a.py"},
-            {"severity": "advisory", "kind": "other", "title": "Nit", "file": ""},
+            {"severity": "blocking", "kind": "Failure paths", "title": "Drops rows", "file": "a.py", "check": "a test"},
+            {"severity": "advisory", "kind": "other", "title": "Nit", "file": "", "check": ""},
         ])
         self.assertEqual(ar.previous_findings(ar.render([], "s", "u", "a" * 40)), [])
         self.assertEqual(ar.previous([comment])[:2], ("a" * 40, "blocking"))
