@@ -3,6 +3,7 @@ import re
 import unittest
 from typing import Any
 
+from fleet_tools import agent_review as ar
 from fleet_tools import cli, self_check
 
 WORKFLOWS = cli.ROOT / ".github" / "workflows"
@@ -52,7 +53,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         call = mapping(mapping(self.workflow["on"])["workflow_call"])
         self.assertEqual(sorted(call["inputs"]), sorted([
             "generated", "first-review", "budget-usd", "max-turns", "merge-gate-workflow", "fleet-ref", "dry-run", "fake-review",
-            "second-review-labels", "second-review-paths", "second-review-budget-usd", "second-review-max-turns", "fake-event",
+            "second-review-labels", "second-review-paths", "second-review-always", "second-review-budget-usd", "second-review-max-turns", "fake-event",
         ]))
         inputs = mapping(call["inputs"])
         self.assertEqual(mapping(inputs["first-review"])["default"], "true")
@@ -468,6 +469,34 @@ class LockedClaudeCodeTest(unittest.TestCase):
         self.assertEqual(npm[0]["directory"], "/.github/agent-review")
         self.assertEqual(mapping(npm[0]["schedule"])["interval"], "weekly")
         self.assertEqual(mapping(npm[0]["cooldown"])["default-days"], "7")
+
+
+def always_risky_in_caller() -> list[str]:
+    text = CALLER.read_text(encoding="utf-8")
+    found = re.search(r"^      second-review-always: \|\n((?:        .*\n)+)", text, re.MULTILINE)
+    assert found
+    return [line.strip() for line in found.group(1).splitlines() if line.strip()]
+
+
+class FleetsOwnSecondReviewScopeTest(unittest.TestCase):
+    def test_every_listed_path_exists(self) -> None:
+        for path in always_risky_in_caller():
+            if "*" not in path:
+                self.assertTrue((cli.ROOT / path).exists(), path)
+
+    def test_every_reusable_workflow_is_covered(self) -> None:
+        listed = always_risky_in_caller()
+        reusable = [path for path in sorted(WORKFLOWS.glob("*.yml")) if self_check.is_reusable(self_check.parse(path.read_text(encoding="utf-8")))]
+        self.assertTrue(reusable)
+        for path in reusable:
+            relative = path.relative_to(cli.ROOT).as_posix()
+            self.assertTrue(any(ar.matches(relative, pattern) for pattern in listed), relative)
+
+    def test_the_exempt_workflows_are_fleets_own_ci_only(self) -> None:
+        listed = always_risky_in_caller()
+        exempt = [path.name for path in sorted(WORKFLOWS.glob("*.yml"))
+                  if not any(ar.matches(path.relative_to(cli.ROOT).as_posix(), pattern) for pattern in listed)]
+        self.assertEqual(exempt, ["ci.yml", "self-test.yml"])
 
 
 if __name__ == "__main__":

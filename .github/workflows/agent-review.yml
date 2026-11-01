@@ -17,7 +17,7 @@ name: Agent review
 # and each run logs the turns and cost it took, to tune them by.
 #
 # A pull request is risky when it carries a label in second-review-labels (safety-critical or security by default) or
-# changes a path matching second-review-paths (globs with **; .github/** and .claude/** always count), decided by
+# changes a path matching second-review-paths (globs with **; second-review-always, by default .github/** and .claude/**, always counts), decided by
 # agent_review.py risky from the pull request's labels and files.txt; the comment says which. One that isn't gets a
 # passing "Second review" saying "Not a risky pull request", so a merge gate can require the status on every pull
 # request. labeled and unlabeled events run only the second review, which re-decides; an unlabeled event sent by anyone
@@ -109,6 +109,12 @@ on:
         description: Changed paths that make a pull request risky, one glob per line (`**` spans directories). `.github/**` and `.claude/**` always count. Setting this requires the caller's `.github/agent-review/invariants.md`.
         type: string
         default: ""
+      second-review-always:
+        description: Changed paths that always make a pull request risky, one glob per line (`**` spans directories). The default is every workflow and agent file (`.github/**` and `.claude/**`); a caller that wants the second review on fewer paths lists them here.
+        type: string
+        default: |
+          .github/**
+          .claude/**
       second-review-budget-usd:
         description: The most the second review may spend, in US dollars as Claude Code estimates it.
         type: string
@@ -602,6 +608,7 @@ jobs:
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           TRIGGER_LABELS: ${{ inputs.second-review-labels }}
           RISKY_PATHS: ${{ inputs.second-review-paths }}
+          ALWAYS_PATHS: ${{ inputs.second-review-always }}
           STUB: ${{ inputs.fake-review }}
           FAKE_EVENT: ${{ inputs.fake-review != '' && inputs.fake-event || '' }}
         run: |
@@ -697,6 +704,7 @@ jobs:
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           TRIGGER_LABELS: ${{ inputs.second-review-labels }}
           RISKY_PATHS: ${{ inputs.second-review-paths }}
+          ALWAYS_PATHS: ${{ inputs.second-review-always }}
           FAKE_EVENT: ${{ inputs.fake-review != '' && inputs.fake-event || '' }}
         run: python3 -I .fleet/fleet_tools/agent_review.py second risky review/files.txt review/reason.txt
 

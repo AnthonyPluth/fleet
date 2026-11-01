@@ -191,9 +191,9 @@ def changed_paths(files_text: str) -> list[str]:
 
 
 def risky(labels: Iterable[str], paths: Iterable[str], trigger_labels: Iterable[str],
-          patterns: Iterable[str]) -> tuple[bool, str]:
+          patterns: Iterable[str], always: Iterable[str] = ALWAYS_RISKY) -> tuple[bool, str]:
     reasons = [f"labelled `{label}`" for label in labels if label in set(trigger_labels)]
-    globs = [*ALWAYS_RISKY, *(p for p in patterns if p.strip())]
+    globs = [*(p for p in always if p.strip()), *(p for p in patterns if p.strip())]
     for path in paths:
         for pattern in globs:
             if matches(path, pattern):
@@ -553,7 +553,8 @@ def main(argv: list[str]) -> int:
     if len(argv) in (2, 3) and argv[0] == "risky":
         event = event_from_env(dict(os.environ))
         paths = event["files"] if event["files"] is not None else changed_paths(Path(argv[1]).read_text(encoding="utf-8"))
-        yes, reason = risky(event["labels"], paths, event["trigger_labels"], split_list(os.environ.get("RISKY_PATHS", ""), "\n"))
+        always = split_list(os.environ["ALWAYS_PATHS"], "\n") if "ALWAYS_PATHS" in os.environ else ALWAYS_RISKY
+        yes, reason = risky(event["labels"], paths, event["trigger_labels"], split_list(os.environ.get("RISKY_PATHS", ""), "\n"), always)
         append_outputs([f"risky={'true' if yes else 'false'}", f"reason={reason}"])
         if len(argv) == 3:
             Path(argv[2]).write_text(reason + "\n", encoding="utf-8")
