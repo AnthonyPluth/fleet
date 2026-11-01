@@ -1,0 +1,401 @@
+name: Agent review
+
+# The reusable first review: an independent review of every pull request an AI agent wrote. A fresh Claude Code
+# session, with no access to the session that wrote it, reads the change against main's AGENTS.md and the app's
+# .github/agent-review/context.md and posts its findings as a comment. Its verdict is the "Agent review" commit status
+# on the pull request's head, which the merge gate requires (merge-gate.yml): a blocking finding fails it, and so does
+# a review that couldn't run. A new push reviews again. This is fleet's one copy of the workflow Waypoint and Runway
+# each carried; the parts that differed are inputs (docs/agent-review.md, docs/drift.md).
+#
+# The owner's decisions on models: the first review, this one, runs on Sonnet for every agent's pull request, fixed in
+# the Review step below (no input changes it; a change is a fleet pull request), so a review never runs on a costlier
+# model. The second review, on risky pull requests only, runs on Fable as its own "Second review" status
+# (FLEET-SECOND-REVIEW). The most a review may spend is the budget-usd input (3 US dollars, as Claude Code estimates
+# a run's cost), the most round trips to the model max-turns (60); callers pass their AGENT_REVIEW_BUDGET_USD and
+# AGENT_REVIEW_MAX_TURNS variables. One that hits either fails as an error (never a pass), and each run logs the turns
+# and cost it took, to tune them by.
+#
+# The caller (docs/adopting.md has the snippet) declares the triggers, because a called workflow can't:
+# pull_request_target on main, for [opened, synchronize, reopened, ready_for_review, labeled, unlabeled], and passes
+# the secrets by name (secrets: inherit isn't for cross-owner reuse and would hand over every secret). A re-review
+# reads what changed since the last one: the comment's hidden state line records the commit it read and its verdict,
+# and when the new head descends from it the reviewer also gets that review's findings and the diff since (in the
+# pull request's own files), to check each finding is fixed and read the new lines closely (the whole diff stays in
+# front of it, and its findings replace the earlier ones). Without a usable earlier commit (none, rebased away, or
+# anything failing) it reviews the whole change. A push that only merges main in is not reviewed again when the last
+# review passed: if every commit since it is a merge and the pull request's own change (its diff against where it
+# meets main, blob ids included) is byte for byte the one that was reviewed, that "Agent review" verdict is copied to
+# the new head, saying so. A blocking or failed review is never carried forward, anything that can't be proved
+# identical is reviewed, and the merge gate still requires the status on the head commit itself.
+# ready_for_review reviews only when the head has no "Agent review" status yet (a draft already reviewed isn't paid
+# for twice); labeled and unlabeled don't run the first review at all (only the second review reacts to them), and the
+# concurrency group is the review job's, not the workflow's, so a label event can't cancel a running review.
+#
+# The diff the reviewer reads leaves out the files the `generated` input names, lockfiles and images (agent_review.py,
+# the one list); files.txt and omitted.txt still list them. Fixtures, demo and sample data are never left out unless
+# `generated` names them (they are where a real record is likeliest to land), and the prompt has the reviewer read them
+# and open every changed image to look for private data: the apps' repositories are public and this review is the
+# only check for it. Documentation is always reviewed, for the same reason. Each finding carries a `kind` (the
+# AGENTS.md "Mistakes that keep coming back" item it falls under) and the comment's third hidden line carries the
+# findings as data, for the monthly mining of repeated findings (FLEET-MINING).
+#
+# An agent's pull request is one whose commits carry a Claude-Session or a Claude Co-Authored-By trailer, or whose
+# description says Claude Code generated it (fleet_tools/agent_review.py). Anyone else's gets a passing status saying
+# so; Dependabot's get none (the merge gate doesn't ask for one).
+#
+# Why pull_request_target: it runs the caller's main copy of the caller and, through it, fleet's workflow, prompt and
+# scripts at the pinned ref, so a pull request can't change how it is reviewed (with pull_request it could edit the
+# caller to pass itself). The cost is that the job sees secrets while the pull request's code is checked out, so that
+# code is never run, built or installed: it is only read, by a reviewer (.github/scripts/agent-review-run.sh) whose
+# only tools are Read, Grep and Glob, confined to the review's directory (no shell, no writing, no network tools, no
+# MCP servers), that loads no settings, hooks, skills, plugins or CLAUDE.md (the pull request's included) and holds
+# no GitHub token. The secrets appear only in the Review step's env, and that step runs nothing from the pull
+# request's checkout. Branches from forks aren't reviewed (that would spend the secret on anyone's pull request): an
+# agent's from a fork fails, for a maintainer to push to a branch here. Posting the comment and the status happens in
+# the report job, with the write token, which never sees the code or the secrets.
+#
+# What the review is judged by comes from two trusted checkouts, never the pull request: fleet at the pinned ref
+# (the prompt, the answer's schema, the locked Claude Code, the runner script and agent_review.py) and the caller's
+# base commit (AGENTS.md and .github/agent-review/context.md, which describes the app and what private data looks like
+# there; a consumer without it gets an error status naming the file).
+on:
+  workflow_call:
+    inputs:
+      generated:
+        description: Paths left out of diff.patch (still listed for the reviewer), one per line. An entry here wins over the rule that fixtures, demo and sample data are always read.
+        type: string
+        default: ""
+      first-review:
+        description: Run the first review and post its "Agent review" status and comment. false posts neither (a consumer that keeps the first review off).
+        type: boolean
+        default: true
+      budget-usd:
+        description: The most a review may spend, in US dollars as Claude Code estimates it (callers pass their AGENT_REVIEW_BUDGET_USD variable, or '3').
+        type: string
+        default: "3"
+      max-turns:
+        description: The most round trips to the model a review may take (callers pass their AGENT_REVIEW_MAX_TURNS variable, or '60').
+        type: string
+        default: "60"
+      merge-gate-workflow:
+        description: The caller's merge gate workflow file to start once the status is set (setting a status starts none by itself). Empty starts none.
+        type: string
+        default: merge-gate.yml
+      dry-run:
+        description: Self-test only. The report job prints the comment and the status instead of posting them and starts no merge gate.
+        type: boolean
+        default: false
+      fake-review:
+        description: Self-test only. The answer fleet's stub reviewer (tests/fakes/claude) gives in place of Claude Code, which then isn't installed and needs no secret (pass, advisory, blocking or malformed). Empty runs the real reviewer.
+        type: string
+        default: ""
+      fleet-ref:
+        description: The fleet ref to fetch the prompt, scripts and tools from (the self-test passes its own commit).
+        type: string
+        default: ""
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: An API key to review with. Wins when both secrets are set.
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: A Claude Pro or Max subscription's token (`claude setup-token`) to review with.
+        required: false
+    outputs:
+      verdict:
+        description: pass, blocking, error, or skip (nothing posted); empty when the review job didn't run.
+        value: ${{ jobs.review.outputs.verdict }}
+      description:
+        description: The "Agent review" status description that goes with the verdict.
+        value: ${{ jobs.review.outputs.description }}
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  review:
+    name: Review
+    # Dependabot's pull requests aren't reviewed, and a label event starts no first review (the job's `if` keeps it out
+    # of the concurrency group below, so a running review isn't cancelled by one).
+    if: >-
+      inputs.first-review &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action)
+    runs-on: ubuntu-latest   # hosted: reads untrusted pull request content with secrets in reach
+    timeout-minutes: 30
+    # A newer push replaces a review still running (github.ref is main's on pull_request_target).
+    concurrency:
+      group: agent-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}
+      cancel-in-progress: true
+    permissions:
+      contents: read           # check out fleet, main's instructions and the pull request's code
+      pull-requests: read      # its commits and the last review's comment
+      statuses: read           # whether that review passed, and whether this head has one
+    outputs:
+      verdict: ${{ steps.result.outputs.verdict }}
+      description: ${{ steps.result.outputs.description }}
+      comment: ${{ steps.result.outputs.comment }}
+    steps:
+      # fleet at the pinned ref: the prompt, the schema, the locked Claude Code, the runner script, agent_review.py and
+      # the stub reviewer the self-test uses.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: |
+            .github/agent-review
+            .github/scripts
+            fleet_tools
+            tests/fakes
+          persist-credentials: false
+
+      # The caller's base commit: its AGENTS.md and .github/agent-review/context.md, what the review is judged by.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          sparse-checkout: .github/agent-review
+          persist-credentials: false
+
+      # Whether this is an agent's pull request from this repository, whether this event reviews it (ready_for_review
+      # on a head that already has an "Agent review" status doesn't), and whether the caller has a context.md.
+      - name: Is this an agent's pull request to review
+        id: who
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BODY: ${{ github.event.pull_request.body }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          STUB: ${{ inputs.fake-review }}
+        run: |
+          agent=$(gh api --paginate "repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @json' \
+                    | python3 -I .fleet/fleet_tools/agent_review.py detect)
+          same_repo=$([ "$HEAD_REPO" = "$REPO" ] && echo true || echo false)
+          # Self-test only: the pull request that adds context.md has none on its base yet, so the stub falls back to fleet's own.
+          if [ -n "$STUB" ] && [ ! -s trusted/.github/agent-review/context.md ]; then
+            mkdir -p trusted/.github/agent-review
+            cp .fleet/.github/agent-review/context.md trusted/.github/agent-review/context.md
+          fi
+          context=$([ -s trusted/.github/agent-review/context.md ] && echo true || echo false)
+          statuses=""
+          if [ "$ACTION" = ready_for_review ]; then
+            statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" \
+                         --jq '.[] | [.context, .state, .creator.login] | @json')
+          fi
+          python3 -I .fleet/fleet_tools/agent_review.py wanted "$ACTION" <<< "$statuses" > "$RUNNER_TEMP/wanted.txt"
+          review=false
+          if [ "$agent" = true ] && [ "$same_repo" = true ] && [ "$context" = true ] && grep -qx 'wanted=true' "$RUNNER_TEMP/wanted.txt"; then
+            review=true
+          fi
+          { echo "agent=$agent"; echo "same_repo=$same_repo"; echo "context=$context"; echo "review=$review"; cat "$RUNNER_TEMP/wanted.txt"; } | tee -a "$GITHUB_OUTPUT"
+
+      # The last review's comment, while no code of the pull request is checked out (this and the step above are the
+      # only ones with a token): the commit it read, its findings and whether it passed. If this fails (no outputs),
+      # nothing is carried forward, and the review reads the whole change as if it were the first.
+      - name: The last review
+        id: prev
+        if: steps.who.outputs.review == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body | @json' > "$RUNNER_TEMP/comments.jsonl"
+          read -r sha verdict < <(python3 -I .fleet/fleet_tools/agent_review.py previous \
+                                    "$RUNNER_TEMP/comments.jsonl" "$RUNNER_TEMP/previous-review.md") || true
+          # The newest "Agent review" status on the commit it read, if this workflow set it (newest first).
+          state=""
+          if [[ "${sha:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            state=$(gh api --paginate "repos/$REPO/commits/$sha/statuses?per_page=100" \
+                      --jq '.[] | select(.context == "Agent review") | [.state, .creator.login] | @tsv' \
+                    | awk -F'\t' 'NR == 1 && $2 == "github-actions[bot]" { print $1 }')
+          fi
+          { echo "sha=${sha:-}"; echo "verdict=${verdict:-}"; echo "state=$state"; } | tee -a "$GITHUB_OUTPUT"
+
+      # The pull request's code, to read only: nothing in it is run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        if: steps.who.outputs.review == 'true'
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0       # main's history too, for the diff against where it branched
+          path: review/pr
+
+      # Beside it in review/: the prompt, the schema of the answer, AGENTS.md and context.md; and the change itself,
+      # with the last review's findings and what changed since when it read an earlier commit of this one
+      # (agent_review.py plan, which only reads the checkout with git: no hooks, no external diff or textconv drivers).
+      - name: Gather the change
+        id: plan
+        if: steps.who.outputs.review == 'true'
+        env:
+          MAIN: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PREV_SHA: ${{ steps.prev.outputs.sha }}
+          PREV_VERDICT: ${{ steps.prev.outputs.verdict }}
+          PREV_STATE: ${{ steps.prev.outputs.state }}
+          GENERATED: ${{ inputs.generated }}
+          REPO_DIR: review/pr
+          OUT_DIR: review
+          TRUSTED: .fleet/.github/agent-review
+        run: |
+          cp trusted/AGENTS.md trusted/.github/agent-review/context.md \
+             .fleet/.github/agent-review/prompt.md .fleet/.github/agent-review/schema.json review/
+          if [ -n "$PREV_SHA" ] && [ -s "$RUNNER_TEMP/previous-review.md" ]; then export PREV_BODY="$RUNNER_TEMP/previous-review.md"; fi
+          python3 -I .fleet/fleet_tools/agent_review.py plan
+          echo "$(wc -l < review/files.txt) file(s), $(wc -l < review/diff.patch) diff line(s), $(wc -l < review/omitted.txt) left out"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
+        if: steps.plan.outputs.mode == 'review' && inputs.fake-review == ''
+        with:
+          node-version-file: .fleet/.github/agent-review/package.json
+          package-manager-cache: false
+
+      # At the version fleet's .github/agent-review/package-lock.json locks, installed in $RUNNER_TEMP, outside every
+      # checkout and none of their parents (so no .npmrc of the pull request's applies). Only when a review runs.
+      - name: Install Claude Code
+        if: steps.plan.outputs.mode == 'review' && inputs.fake-review == ''
+        run: |
+          mkdir -p "$RUNNER_TEMP/claude-code"
+          cp .fleet/.github/agent-review/package.json .fleet/.github/agent-review/package-lock.json "$RUNNER_TEMP/claude-code/"
+          cd "$RUNNER_TEMP/claude-code"
+          npm ci --no-audit --no-fund
+          node_modules/.bin/claude --version
+
+      # The reviewer, in review/ (fleet's script; see it for how it is isolated), with whichever secret is set. The
+      # only step that holds a secret; it runs nothing from the pull request's checkout, and the script replaces an
+      # answer that quotes the secret with an error before the Verdict step reads it.
+      - name: Review
+        id: review
+        if: steps.plan.outputs.mode == 'review' && inputs.fake-review == ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE: ${{ runner.temp }}/claude-code/node_modules/.bin/claude
+          MODEL: sonnet
+          BUDGET: ${{ inputs.budget-usd }}
+          MAX_TURNS: ${{ inputs.max-turns }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret to review with."
+            echo "secret=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "secret=true" >> "$GITHUB_OUTPUT"
+          cd review
+          ../.fleet/.github/scripts/agent-review-run.sh
+
+      # The self-test's stand-in for the step above: fleet's stub reviewer, the same script, no secret.
+      - name: Review with the stub reviewer (self-test)
+        if: steps.plan.outputs.mode == 'review' && inputs.fake-review != ''
+        env:
+          ANTHROPIC_API_KEY: not-a-key-the-stub-reviewer-reads-none
+          CLAUDE: ${{ github.workspace }}/.fleet/tests/fakes/claude
+          FAKE_REVIEW: ${{ inputs.fake-review }}
+          MODEL: sonnet
+          BUDGET: ${{ inputs.budget-usd }}
+          MAX_TURNS: ${{ inputs.max-turns }}
+        run: |
+          cd review
+          ../.fleet/.github/scripts/agent-review-run.sh
+
+      - name: Verdict
+        id: result
+        env:
+          AGENT: ${{ steps.who.outputs.agent }}
+          SAME_REPO: ${{ steps.who.outputs.same_repo }}
+          CONTEXT: ${{ steps.who.outputs.context }}
+          WANTED: ${{ steps.who.outputs.wanted }}
+          REASON: ${{ steps.who.outputs.reason }}
+          MODE: ${{ steps.plan.outputs.mode }}
+          PLANNED: ${{ steps.plan.outputs.description }}
+          SECRET: ${{ steps.review.outputs.secret }}
+          STUB: ${{ inputs.fake-review }}
+          REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}   # in the comment, for the next push's re-review
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$WANTED" != true ]; then
+            { echo "verdict=skip"; echo "description=$REASON"; echo "comment="; } >> "$GITHUB_OUTPUT"
+          elif [ "$AGENT" != true ]; then
+            { echo "verdict=pass"; echo "description=Not an agent's pull request"; echo "comment="; } >> "$GITHUB_OUTPUT"
+          elif [ "$SAME_REPO" != true ]; then
+            { echo "verdict=error"; echo "description=Agents' pull requests are reviewed only from this repository's branches"; echo "comment="; } >> "$GITHUB_OUTPUT"
+          elif [ "$CONTEXT" != true ]; then
+            { echo "verdict=error"; echo "description=No .github/agent-review/context.md on main to review against"; echo "comment="; } >> "$GITHUB_OUTPUT"
+          elif [ "$MODE" = carry ]; then
+            # The last review's comment stays as it is: it, and its state line, describe the commit it read.
+            { echo "verdict=pass"; echo "description=$PLANNED"; echo "comment="; } >> "$GITHUB_OUTPUT"
+          elif [ -z "$STUB" ] && [ "$SECRET" != true ]; then
+            { echo "verdict=error"; echo "description=No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret to review with"; echo "comment="; } >> "$GITHUB_OUTPUT"
+          else
+            python3 -I .fleet/fleet_tools/agent_review.py report review/output.json
+          fi
+
+  # Posts what the review found: the comment, the "Agent review" status, and asks the merge gate to decide again
+  # (setting a status starts no workflow by itself). It never sees the pull request's code or the secrets. With
+  # dry-run it prints what it would post. A skip (a label event, a draft already reviewed) posts nothing.
+  report:
+    name: Report
+    needs: review
+    if: >-
+      !cancelled() && inputs.first-review &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action)
+    runs-on: ubuntu-latest   # hosted: holds the write token for the comment and the status
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write     # the comment
+      statuses: write          # the "Agent review" status
+      actions: write           # start the merge gate
+    steps:
+      - name: Post the review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RESULT: ${{ needs.review.result }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          DESCRIPTION: ${{ needs.review.outputs.description }}
+          COMMENT: ${{ needs.review.outputs.comment }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MERGE_GATE: ${{ inputs.merge-gate-workflow }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          run() { if [ "$DRY_RUN" = true ]; then echo "(dry run) $*"; else "$@" > /dev/null; fi; }
+          case "$RESULT:$VERDICT" in
+            success:skip) echo "Nothing to post: $DESCRIPTION"; exit 0 ;;
+            success:pass) state=success ;;
+            success:blocking) state=failure ;;
+            *) state=error; [ -n "$DESCRIPTION" ] || DESCRIPTION="The review didn't finish; see the run" ;;
+          esac
+          echo "$state: $DESCRIPTION"
+          if [ -n "$COMMENT" ]; then
+            base64 -d <<< "$COMMENT" > comment.md
+            if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
+            # One comment per pull request, updated by each review (the marker is its first line).
+            existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+                         --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- agent-review -->"))) | .id')
+            existing=${existing%%$'\n'*}
+            if [ -n "$existing" ]; then
+              run gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@comment.md
+            else
+              run gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md
+            fi
+          fi
+          run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="$state" -f context="Agent review" \
+            -f description="${DESCRIPTION:0:140}" -f target_url="$RUN_URL"
+          if [ -n "$MERGE_GATE" ]; then
+            run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
+          fi

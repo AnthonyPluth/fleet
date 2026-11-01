@@ -1,0 +1,11 @@
+{
+  "name": "fleet-agent-review",
+  "private": true,
+  "description": "The Claude Code version .github/workflows/agent-review.yml runs, locked (npm ci); setup-node reads engines.node.",
+  "engines": {
+    "node": "26"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.289"
+  }
+}

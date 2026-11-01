@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fleet_tools import (
+    agent_review,
     coverage_floor,
     drift,
     next_version,
@@ -44,6 +45,7 @@ register("next-version", Command(next_version.HELP, next_version.configure, next
 register("test-timings", Command(test_timings.HELP, test_timings.configure, test_timings.run))
 register("sync", Command(sync.HELP, sync.configure, sync.run))
 register("drift", Command(drift.HELP, drift.configure, drift.run))
+register("agent-review", Command(agent_review.HELP, agent_review.configure, agent_review.run))
 register("screenshot-diff", Command(screenshot_diff.HELP, screenshot_diff.configure, screenshot_diff.run))
 
 

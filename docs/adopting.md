@@ -82,6 +82,58 @@ jobs:
 Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `fleet-ref`.
 
 
+## Agent review
+
+`.github/workflows/agent-review.yml` (`workflow_call`) is the independent first review of every agent's pull request: a fresh Claude Code session on Sonnet reads the change against main's `AGENTS.md` and the app's `.github/agent-review/context.md`, posts one comment and sets the "Agent review" status the merge gate requires. The design, the re-review, the carried-forward verdict and the reviewer's isolation are in [agent-review.md](agent-review.md).
+
+The caller keeps the triggers and passes the secrets by name (`secrets: inherit` would hand over every secret). It runs from main's copy (`pull_request_target`), so a pull request can't change how it is reviewed, and grants the permissions the called jobs ask for.
+
+```yaml
+name: Agent review
+
+on:  # zizmor: ignore[dangerous-triggers] -- runs main's workflow; the pull request's code is only read, never run
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  review:
+    permissions:
+      contents: read           # main's instructions and the pull request's code
+      pull-requests: write     # the comment
+      statuses: write          # the "Agent review" status
+      actions: write           # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # vX.Y.Z
+    with:
+      generated: |
+        docs/openapi.json
+        frontend/src/lib/api-types.ts
+        docs/feature-map.json
+        docs/src/content/docs/contributing/feature-map.md
+      budget-usd: ${{ vars.AGENT_REVIEW_BUDGET_USD || '3' }}
+      max-turns: ${{ vars.AGENT_REVIEW_MAX_TURNS || '60' }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+The app adds `.github/agent-review/context.md` (what the app is, what private data looks like in its repository and where it would land, which files are generated and what checks cover them, which `AGENTS.md` sections matter most; without it every review is an `error` status naming the file) and drops its own `agent-review.yml` body, `.github/agent-review/`, `.github/scripts/agent-review-run.sh`, `.github/scripts/agent_review.py`, `tests/test_agent_review.py` and the Dependabot entry for `/.github/agent-review`: fleet locks the Claude Code version for everyone. Its `AGENTS.md` "Mistakes that keep coming back" items keep bold titles, which findings cite as their `kind`.
+
+| Input | Default | What |
+| --- | --- | --- |
+| `generated` | none | Paths left out of `diff.patch` (still listed for the reviewer), one per line. An entry wins over the rule that fixtures, demo and sample data are always read (Runway lists `tests/fixtures/forecast_golden.json`) |
+| `first-review` | `true` | `false` runs no review and posts no status or comment (a consumer that keeps the first review off) |
+| `budget-usd` | `3` | The most a review may spend, in US dollars as Claude Code estimates it |
+| `max-turns` | `60` | The most round trips to the model a review may take |
+| `merge-gate-workflow` | `merge-gate.yml` | The caller's merge gate workflow file to start once the status is set; empty starts none |
+| `dry-run` | `false` | Self-test only: the report job prints the comment and the status instead of posting them |
+| `fake-review` | none | Self-test only: the answer fleet's stub reviewer gives in place of Claude Code (`pass`, `advisory`, `blocking`, `malformed`) |
+| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the prompt, scripts and tools from (fleet's self-test only) |
+
+Secrets, both optional and passed by name: `ANTHROPIC_API_KEY` (an API key, which wins when both are set) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Pro or Max subscription's token from `claude setup-token`). Outputs: `verdict` (`pass`, `blocking`, `error`, `skip`) and `description`. The model is `sonnet` and not an input: changing it is a fleet pull request.
+
 ## The `fleet` command
 
 `fleet_tools` is standard library only (Python 3.11 or newer), so a runner's system `python3` runs it from a checkout of fleet with nothing installed:
@@ -99,6 +151,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet coverage-floor [coverage.json]` | coverage.py's JSON report against `[tool.fleet.coverage]`. | 0, 1, 2 (no floors, or no report) |
 | `fleet next-version [--sha] [--output]` | The next release version from the commits since the last tag (`feat:` a minor; `!:`, `BREAKING CHANGE:` or a trailing `#major` a major; else a patch; a trailing `#minor` a minor). Appends `newest`, then `version` and `new`, or `skip`, to `$GITHUB_OUTPUT`. Replaces `.github/scripts/next-version.sh`. | 0, 1 a failing `git` |
 | `fleet test-timings DIR [--top N]` | Sums up the per-test timing files a timing test result wrote. | 0 |
+| `fleet agent-review detect\|wanted\|previous\|plan\|report` | The agent review's decisions, run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
 
 ## `[tool.fleet]`
 

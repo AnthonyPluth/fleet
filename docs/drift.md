@@ -67,6 +67,31 @@ The decisions the backlog made before the extractions; each extraction issue rep
 | "Git and PRs" readiness | Merge gate; Codex comments instead of the review | Merge gate including Agent review | Merge gate including "Agent review" and, on a risky pull request, "Second review" | The planned review gate (above); Waypoint decides in WP-REVIEW-DECISION |
 | Screenshots bullet | `docs/src/assets/screenshots/` | `screenshots/`, `make screenshots` | Stays app text in "Git and PRs" | Two layouts |
 
+## Agent review (`FLEET-REVIEW`)
+
+Waypoint's and Runway's `agent-review.yml`, `agent_review.py`, `agent-review-run.sh`, prompts and tests became one reusable workflow, `fleet_tools/agent_review.py` and one prompt ([agent-review.md](agent-review.md)). The design both shared (`pull_request_target` runs main's copy; the `review` job reads the code and holds the secret, the `report` job posts with the write token and sees neither; a re-review reads the diff since the last reviewed commit; a push that only merges main carries a passing verdict forward) is unchanged.
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| The trigger | Disabled ("Codex reviews pull requests now"; `workflow_dispatch` only) | `pull_request_target` on `[opened, synchronize, reopened, ready_for_review]` | The caller declares `pull_request_target` on `main` with `[opened, synchronize, reopened, ready_for_review, labeled, unlabeled]`; `first-review: false` for a consumer that keeps the first review off | A called workflow can't declare triggers; the label events are for the second review |
+| `ready_for_review` | Not a trigger | Reviews again | Reviews only when the head has no "Agent review" status yet (`wanted`) | Runway's coverage of drafts without paying twice for a reviewed one |
+| Label events | — | — | Run no first review; the concurrency group is the review job's, so they can't cancel a running review | Only `FLEET-SECOND-REVIEW` reacts to labels |
+| `GENERATED` | The API contract and the feature map, hard-coded | The same plus `tests/fixtures/forecast_golden.json` | The `generated` input, one path per line | Each app's generated files are its own |
+| Fixtures, demo and sample data | Never left out of the diff (`SAMPLE_DATA`) | Left out when in `GENERATED` | Never left out unless `generated` names the file: an explicit entry wins | The privacy check is the review's job; Runway's golden fixture stays out by listing it |
+| `IMAGES` | `.png .jpg .jpeg .gif .webp .avif .ico .heic .bmp .tif .tiff` | `.png .jpg .jpeg .gif .webp .avif .ico` | Waypoint's | The wider list |
+| Docstrings | None; a `USAGE` string | Module and function docstrings explaining the decisions | Waypoint's style; Runway's explanations moved to `docs/agent-review.md` | fleet's no-docstrings convention |
+| The prompt | Travel wording: travellers' data, mail and flight fixtures, `waypoint/domain/demo.py` | Finance wording: balances, merchants, the golden fixture | One generic `prompt.md`; the app, what private data looks like there, where it lands and what is generated come from the consumer's `.github/agent-review/context.md` (required; missing is an `error` status naming the file) | One prompt to maintain |
+| `incremental.md` | Re-reads fixture, demo and sample lines for private data | Doesn't say so | Waypoint's | The fuller instruction |
+| The model | `sonnet`, no variable | `sonnet`, no variable; the header records the owner's "never Opus" decision | `sonnet` fixed in the workflow, no input; the header records the decisions: Sonnet first review on every agent PR, Fable second review on risky PRs | The owner's rule; a change is a fleet pull request |
+| Budget and turns | `vars.AGENT_REVIEW_BUDGET_USD`, `vars.AGENT_REVIEW_MAX_TURNS` | The same | Inputs `budget-usd` (3) and `max-turns` (60); callers pass their variables | A called workflow doesn't read the caller's `vars` |
+| Findings | `severity`, `title`, `detail`, `file`, `line` | The same | Plus required `kind` (the AGENTS.md "Mistakes that keep coming back" item, or `other`) and optional `check`; the comment's third hidden line carries the findings as data (at most 8 KB) | `FLEET-MINING` reads them |
+| The secret check | `report` had both secrets in its `env` to refuse an answer that quotes one | The same | The secrets appear only in the Review step's `env`; `agent-review-run.sh` replaces an answer that quotes the secret with an error result (`error_secret_in_answer`) before the Verdict step; `report()` still refuses one when its environment has a secret | One step with a secret instead of two |
+| Node for Claude Code | `trusted/.nvmrc` | The same | `engines.node` in fleet's `.github/agent-review/package.json`, read by `setup-node` | fleet has no `.nvmrc`; the one manifest holds both versions |
+| Claude Code's version | `.github/agent-review/package-lock.json`, Dependabot npm entry | The same | fleet's lockfile and Dependabot entry; consumers drop theirs | One version for every review |
+| Trusted inputs | `trusted/` sparse checkout of main's `.github/agent-review` and `.github/scripts` | The same | fleet at `FLEET_REF` (`.fleet/`: `.github/agent-review`, `.github/scripts`, `fleet_tools`, `tests/fakes`) and the consumer's base commit (`trusted/`: `AGENTS.md`, `.github/agent-review/context.md`) | The tools come from fleet, the standard from the app |
+| Self-test | None | None | The reusable workflow on fleet's pull requests with `dry-run: true` and `fake-review` (the stub `tests/fakes/claude`: pass, blocking, malformed → error); fleet dogfoods the real review through `agent-review-caller.yml` | The plumbing is tested without a secret |
+| `tests/test_agent_review.py` | 558 lines, the Plan cases above | 452 lines, a subset | The union, on `fleet_tools.agent_review`, plus the new decisions | No case lost |
+
 ## Opt-in workflows (`FLEET-OPTIONAL`)
 
 What each app runs beyond the core, as reusable workflows an app calls or doesn't ([adopting.md](adopting.md)). Each keeps its triggers, path filters and concurrency group in the caller.
