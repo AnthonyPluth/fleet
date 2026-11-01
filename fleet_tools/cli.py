@@ -7,9 +7,11 @@ from pathlib import Path
 
 from fleet_tools import (
     coverage_floor,
+    drift,
     next_version,
     no_comments,
     self_check,
+    sync,
     test_timings,
 )
 from fleet_tools.checks import runner
@@ -39,6 +41,8 @@ register("no-comments", Command(no_comments.HELP, no_comments.configure, no_comm
 register("coverage-floor", Command(coverage_floor.HELP, coverage_floor.configure, coverage_floor.run))
 register("next-version", Command(next_version.HELP, next_version.configure, next_version.run))
 register("test-timings", Command(test_timings.HELP, test_timings.configure, test_timings.run))
+register("sync", Command(sync.HELP, sync.configure, sync.run))
+register("drift", Command(drift.HELP, drift.configure, drift.run))
 
 
 def version() -> str:
