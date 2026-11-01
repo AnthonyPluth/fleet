@@ -25,3 +25,6 @@ flows = "frontend/verify/flows"
 path = ".claude/skills/verify-runway/references/cli.md"
 command = "make --no-print-directory -s verify-skill-print"
 fix = "make verify-skill"
+
+[tool.fleet.verification]
+required = false

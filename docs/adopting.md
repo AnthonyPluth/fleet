@@ -189,7 +189,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 
 | Command | What it does | Exit codes |
 | --- | --- | --- |
-| `fleet checks [--commits BASE..HEAD]` | Every check the app's `[tool.fleet]` configures. With `--commits` (a pull request's range; BASE is merged with HEAD to find where the branch left), also the commit trailers, removed or skipped tests and committed images. The one entry point for `make fleet-checks` and CI. | 0 all passed (the line lists what ran), 1 problems (one per line on stderr, `::error::` on GitHub Actions), 2 a config error or a failing `git` |
+| `fleet checks [--commits BASE..HEAD] [--pr-event PATH]` | Every check the app's `[tool.fleet]` configures. With `--commits` (a pull request's range; BASE is merged with HEAD to find where the branch left), also the commit trailers, removed or skipped tests and committed images. With `--pr-event` (a pull request event payload, `$GITHUB_EVENT_PATH` on Actions) and `[tool.fleet.verification]`, also the description's [verification record](#verification-records). The one entry point for `make fleet-checks` and CI. | 0 all passed (the line lists what ran; a warning is a `warning:` line, `::warning::` on GitHub Actions, and still 0), 1 problems (one per line on stderr, `::error::` on GitHub Actions), 2 a config error or a failing `git` |
 | `fleet no-comments` | No comments or docstrings in tracked Python, CSS and Svelte. Opt-in: does nothing without `[tool.fleet.no-comments]`. | 0, 1, 2 |
 | `fleet coverage-floor [coverage.json]` | coverage.py's JSON report against `[tool.fleet.coverage]`. | 0, 1, 2 (no floors, or no report) |
 | `fleet next-version [--sha] [--output]` | The next release version from the commits since the last tag (`feat:` a minor; `!:`, `BREAKING CHANGE:` or a trailing `#major` a major; else a patch; a trailing `#minor` a minor). Appends `newest`, then `version` and `new`, or `skip`, to `$GITHUB_OUTPUT`. Replaces `.github/scripts/next-version.sh`. | 0, 1 a failing `git` |
@@ -197,6 +197,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet review-outcomes --repo OWNER/NAME --pr N [--json] [--second]` | What became of each of a pull request's review findings: `open`, `resolved` by a later push, or `dismissed` by the owner with `/fleet dismiss f:<id> <reason>` ([agent-review.md](agent-review.md)). Reads the review comment and the pull request's comments with `gh`. | 0, 1 a failing `gh` |
 | `fleet agent-review [second] detect\|wanted\|previous\|plan\|risky\|report` | The agent reviews' decisions (`second` for the second review's marker, status and rules), run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
 | `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--summary FILE] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings records on the pull requests updated in the window, run by `review-mining.yml` ([review-mining.md](review-mining.md)). | 0, 1 a failing `gh api`, 2 usage |
+| `fleet verification show (--pr N \| --body-file PATH) [--json]` | The verification record in a pull request's description ([Verification records](#verification-records)): from pull request N in the current repository (`gh api repos/{owner}/{repo}/pulls/N --jq .body`) or a file (`-` is stdin). Text has mentions and HTML comments defused; `--json` prints `{"pr": N or null, "dimensions": [{"dimension", "status", "how", "evidence"}]}` with the cells as data. | 0, 1 a record that doesn't parse (the line and the rule), a failing `gh` or an unreadable file, 2 usage |
 | `fleet sync-plan [--root APP] [--changelog CHANGELOG.md --body FILE]` | The content sync's plan from the workflow pins and `.fleet/version` (`action=none\|sync\|migration`, `pin`, `title`, …), and the pull request's or issue's body from fleet's CHANGELOG at the pin, run by `sync.yml` ([Content sync](#content-sync-two-pins-two-bots)). | 0, 1 pins that disagree or another state it can't act on, 2 no app root |
 
 ## `[tool.fleet]`
@@ -248,6 +249,7 @@ modules = { "waypoint/domain/" = 90, "waypoint/providers/" = 90, "waypoint/serve
 | `feature-maps` | skills | Python files that define `OUT` (the map's path), `generate()` (its text and any problems) and `check(committed, generated)` (the problems). |
 | `extra-checks` | the app's own | `module:NAME`, a list of callables in the app's tree (`tools/app_checks.py`, or a package's `__init__.py`). Each takes the check context (`.root`, `.config`, `.commits`) and returns a list of problem strings, reported like fleet's own. A missing module or name, a failed import or a check that raises is a problem, never a silent pass. |
 | `[tool.fleet.no-comments]` | `fleet no-comments` | `paths`: what to read (default: every tracked file); `skip`: substrings of paths to leave out (default `.semgrep/examples/`, `node_modules/`). |
+| `[tool.fleet.verification]` | verification (`--pr-event`) | `required` (default `false`): a missing or malformed record in the pull request's description is a problem on a ready pull request, else a warning; `exempt-authors` (default `["dependabot[bot]", "fleet-bot[bot]"]`): pull requests by these authors are skipped. The table's presence turns the check on ([Verification records](#verification-records)). |
 | `[tool.fleet.coverage]` | `fleet coverage-floor` | `overall`: the floor for the whole report; `modules`: path prefix to floor, for each module with statements (the longest matching prefix wins). |
 
 The workflow conventions check runs wherever `.github/workflows/` or `.github/actions/` exists: bash as each workflow's default shell, every action pinned by its commit SHA with its version in a comment, `gh api ... per_page=` with `--paginate`, no `runner`, `steps`, `job` or `env` expression in a workflow's or job's `env:`, and every `runs-on:` either fleet's `vars.RUNS_ON` line (`fleet_tools/checks/workflows.py`) or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`.
@@ -345,7 +347,7 @@ To adopt: delete the app's copies of the shared bullets, put an empty pair of ma
 
 ## Claude Code plugin
 
-fleet's Claude Code plugin (`plugins/fleet/`, listed by the marketplace in `.claude-plugin/marketplace.json`) holds the skills every app shares (`fix-with-checks`, `design-signoff`, `agent-task`, `review-guidance`), the `fleet-reviewer` agent (the first review's prompt run locally on `git diff origin/main...HEAD` with the app's `.github/agent-review/context.md`; read-only and advisory) and the session-start hook. A cloud session doesn't install the plugins a repository enables, but loads the repository's own `.claude/skills/`, `.claude/agents/` and `.claude/settings.json` hooks, and the agents run in cloud sessions. So `fleet sync --to vX.Y.Z` also vendors the plugin into the app at that version:
+fleet's Claude Code plugin (`plugins/fleet/`, listed by the marketplace in `.claude-plugin/marketplace.json`) holds the skills every app shares (`fix-with-checks`, `design-signoff`, `agent-task`, `review-guidance`, `verify-change`), the `fleet-reviewer` agent (the first review's prompt run locally on `git diff origin/main...HEAD` with the app's `.github/agent-review/context.md`; read-only and advisory) and the session-start hook. A cloud session doesn't install the plugins a repository enables, but loads the repository's own `.claude/skills/`, `.claude/agents/` and `.claude/settings.json` hooks, and the agents run in cloud sessions. So `fleet sync --to vX.Y.Z` also vendors the plugin into the app at that version:
 
 | Vendored file | From fleet's |
 | --- | --- |
@@ -400,7 +402,7 @@ The plugin isn't enabled: the vendored copies already give every session the ski
 
 ## Checks
 
-`.github/workflows/checks.yml` (`workflow_call`) replaces the app's own `fleet-checks` job: it checks out the app with its history (into `app/`, beside fleet's `.fleet/`, so the app's own `.fleet/version` is never in the fleet checkout's way), then runs `fleet checks` (with `--commits <base>..<head>` on a pull request, plain on `main`) and `fleet drift`, both from fleet at the workflow's own pinned ref (the FLEET_REF convention, so a pull request can't choose which fleet checks it). `fleet drift` reads the blocks and vendored files of the version `.fleet/version` names from fleet's history, so the content may trail the workflow pins within one major while a sync pull request is open. `contents: read` only, no secrets. The caller keeps the triggers and the concurrency group and passes its runner.
+`.github/workflows/checks.yml` (`workflow_call`) replaces the app's own `fleet-checks` job: it checks out the app with its history (into `app/`, beside fleet's `.fleet/`, so the app's own `.fleet/version` is never in the fleet checkout's way), then runs `fleet checks` (with `--commits <base>..<head>` and `--pr-event "$GITHUB_EVENT_PATH"` on a pull request, plain on `main`; the description is read from the payload file, never from an expression) and `fleet drift`, both from fleet at the workflow's own pinned ref (the FLEET_REF convention, so a pull request can't choose which fleet checks it). `fleet drift` reads the blocks and vendored files of the version `.fleet/version` names from fleet's history, so the content may trail the workflow pins within one major while a sync pull request is open. `contents: read` only, no secrets. The caller keeps the triggers and the concurrency group and passes its runner.
 
 ```yaml
 name: fleet checks
@@ -410,6 +412,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]   # edited: a fixed description re-runs the verification check
 
 permissions: {}
 
@@ -432,6 +435,50 @@ jobs:
 | `working-directory` | `.` | The app's root within its checkout (fleet's self-test passes a fixture consumer) |
 | `expect-drift` | `false` | Self-test only: the drift step passes only when `fleet drift` fails |
 | `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to run the tools from (fleet's self-test only) |
+
+## Verification records
+
+"Done means checked" lives in the pull request's description, where no tool could read it. A verification record puts it in a table there, one dimension of the change per row, that `fleet checks` parses, the reviews read and the monthly report counts. It stays in the description: no per-pull-request file is committed. "Testing" keeps saying what was run (`make check`, specific tests); "Verification" says, per behaviour the change touches, whether it was verified and on what evidence, and names every gap. Agents write it with the `fleet-verify-change` skill (vendored by `fleet sync`) before marking the pull request ready; the `git-and-prs` block says so where the table below is set.
+
+An app turns it on in `pyproject.toml`; the table's presence is the switch:
+
+```toml
+[tool.fleet.verification]
+required = false                                        # true: a ready pull request without a record fails fleet checks
+exempt-authors = ["dependabot[bot]", "fleet-bot[bot]"]  # the default; their pull requests are skipped
+```
+
+The record sits under a `## Verification` heading, between two marker lines, each alone on its line. HTML comments don't render on GitHub and survive edits in the web editor, so it reads as a plain table:
+
+```md
+## Verification
+
+<!-- fleet-verification -->
+| Dimension | Status | How | Evidence |
+| --- | --- | --- | --- |
+| Settings page shows the new toggle | verified | `make verify`, flow `settings-toggle` | `screenshots/flow-settings-toggle-desktop.png` |
+| Toggle rejected without the permission | verified | `tests/test_settings.py` | `test_a_viewer_cannot_change_the_toggle` passed |
+| Sync against a live account | not verified | no fake for the provider; a fake under `tests/fakes/` would make it testable | - |
+<!-- /fleet-verification -->
+```
+
+The rules (`fleet_tools/verification.py`, which later tools reuse): the header is exactly `| Dimension | Status | How | Evidence |` and there is at least one row; Status is exactly `verified` or `not verified`; a `verified` row has a non-empty How (the command, flow, test or manual step) and Evidence (a test name, a flow name, a screenshot path, a command's output summary); a `not verified` row's How says why it couldn't be verified and what would make it verifiable; `-` and `—` count as empty; `\|` is a literal pipe in a cell; other text between the markers, and everything outside them, is ignored; exactly one block per description, and markers inside fenced code blocks don't count; `\r\n` endings parse as `\n`. A description over 65,536 characters, a block over 100 rows or a cell over 1,000 characters is a parse error, never a silent cut. The description is untrusted: the parser is text processing only (nothing in a cell is run, fetched, followed or expanded), `fleet verification show` defuses mentions and HTML comments in its text output, and the check's messages name the line and the rule and never quote the description, escaped for workflow commands.
+
+The check (`verification`) runs only where the table is set and only when `fleet checks` is given `--pr-event PATH`, which `checks.yml` passes on pull request events (`$GITHUB_EVENT_PATH`); on a push to `main` or a local run without it, it's silent. It reads `pull_request.body`, `pull_request.user.login` and `pull_request.draft` from the payload, skips an author in `exempt-authors`, and otherwise requires exactly one block that parses. With `required = false`, or on a draft pull request, each failure is a warning (`::warning::` on Actions, exit 0); with `required = true` on a ready pull request it's a problem like any other. Add `edited` to the caller's `pull_request` types ([Checks](#checks)) so a fixed description re-runs it.
+
+The app's pull request template keeps its "Testing" section and gains this one after it, with a comment that says what goes in each column and that every gap is listed as `not verified`:
+
+```md
+## Verification
+
+<!-- One row per dimension of the change: each behaviour a user sees, each failure path, a migration, a permission, anything AGENTS.md calls an invariant. Status is `verified` or `not verified`. How: the command, flow, test or manual step you ran (for `not verified`: why it couldn't be, and what would make it verifiable). Evidence: a test name, a flow name, a screenshot path or a command's output summary; never a step you didn't run in this session. Every gap is a `not verified` row, never left out. Keep the two marker lines; `fleet checks` and the reviews read the table between them. -->
+<!-- fleet-verification -->
+| Dimension | Status | How | Evidence |
+| --- | --- | --- | --- |
+<!-- /fleet-verification -->
+```
+
+From advisory to required: set the table with `required = false` and `edited` in the caller's types, read the warnings on a few agents' pull requests until the records are complete and honest, then flip `required = true`; a ready pull request without a parseable record then fails "fleet checks", which the merge gate sees, while drafts stay warnings. `fleet verification show --pr N` prints a record as the tools read it.
 
 ## Content sync: two pins, two bots
 

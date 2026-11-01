@@ -639,8 +639,9 @@ class ChecksWorkflow(unittest.TestCase):
         self.assertIn("HEAD: ${{ github.event.pull_request.head.sha }}", checks)
         script = checks.split("run: |\n", 1)[1]
         self.assertIn('[[ "$BASE" =~ ^[0-9a-f]{40}$ && "$HEAD" =~ ^[0-9a-f]{40}$ ]]', script)
-        self.assertIn('args=(--commits "$BASE..$HEAD")', script)
+        self.assertIn('args=(--commits "$BASE..$HEAD" --pr-event "$GITHUB_EVENT_PATH")', script)
         self.assertIn('fleet_tools.cli checks --root "$root" "${args[@]}"', script)
+        self.assertNotIn("github.event.pull_request.body", checks)
 
     def test_expect_drift_inverts_the_drift_step_only(self) -> None:
         script = self.steps["fleet drift"].split("run: |\n", 1)[1]

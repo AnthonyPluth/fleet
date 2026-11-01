@@ -18,10 +18,22 @@ class Commits:
 
 
 @dataclass(frozen=True)
+class PullRequest:
+    body: str
+    author: str
+    draft: bool
+
+
+@dataclass(frozen=True)
 class Context:
     root: Path
     config: Config
     commits: Commits | None = None
+    pull_request: PullRequest | None = None
+
+
+class Advisory(str):
+    pass
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@
     {
       "name": "fleet",
       "source": "./plugins/fleet",
-      "description": "Shared agent skills (fix-with-checks, design-signoff, agent-task, review-guidance), the fleet-reviewer agent and the session-start hook."
+      "description": "Shared agent skills (fix-with-checks, design-signoff, agent-task, review-guidance, verify-change), the fleet-reviewer agent and the session-start hook."
     }
   ]
 }

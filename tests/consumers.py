@@ -52,7 +52,7 @@ def write(root: Path, path: str, text: str) -> Path:
 
 def checks(root: Path, commits: str | None = None) -> list[str]:
     found = runner.resolve(root, commits) if commits else None
-    problems, _ = runner.check(Context(root, config.load(root), found))
+    problems, _, _ = runner.check(Context(root, config.load(root), found))
     return problems
 
 
