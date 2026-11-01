@@ -98,7 +98,11 @@ class Plugin(unittest.TestCase):
         assert front
         fields = dict(line.split(": ", 1) for line in front.group("fields").splitlines())
         self.assertEqual(fields["name"], "fleet-reviewer")
-        self.assertEqual(fields["tools"], "Read, Grep, Glob, Bash(git diff:*), Bash(git log:*)")
+        self.assertEqual(fields["tools"].split(", "), [
+            "Read", "Grep", "Glob", "Bash(git diff --no-ext-diff --no-textconv origin/main...HEAD)",
+            "Bash(git diff --no-ext-diff --no-textconv --name-status origin/main...HEAD)",
+            "Bash(git log --format=%H%n%B origin/main..HEAD)", "Bash(git diff --no-ext-diff --no-textconv --stat HEAD)"])
+        self.assertNotIn("*", fields["tools"])
         prompt = (ROOT / ".github/agent-review/prompt.md").read_text(encoding="utf-8")
         self.assertIn(prompt, text, "copy .github/agent-review/prompt.md into plugins/fleet/agents/fleet-reviewer.md "
                                     "word for word, after the preface")
@@ -190,6 +194,15 @@ class Sync(unittest.TestCase):
         self.assertIn("tools/fleet: made executable\n", out)
         self.assertEqual(drift.drift(root)[0], [])
 
+    def test_sync_repairs_a_file_that_is_not_utf_8(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        target = root / ".claude/agents/fleet-reviewer.md"
+        target.write_bytes(b"\xff\xfe broken \x80\n")
+        _, out, err = sync(root)
+        self.assertEqual(err, "")
+        self.assertIn(".claude/agents/fleet-reviewer.md: replaced (plugins/fleet/agents/fleet-reviewer.md)\n", out)
+        self.assertEqual(drift.drift(root)[0], [])
+
     def test_sync_removes_a_retired_vendored_skill_but_never_the_apps_own_file(self) -> None:
         root = copy(self, RUNWAY, repository=False)
         retired = shipped()[Path(".claude/skills/fleet-agent-task/SKILL.md")].text
@@ -215,6 +228,15 @@ class Drift(unittest.TestCase):
                 self.assertEqual(drift.drift(root)[0], [
                     f"{target.as_posix()} differs from fleet's at {VERSION}; edit it in fleet "
                     f"({vendored.source.as_posix()}), not here, or run `fleet sync`"])
+
+    def test_a_file_that_is_not_utf_8_is_drift(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        (root / "tools/fleet").write_bytes(b"#!/bin/bash\n\xff\xfe\x80\n")
+        write(root, ".claude/skills/fleet-stray/SKILL.md", "x").write_bytes(b"\xff\xfe")
+        self.assertEqual(drift.drift(root)[0], [
+            f"tools/fleet differs from fleet's at {VERSION}; edit it in fleet (shim/fleet), not here, or run `fleet sync`",
+            f".claude/skills/fleet-stray/SKILL.md isn't a file fleet {VERSION} vendors (the fleet- prefix is fleet's: "
+            "rename the app's own file)"])
 
     def test_a_missing_or_non_executable_file_fails(self) -> None:
         root = copy(self, RUNWAY, repository=False)

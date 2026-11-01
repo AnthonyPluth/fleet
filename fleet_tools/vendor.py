@@ -116,10 +116,10 @@ def sync(root: Path, version: str) -> list[str]:
     changes = []
     for target, vendored in shipped.items():
         path = root / target
-        current = path.read_text(encoding="utf-8") if path.is_file() else None
-        if current != vendored.text:
+        current = path.read_bytes() if path.is_file() else None
+        if current != vendored.text.encode("utf-8"):
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(vendored.text, encoding="utf-8")
+            path.write_bytes(vendored.text.encode("utf-8"))
             changes.append(f"{target.as_posix()}: {'wrote' if current is None else 'replaced'} ({vendored.source.as_posix()})")
         if vendored.executable and not path.stat().st_mode & 0o100:
             path.chmod(path.stat().st_mode | 0o755)
@@ -148,7 +148,7 @@ def check(root: Path, version: str) -> tuple[int, list[str]]:
         name = target.as_posix()
         if not path.is_file():
             problems.append(f"{name} doesn't exist (fleet sync --to {version} vendors it)")
-        elif path.read_text(encoding="utf-8") != vendored.text:
+        elif path.read_bytes() != vendored.text.encode("utf-8"):
             problems.append(f"{name} differs from fleet's at {version}; edit it in fleet ({vendored.source.as_posix()}), "
                             "not here, or run `fleet sync`")
         elif vendored.executable and not path.stat().st_mode & 0o100:
