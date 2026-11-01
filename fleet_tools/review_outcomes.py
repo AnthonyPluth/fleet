@@ -150,6 +150,15 @@ def read_comments(text: str) -> list[Json]:
     return [c for c in (json.loads(line) for line in text.splitlines() if line.strip()) if isinstance(c, dict)]
 
 
+def read_rows(text: str) -> list[Json] | None:
+    if not text.strip():
+        return None
+    value = json.loads(text)
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise ValueError("the findings aren't a list of rows")
+    return [dict(row) for row in value]
+
+
 def load(repo: str, pr: int, marker: str = ar.MARKER, comments: Sequence[Json] | None = None) -> list[Json]:
     review = review_for(marker)
     comments = fetch_comments(repo, pr) if comments is None else comments
@@ -173,13 +182,15 @@ def section(shown: Sequence[Json]) -> list[str]:
 
 
 def finish(comment: str, comments: Sequence[Json], sha: str, full: bool, touched: Iterable[str] = (),
-           review: ar.Review = ar.FIRST) -> str:
+           review: ar.Review = ar.FIRST, findings: Sequence[Json] | None = None) -> str:
     if not comment.startswith(review.marker) or not ar.SHA.match(sha):
         return comment
-    _, _, findings, end = ar.hidden_lines(comment, review)
+    _, _, recorded, end = ar.hidden_lines(comment, review)
     lines = comment.splitlines()
-    if findings is None or end != ar.HIDDEN_LINES - 1:
+    if recorded is None or end != ar.HIDDEN_LINES - 1:
         return comment
+    if findings is None:
+        findings = recorded
     merged = cap(merge(record_of(bot_comment(comments, review), review) or [], findings, sha, full, touched), review)
     body = lines[end:]
     extra = section(apply(merged, dismissals(comments)))
@@ -216,6 +227,7 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sha", default="", help="with --finish: the commit this review read")
     parser.add_argument("--incremental", default="false", help="with --finish: true when the review read only the diff since the last one")
     parser.add_argument("--touched", metavar="FILE", help="with --finish: the files that diff touched, one per line")
+    parser.add_argument("--findings", metavar="FILE", help="with --finish: every finding of this review as JSON rows (line 3 may be cut)")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -225,8 +237,9 @@ def run(args: argparse.Namespace) -> int:
         if args.finish:
             path = Path(args.finish)
             touched = Path(args.touched).read_text(encoding="utf-8").splitlines() if args.touched else []
+            findings = read_rows(Path(args.findings).read_text(encoding="utf-8")) if args.findings else None
             path.write_text(finish(path.read_text(encoding="utf-8"), comments, args.sha, args.incremental != "true",
-                                   [t for t in touched if t], review), encoding="utf-8")
+                                   [t for t in touched if t], review, findings), encoding="utf-8")
             return 0
         outcomes = load(args.repo, args.pr, review.marker, comments)
     except (OSError, ValueError, subprocess.CalledProcessError) as e:

@@ -157,7 +157,7 @@ class Report(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(out)}), mock.patch("builtins.print"):
                 ar.write_outputs({"verdict": "pass", "description": "ok", "comment": "line 1\nline 2\ncomment=injected"})
             lines = out.read_text().splitlines()
-        self.assertEqual([ln.split("=", 1)[0] for ln in lines], ["verdict", "description", "comment"])
+        self.assertEqual([ln.split("=", 1)[0] for ln in lines], ["verdict", "description", "comment", "findings"])
         self.assertEqual(base64.b64decode(lines[2].split("=", 1)[1]).decode(), "line 1\nline 2\ncomment=injected")
 
     def test_the_stub_reviewer_s_answers_reach_the_right_verdicts(self) -> None:
@@ -379,8 +379,36 @@ class Plan(unittest.TestCase):
         self.write("docs/x.png", "png")
         head = self.commit("fix")
         values = self.plan(head, PREV_SHA=prev, PREV_BODY=self.previous_body())
-        self.assertEqual(base64.b64decode(values["touched"]).decode().split(), ["app/app.py"])
+        self.assertEqual(base64.b64decode(values["touched"]).decode().split(), ["app/app.py", "docs/x.png"])
+        self.assertNotIn("x.png", (self.out / "since-last-review.patch").read_text())
         self.assertEqual(self.plan(head)["touched"], "")
+
+    def test_a_fix_to_an_omitted_file_counts_as_touched_for_the_outcomes(self) -> None:
+        self.write("docs/openapi.json", "{}\n")
+        self.write("poetry.lock", "v1\n")
+        self.write("docs/shot.png", "png1")
+        prev = self.commit("change")
+        self.write("docs/openapi.json", '{"fixed": 1}\n')
+        self.write("poetry.lock", "v2\n")
+        self.write("docs/shot.png", "png2")
+        head = self.commit("fix the omitted files")
+        values = self.plan(head, PREV_SHA=prev, PREV_BODY=self.previous_body(), GENERATED=self.GENERATED)
+        self.assertEqual(values["incremental"], "true")
+        self.assertEqual(base64.b64decode(values["touched"]).decode().split(), ["docs/openapi.json", "docs/shot.png", "poetry.lock"])
+        self.assertEqual((self.out / "since-last-review.patch").read_text(), "")
+
+    def test_the_report_outputs_every_finding_even_when_line_three_is_cut(self) -> None:
+        findings = [finding("advisory", f"finding {i} " + "x" * 300, kind="k" * 300, file="f" * 400) for i in range(200)]
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"is_error": False, "structured_output": {"summary": "s", "findings": findings}}, f)
+        self.addCleanup(os.unlink, f.name)
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "", "REVIEWED_SHA": "a" * 40}):
+            v = ar.report(f.name)
+        rows = json.loads(base64.b64decode(v["findings"]))
+        self.assertEqual(len(rows), 200)
+        self.assertEqual(rows[199]["id"], ar.finding_id("k" * 300, "f" * 400, findings[199]["title"]))
+        self.assertEqual(sorted(rows[0]), ["check", "file", "id", "kind", "severity", "title"])
+        self.assertLess(len(ar.previous_findings(v["comment"]) or []), 200)
 
     def test_a_blocking_review_is_re_reviewed_from_where_it_left_off(self) -> None:
         self.write("app/app.py", "a = 2\n")

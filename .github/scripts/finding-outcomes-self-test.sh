@@ -16,13 +16,15 @@ second=$(printf 'b%.0s' {1..40})
 
 # review ANSWER SHA COMMENTS.jsonl OUT.md: the stub's answer through the runner script, the verdict and the outcomes.
 review() {
-  local dir="$work/$1-$2"
+  local dir
+  dir="$work/$(basename "$4" .md)"
   mkdir -p "$dir"
   cp "$root/.github/agent-review/prompt.md" "$root/.github/agent-review/schema.json" "$dir/"
   (cd "$dir" && FAKE_REVIEW=$1 "$root/.github/scripts/agent-review-run.sh" > /dev/null)
   GITHUB_OUTPUT="$dir/out" REVIEWED_SHA=$2 python3 -I "$root/fleet_tools/agent_review.py" report "$dir/output.json" > /dev/null
   sed -n 's/^comment=//p' "$dir/out" | base64 -d > "$4"
-  python3 -I "$root/fleet_tools/review_outcomes.py" --finish "$4" --repo example/app --pr 1 --sha "$2" --comments "$3"
+  sed -n 's/^findings=//p' "$dir/out" | base64 -d > "$dir/findings.json"
+  python3 -I "$root/fleet_tools/review_outcomes.py" --finish "$4" --repo example/app --pr 1 --sha "$2" --comments "$3" --findings "$dir/findings.json"
 }
 
 # bot_comment FILE.md: the comment as the comments API would list it, one JSON line.

@@ -237,6 +237,27 @@ class Dismissals(unittest.TestCase):
 
 
 class Finish(unittest.TestCase):
+    def test_findings_cut_from_line_three_are_neither_resolved_nor_forgotten(self) -> None:
+        big = [finding(title=f"finding {i} " + "y" * 300, file="f" * 100 + f"{i}.py", kind="k" * 20) for i in range(25)]
+        last = finding(title="Still here", file="app/z.py")
+        text = comment([*big, last], B)
+        recorded = ar.previous_findings(text) or []
+        self.assertNotIn(ar.finding_id("Failure paths", "app/z.py", "Still here"), [r["id"] for r in recorded])
+        previous = [entry(title="Still here", file="app/z.py")]
+        old = "\n".join([*comment([], A).splitlines()[:3], ro.outcomes_line(previous), "## Independent review"])
+        final = ro.finish(text, [bot(old)], B, True, findings=ar.findings_rows([*big, last]))
+        record = ro.record_of(final) or []
+        by_id = {e["id"]: e for e in record}
+        self.assertEqual(by_id[previous[0]["id"]], entry(title="Still here", file="app/z.py"))
+        self.assertIn(ar.finding_id("k" * 20, "f" * 100 + "24.py", big[24]["title"]), by_id)
+        self.assertEqual(len(record), 26)
+        self.assertTrue(all(e["status"] == "open" for e in record))
+
+    def test_without_the_complete_findings_line_three_is_what_is_merged(self) -> None:
+        text = comment([finding()], B)
+        self.assertEqual(ro.record_of(ro.finish(text, [], B, True)), [entry(first=B)])
+        self.assertEqual(ro.record_of(ro.finish(text, [], B, True, findings=[])), [])
+
     def test_a_first_review_gets_line_four_and_no_outcomes_section(self) -> None:
         final = ro.finish(comment([finding()]), [], A, True)
         lines = final.splitlines()
@@ -333,6 +354,21 @@ class Command(unittest.TestCase):
             args = ["--repo", "example/app", "--pr", "1", "--comments", str(comments), "--finish", str(path), "--sha", B]
             self.assertEqual(ro.main([*args, "--incremental", "true", "--touched", str(touched)]), 0)
             self.assertEqual(ro.record_of(path.read_text()), [entry(status="resolved", resolved=B)])
+            path.write_text(comment([], B))
+            rows = Path(tmp) / "findings.json"
+            rows.write_text(json.dumps(ar.findings_rows([finding()])))
+            self.assertEqual(ro.main([*args, "--findings", str(rows)]), 0)
+            self.assertEqual(ro.record_of(path.read_text()), [entry()])
+            path.write_text(comment([], B))
+            rows.write_text("")
+            self.assertEqual(ro.main([*args, "--findings", str(rows)]), 0)
+            self.assertEqual(ro.record_of(path.read_text()), [entry(status="resolved", resolved=B)])
+            path.write_text(comment([], B))
+            rows.write_text('{"not": "rows"}')
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(ro.main([*args, "--findings", str(rows)]), 0)
+            self.assertIn("::warning::", out.getvalue())
+            self.assertEqual(path.read_text(), comment([], B))
             path.write_text(comment([], B))
             touched.write_text("")
             self.assertEqual(ro.main([*args, "--incremental", "true", "--touched", str(touched)]), 0)

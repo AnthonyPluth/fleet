@@ -275,10 +275,14 @@ def with_ids(findings: list[Json]) -> list[Json]:
     return [{**f, "id": finding_id(f["kind"], f.get("file"), f["title"])} for f in findings]
 
 
+def findings_rows(findings: list[Json]) -> list[Json]:
+    return [{"id": finding_id(f["kind"], f.get("file"), f["title"]), "severity": f["severity"], "kind": defuse(f["kind"], 120),
+             "title": defuse(f["title"], 200), "file": defuse(f.get("file") or "", 300), "check": defuse(f.get("check") or "", 300)}
+            for f in findings]
+
+
 def findings_line(findings: list[Json], review: Review = FIRST) -> str:
-    rows = [{"id": finding_id(f["kind"], f.get("file"), f["title"]), "severity": f["severity"], "kind": defuse(f["kind"], 120),
-             "title": defuse(f["title"], 200), "file": defuse(f.get("file") or "", 300),
-             "check": defuse(f.get("check") or "", 300)} for f in findings]
+    rows = findings_rows(findings)
     while True:
         line = f"<!-- {review.key}-findings {base64.b64encode(json.dumps(rows, ensure_ascii=False).encode()).decode()} -->"
         if len(line.encode()) <= MAX_FINDINGS_LINE or not rows:
@@ -363,10 +367,10 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     try:
         body = Path(env["PREV_BODY"]).read_text() if env.get("PREV_BODY") else ""
         if body and is_ancestor(repo, prev, head):
-            files = sorted(p for p in set(own_files(repo, main, head)) | set(own_files(repo, main, prev))
-                           if not left_out(p, generated))
+            own = sorted(set(own_files(repo, main, head)) | set(own_files(repo, main, prev)))
+            files = [p for p in own if not left_out(p, generated)]
             since = diff(repo, prev, head, paths=files) if files else ""
-            touched = git(repo, "diff", "--name-only", prev, head, "--", *[f":(literal){p}" for p in files]) if files else ""
+            touched = git(repo, "diff", "--name-only", prev, head, "--", *[f":(literal){p}" for p in own]) if own else ""
             (out / "since-last-review.patch").write_text(since)
             (out / "previous-review.md").write_text(body)
             with open(out / "prompt.md", "a", encoding="utf-8") as f:
@@ -473,7 +477,7 @@ def usage(output: Json) -> None:
 
 def report(path: str, review: Review = FIRST) -> dict[str, str]:
     run_url = os.environ.get("RUN_URL", "")
-    error = {"verdict": "error", "comment": ""}
+    error = {"verdict": "error", "comment": "", "findings": ""}
     try:
         with open(path, encoding="utf-8") as f:
             output = json.load(f)
@@ -495,10 +499,11 @@ def report(path: str, review: Review = FIRST) -> dict[str, str]:
     raw = json.dumps(output)
     if any(key and key in raw for key in (os.environ.get(name, "") for name in SECRETS)):
         return {**error, "description": LIMITS[WITHHELD]}
+    rows = base64.b64encode(json.dumps(findings_rows(findings), ensure_ascii=False).encode()).decode()
     blocking = sum(f["severity"] == "blocking" for f in findings)
     if blocking:
-        return {"verdict": "blocking", "description": f"{blocking} blocking finding(s); see the comment", "comment": comment}
-    return {"verdict": "pass", "description": f"No blocking findings ({len(findings)} advisory)", "comment": comment}
+        return {"verdict": "blocking", "description": f"{blocking} blocking finding(s); see the comment", "comment": comment, "findings": rows}
+    return {"verdict": "pass", "description": f"No blocking findings ({len(findings)} advisory)", "comment": comment, "findings": rows}
 
 
 def append_outputs(lines: list[str]) -> None:
@@ -510,7 +515,7 @@ def append_outputs(lines: list[str]) -> None:
 
 def write_outputs(values: dict[str, str]) -> None:
     append_outputs([f"verdict={values['verdict']}", f"description={values['description'][:140]}",
-                    "comment=" + base64.b64encode(values["comment"].encode()).decode()])
+                    "comment=" + base64.b64encode(values["comment"].encode()).decode(), "findings=" + values.get("findings", "")])
     print(f"{values['verdict']}: {values['description']}")
 
 

@@ -191,6 +191,7 @@ jobs:
       verdict: ${{ steps.result.outputs.verdict }}
       description: ${{ steps.result.outputs.description }}
       comment: ${{ steps.result.outputs.comment }}
+      findings: ${{ steps.result.outputs.findings }}
       incremental: ${{ steps.plan.outputs.incremental }}
       touched: ${{ steps.plan.outputs.touched }}
     steps:
@@ -431,6 +432,7 @@ jobs:
           VERDICT: ${{ needs.review.outputs.verdict }}
           DESCRIPTION: ${{ needs.review.outputs.description }}
           COMMENT: ${{ needs.review.outputs.comment }}
+          FINDINGS: ${{ needs.review.outputs.findings }}
           INCREMENTAL: ${{ needs.review.outputs.incremental }}
           TOUCHED: ${{ needs.review.outputs.touched }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -447,11 +449,12 @@ jobs:
           echo "$state: $DESCRIPTION"
           if [ -n "$COMMENT" ]; then
             base64 -d <<< "$COMMENT" > comment.md
-            # The finding outcomes: line 4 merged from the last comment's record and this review's findings, and the
-            # owner's dismissals shown. If this fails the comment is posted as it is (a warning says so).
+            # The finding outcomes: line 4 merged from the last comment's record and every finding of this review (the
+            # findings output, since line 3 is cut to fit), and the owner's dismissals shown. If this fails the comment is posted as it is (a warning says so).
             base64 -d <<< "$TOUCHED" > touched.txt
+            base64 -d <<< "$FINDINGS" > findings.json
             python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md --repo "$REPO" --pr "$PR" --sha "$SHA" \
-              --incremental "$INCREMENTAL" --touched touched.txt
+              --incremental "$INCREMENTAL" --touched touched.txt --findings findings.json
             if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
             # One comment per pull request, updated by each review (the marker is its first line).
             existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
@@ -554,6 +557,7 @@ jobs:
       verdict: ${{ steps.result.outputs.verdict }}
       description: ${{ steps.result.outputs.description }}
       comment: ${{ steps.result.outputs.comment }}
+      findings: ${{ steps.result.outputs.findings }}
       incremental: ${{ steps.plan.outputs.incremental }}
       touched: ${{ steps.plan.outputs.touched }}
     steps:
@@ -826,6 +830,7 @@ jobs:
           VERDICT: ${{ needs.second-review.outputs.verdict }}
           DESCRIPTION: ${{ needs.second-review.outputs.description }}
           COMMENT: ${{ needs.second-review.outputs.comment }}
+          FINDINGS: ${{ needs.second-review.outputs.findings }}
           INCREMENTAL: ${{ needs.second-review.outputs.incremental }}
           TOUCHED: ${{ needs.second-review.outputs.touched }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -844,8 +849,9 @@ jobs:
             base64 -d <<< "$COMMENT" > comment.md
             # The second review's own outcomes record (its marker), merged and shown as for the first review.
             base64 -d <<< "$TOUCHED" > touched.txt
+            base64 -d <<< "$FINDINGS" > findings.json
             python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md --second --repo "$REPO" --pr "$PR" --sha "$SHA" \
-              --incremental "$INCREMENTAL" --touched touched.txt
+              --incremental "$INCREMENTAL" --touched touched.txt --findings findings.json
             if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
             # One second-review comment per pull request, updated by each second review (the marker is its first line).
             existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
