@@ -11,6 +11,8 @@ coverage.json
 coverage.xml
 
 .tools/
-.fleet/
+/.fleet/
 
 .DS_Store
+
+.claude/worktrees/

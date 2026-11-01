@@ -281,6 +281,29 @@ Inputs, each with the default fleet's own gate uses:
 
 What each app passes today: Waypoint `required-workflows: Docker image, Security scans, CodeQL` and `required-statuses: ""` (its review is off); Runway the same workflows, `required-statuses: Agent review` and `ignored-workflows: Preview|Screenshot diff`. Both move to the default statuses when they adopt the reviews.
 
+## AGENTS.md blocks
+
+fleet ships the parts of `AGENTS.md` the apps share as blocks, one file each in `agents-md/sections/` (`starting-work`, `working-in-a-container`, `mistakes`, `git-and-prs`), with front matter naming the `## ` heading it lives under. In the app's `AGENTS.md` a block sits between markers:
+
+```md
+## Mistakes that keep coming back
+
+<!-- fleet:begin mistakes v0.1.0 -->
+…fleet's text, verbatim…
+<!-- fleet:end mistakes -->
+
+- **An app item** (human-judged: why no check can express it). …
+```
+
+Inside the markers is fleet's file at the marker's version, byte for byte; everything outside them is the app's. App items go after a block, under the same heading ("Mistakes that keep coming back" opens with fleet's rule and shared items; the app's own follow).
+
+| Command | What it does | Exit codes |
+| --- | --- | --- |
+| `fleet sync --to vX.Y.Z` | Run from fleet at that version (the sections ship with the package; a different `--to` is refused). Replaces each marked block, inserts a missing one at the end of its heading (creating the heading at the end of the file if there is none), never changes a byte outside the markers, and writes `.fleet/version`. Running it twice changes nothing. | 0, 2 a marker error (an unclosed, nested, repeated or unknown block) or another version |
+| `fleet drift` | Every block byte-equal to fleet's at the version in its marker (read from this fleet, or from its git history for an older tag), every block fleet ships present, the markers and `.fleet/version` at one version, and that version not newer than any `uses: AnthonyPluth/fleet/…@<sha>   # vX.Y.Z` pin in `.github/workflows/` and in the same major (it may trail the pins while a sync pull request is open). With no fleet pin, there is no pin check. | 0, 1 drift (one problem per line on stderr, `::error::` on GitHub Actions), 2 no app root |
+
+To adopt: delete the app's copies of the shared bullets, put an empty pair of markers (`<!-- fleet:begin <section> v0.0.0 -->` and `<!-- fleet:end <section> -->` on the next line) where each block should go, above the app's own items under that heading, and run `fleet sync --to vX.Y.Z`. A section without markers is inserted at the end of its heading instead. A line that mentions a marker anywhere else is a marker error, so write about them without the `<!--` form. Commit `AGENTS.md` and `.fleet/version` together.
+
 ## Verify (control smoke, verify flows)
 
 `.github/workflows/verify.yml` (`workflow_call`) runs one `make` target of the app in a real browser against its demo server: Waypoint's `make control-smoke`, Runway's `make verify`. It sets up Python with Poetry's virtualenv (cached by `poetry.lock`), Node with the app's packages (cached by `package-lock.json`), the Playwright browser and libfaketime, then runs the target. `contents: read` only, no secrets. The caller keeps the workflow name (the status the merge gate lists), the triggers with their path filters and the concurrency group; its job name is what the status shows.
