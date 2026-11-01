@@ -81,9 +81,10 @@ class Parsing(unittest.TestCase):
         example = BEGIN + "\n" + HEADER + "\n| --- | --- | --- | --- |\n| in an example | verified | a | b |\n" + END + "\n"
         for prefix in ("- ", "* ", "+ ", "1. ", "12) ", "> ", "> - ", "  - ", ">> "):
             with self.subTest(prefix=prefix):
-                fenced = prefix + "```md\n" + example + prefix + "```\n\n"
+                close = re.sub(r"[-*+0-9.)]", " ", prefix)
+                fenced = prefix + "```md\n" + example + close + "```\n\n"
                 self.assertEqual([d.dimension for d in parse(fenced + record(GAP, before=""))], ["Live sync"])
-                self.assertEqual([d.dimension for d in parse(prefix + "~~~\n" + example + "~~~\n" + record(GAP, before=""))], ["Live sync"])
+                self.assertEqual([d.dimension for d in parse(prefix + "~~~\n" + example + close + "~~~\n" + record(GAP, before=""))], ["Live sync"])
                 with self.assertRaises(ParseError) as caught:
                     parse(fenced)
                 self.assertIn("no verification block", caught.exception.rule)
@@ -95,7 +96,12 @@ class Parsing(unittest.TestCase):
                 parse("````\n" + example + shut + "\n" + record(GAP, before="") + "````\n")
             self.assertIn("no verification block", caught.exception.rule)
         self.assertEqual([d.dimension for d in parse("```\n" + example + "`````\n" + record(GAP, before=""))], ["Live sync"])
-        self.assertEqual([d.dimension for d in parse("- ```\n" + example + "```\n" + record(GAP, before=""))], ["Live sync"])
+        self.assertEqual([d.dimension for d in parse("- ```\n" + example + "  ```\n" + record(GAP, before=""))], ["Live sync"])
+        self.assertEqual([d.dimension for d in parse("- ```\n" + example + "     ```\n" + record(GAP, before=""))], ["Live sync"])
+        with self.assertRaises(ParseError):
+            parse("- ```\n" + example + "```\n" + record(GAP, before=""))
+        with self.assertRaises(ParseError):
+            parse("- ```\n" + example + "      ```\n" + record(GAP, before=""))
 
     def test_an_unclosed_fence_hides_everything_after_it(self) -> None:
         with self.assertRaises(ParseError) as caught:
@@ -106,6 +112,27 @@ class Parsing(unittest.TestCase):
         self.assertEqual(caught.exception.line, 1)
         self.assertIn("no closing", caught.exception.rule)
         self.assertEqual([d.dimension for d in parse(record(GAP, before="") + "```\n" + record(ROW, before=""))], ["Live sync"])
+
+    def test_a_fence_line_in_another_container_doesnt_close_a_fence(self) -> None:
+        fake = HEADER + "\n| in an example | verified | a | b |\n" + END + "\n"
+        real = record(GAP, before="")
+        for inner in ("- ```", "> ```", "1. ```", "    ```", "> - ```", "* ~~~"):
+            with self.subTest(inner=inner):
+                body = "```\n" + BEGIN + "\n" + inner + "\n" + fake + "```\n\n" + real
+                self.assertEqual([d.dimension for d in parse(body)], ["Live sync"])
+        for outer, close, stray in (("- ```", "  ```", "```"), ("> ```", "> ```", "```"), ("> ```", "> ```", "- ```"),
+                                    ("- ```", "  ```", "> ```"), ("1. ```", "   ```", "- ```")):
+            with self.subTest(outer=outer, stray=stray):
+                body = outer + "\n" + BEGIN + "\n" + stray + "\n" + fake + close + "\n\n" + real
+                self.assertEqual([d.dimension for d in parse(body)], ["Live sync"])
+
+    def test_a_fence_whose_closing_context_is_ambiguous_stays_open(self) -> None:
+        fake = HEADER + "\n| in an example | verified | a | b |\n" + END + "\n"
+        real = record(GAP, before="")
+        for outer, stray in (("- ```", "```"), ("> ```", "```"), ("```", "    ```"), ("> ```", ">> ```")):
+            with self.subTest(outer=outer, stray=stray), self.assertRaises(ParseError) as caught:
+                parse(outer + "\n" + BEGIN + "\n" + stray + "\n" + fake + real)
+            self.assertIn("no verification block", caught.exception.rule)
 
     def test_a_very_long_run_of_whitespace_parses_in_linear_time(self) -> None:
         run = 60000

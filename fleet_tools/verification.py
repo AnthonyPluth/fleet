@@ -40,15 +40,34 @@ class Dimension:
     evidence: str
 
 
-def fence_of(line: str) -> tuple[str, str] | None:
+@dataclass(frozen=True)
+class Fence:
+    marks: str
+    rest: str
+    depth: int
+    listed: bool
+    indent: int
+    content: int
+
+    def closes(self, opener: "Fence") -> bool:
+        return (self.marks[0] == opener.marks[0] and len(self.marks) >= len(opener.marks) and not self.rest.strip()
+                and self.depth == opener.depth and not self.listed and opener.content <= self.indent <= opener.content + 3)
+
+
+def fence_of(line: str) -> Fence | None:
     at = 0
+    depth = 0
+    start = 0
     while True:
         while at < len(line) and line[at] in " \t":
             at += 1
         if at < len(line) and line[at] == ">":
             at += 1
+            depth += 1
+            start = at
             continue
         break
+    indent = at - start
     marker = LIST_MARKER.match(line, at)
     if marker:
         at = marker.end()
@@ -62,7 +81,7 @@ def fence_of(line: str) -> tuple[str, str] | None:
         end += 1
     if end - at < 3:
         return None
-    return line[at:end], line[end:]
+    return Fence(line[at:end], line[end:], depth, marker is not None, indent, at - start if marker else 0)
 
 
 def is_separator(line: str) -> bool:
@@ -73,15 +92,14 @@ def is_separator(line: str) -> bool:
 def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
     begins: list[int] = []
     ends: list[int] = []
-    fence = ""
+    fence: Fence | None = None
     for index, line in enumerate(lines, start=1):
         found = fence_of(line)
         if found:
-            marks, rest = found
-            if not fence:
-                fence = marks
-            elif marks[0] == fence[0] and len(marks) >= len(fence) and not rest.strip():
-                fence = ""
+            if fence is None:
+                fence = found
+            elif found.closes(fence):
+                fence = None
             continue
         if fence:
             continue
