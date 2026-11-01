@@ -1,0 +1,9 @@
+[project]
+name = "verify-fixture"
+version = "0.0.0"
+description = "The self-test's stand-in for an app that verify.yml sets up and runs `make` in"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.poetry]
+package-mode = false

@@ -6,7 +6,7 @@ Waypoint and Runway each carry their own copy of the same automation: the indepe
 
 ## The pieces
 
-- `fleet_tools/`: the `fleet` command. Standard library only (Python 3.11 or newer), so a runner's or a cloud container's system `python3` runs it without Poetry. A consumer configures it in a `[tool.fleet]` table in its own `pyproject.toml`.
+- `fleet_tools/`: the `fleet` command. Standard library only (Python 3.11 or newer), so a runner's or a cloud container's system `python3` runs it without Poetry (`fleet screenshot-diff` alone needs Pillow, the optional extra `fleet[images]`). A consumer configures it in a `[tool.fleet]` table in its own `pyproject.toml`.
 - `.github/workflows/`: fleet's own CI (`ci.yml`, "fleet CI"), the self-test of the reusable workflows (`self-test.yml`, "Self-test"), and the reusable workflows the apps call.
 - `.github/agent-review/`, `.github/scripts/`: the review prompts and the scripts the reusable workflows run.
 - `.claude-plugin/`, `plugins/fleet/`: the Claude Code plugin (skills, the reviewer agent, the session-start hook), vendored into each app.

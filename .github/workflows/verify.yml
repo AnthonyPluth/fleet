@@ -1,0 +1,165 @@
+name: Verify
+
+# The reusable verify run: one `make` target of the app in a real browser against its demo server, for Waypoint's
+# `make control-smoke` (tools/control end to end on the frozen clock) and Runway's `make verify` (its scripted flows).
+# A change that moves a button, a label or the Tab order fails here instead of leaving a flow broken on main. It sends
+# nothing out and needs no secret: the demo server is made-up data on the loopback address. `contents: read` only.
+#
+# The caller (docs/adopting.md has the snippets) keeps the workflow name, the triggers with their path filters (only a
+# change that can reach a flow runs it; a pull request without one has no run, which the merge gate treats as nothing to
+# wait for) and the concurrency group, and names its job for the status the merge gate lists ("Control smoke",
+# "Verify flows"). This sets up what the target needs: Python with Poetry's virtualenv (cached by poetry.lock), Node
+# with the app's packages (cached by package-lock.json), Chromium for the locked Playwright, and libfaketime, which
+# freezes the demo server's clock so the screenshots only change when the UI or its data does. Each piece has an input,
+# so the self-test runs it on a fixture tree with no browser.
+on:
+  workflow_call:
+    inputs:
+      make-target:
+        description: The `make` target to run ("control-smoke", "verify").
+        type: string
+        required: true
+      working-directory:
+        description: Where to run `make` and `poetry install` (the self-test passes its fixture tree).
+        type: string
+        default: "."
+      needs-faketime:
+        description: Install libfaketime first (the demo server's frozen clock).
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: How long the job may take.
+        type: number
+        default: 15
+      runs-on:
+        description: The runner, as JSON ('"ubuntu-latest"', or a label array). Waypoint passes its vars.RUNS_ON expression.
+        type: string
+        default: '"ubuntu-latest"'
+      python-version:
+        description: The Python to install (the one the app's Dockerfile runs); Poetry installs the app's dependencies into a cached virtualenv. Empty sets up no Python.
+        type: string
+        default: "3.14"
+      poetry-version:
+        description: The Poetry to install.
+        type: string
+        default: "2.5.1"
+      poetry-install-args:
+        description: Extra arguments for `poetry install` ("--only main" to leave the dev tools out).
+        type: string
+        default: ""
+      node-dir:
+        description: The npm project whose packages the target needs, relative to the repository ("frontend"); `npm ci` runs there. Empty sets up no Node.
+        type: string
+        default: frontend
+      node-version-file:
+        description: The file naming the Node version, relative to the repository.
+        type: string
+        default: .nvmrc
+      browser:
+        description: The Playwright browser to install from node-dir, with its system dependencies ("chromium"). Empty installs none.
+        type: string
+        default: chromium
+      fleet-ref:
+        description: The fleet ref (the self-test passes its own commit). Nothing of fleet's runs here; kept for the convention every reusable workflow follows.
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    name: make ${{ inputs.make-target }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
+        if: inputs.python-version != ''
+        id: python
+        with:
+          python-version: ${{ inputs.python-version }}
+      # Poetry and the virtualenv are cached between runs; a new Python or poetry.lock starts afresh. The runner's pipx
+      # installs into /opt/pipx, outside the cached paths, so it is pointed at the home directory. (Constants only, nothing
+      # from the event: the ignore is for zizmor's check of every write to the environment file.)
+      - name: Keep pipx's tools and the virtualenv where they are cached
+        if: inputs.python-version != ''
+        run: |   # zizmor: ignore[github-env]
+          echo "PIPX_HOME=$HOME/.local/pipx" >> "$GITHUB_ENV"
+          echo "PIPX_BIN_DIR=$HOME/.local/bin" >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "POETRY_VIRTUALENVS_IN_PROJECT=true" >> "$GITHUB_ENV"
+      - name: Cache Poetry
+        if: inputs.python-version != ''
+        id: poetry-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: |
+            ~/.local/pipx/venvs/poetry
+            ~/.local/bin/poetry
+          key: poetry-${{ inputs.poetry-version }}-${{ runner.os }}-py${{ steps.python.outputs.python-version }}
+      - name: Install Poetry
+        if: inputs.python-version != '' && steps.poetry-cache.outputs.cache-hit != 'true'
+        env:
+          PYTHON_PATH: ${{ steps.python.outputs.python-path }}
+          POETRY_VERSION: ${{ inputs.poetry-version }}
+        run: pipx install --python "$PYTHON_PATH" "poetry==$POETRY_VERSION"
+      - name: Cache the virtualenv
+        if: inputs.python-version != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: ${{ inputs.working-directory }}/.venv
+          key: venv-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-verify-${{ hashFiles(format('{0}/poetry.lock', inputs.working-directory)) }}
+      - name: Install the Python dependencies
+        if: inputs.python-version != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          INSTALL_ARGS: ${{ inputs.poetry-install-args }}
+        run: |
+          read -ra args <<< "$INSTALL_ARGS"
+          poetry install --no-root --no-interaction "${args[@]}"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
+        if: inputs.node-dir != ''
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.node-dir }}/package-lock.json
+      - name: Install the packages
+        if: inputs.node-dir != ''
+        working-directory: ${{ inputs.node-dir }}
+        run: npm ci --no-audit --no-fund
+      # The runner has no browser where the verify runner looks (PLAYWRIGHT_BROWSERS_PATH), so take the one the locked
+      # @playwright/test version is built for.
+      - name: Install the browser
+        if: inputs.node-dir != '' && inputs.browser != ''
+        working-directory: ${{ inputs.node-dir }}
+        env:
+          BROWSER: ${{ inputs.browser }}
+        run: npx playwright install --with-deps "$BROWSER"
+
+      - name: Install libfaketime, which freezes the clock
+        if: inputs.needs-faketime
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq libfaketime
+
+      # Exits non-zero on a failed step (a selector that matches nothing, a focus that never arrives), a console error or
+      # a 5xx, and prints each as a FAIL line naming the flow and the width.
+      - name: make ${{ inputs.make-target }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TARGET: ${{ inputs.make-target }}
+        run: make "$TARGET"
