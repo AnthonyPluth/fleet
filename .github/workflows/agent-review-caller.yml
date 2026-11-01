@@ -27,10 +27,14 @@ jobs:
       second-review-always: |
         .github/workflows/agent-review.yml
         .github/workflows/agent-review-caller.yml
+        .github/workflows/cancel-on-close.yml
+        .github/workflows/deep-scan-due.yml
         .github/workflows/merge-gate.yml
+        .github/workflows/review-mining.yml
+        .github/workflows/screenshot-diff.yml
         .github/workflows/security.yml
-        .github/workflows/sync.yml
-        .github/workflows/checks.yml
+        .github/workflows/tidy-releases.yml
+        .github/workflows/verify.yml
         .github/scripts/**
         .github/agent-review/**
         .github/CODEOWNERS
