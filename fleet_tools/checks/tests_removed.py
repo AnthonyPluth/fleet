@@ -12,7 +12,7 @@ TS_FILE = re.compile(r"\.test\.(ts|mjs|js)$")
 SKIP = re.compile(r"\b(?:unittest\.skip(?:If|Unless)?\b|skipTest\(|(?:it|test|describe)\.(?:skip|only|todo)\b|xit\(|xdescribe\()")
 REMOVES = re.compile(r"^removes-test:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 SKIPS = re.compile(r"^skips-test:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-STRING = re.compile(r"""(["'`])(?:\\.|(?!\1).)*\1""")
+STRING = re.compile(r"""(["'`])(?:\\.|(?!\1)[^\\])*\1""")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 PY_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)\s*\(")
 

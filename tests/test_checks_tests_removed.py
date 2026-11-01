@@ -20,6 +20,13 @@ TESTS = "class T(unittest.TestCase):\n    def test_one(self): ...\n    def test_
 
 
 class Names(unittest.TestCase):
+    def test_string_pattern_is_linear_on_an_unterminated_string(self) -> None:
+        hostile = "x = \"" + "\\a" * 20000
+        self.assertEqual(tr.STRING.sub("", hostile), hostile)
+
+    def test_string_pattern_strips_escaped_quotes(self) -> None:
+        self.assertEqual(tr.STRING.sub("", 'a "b \\" c" d'), "a  d")
+
     def test_names_python_and_vitest(self) -> None:
         py = "class A(unittest.TestCase):\n    def test_one(self):\n        pass\n\n\ndef test_free():\n    pass\n"
         self.assertEqual(tr.test_names("tests/test_x.py", py), {"tests/test_x.py::A.test_one", "tests/test_x.py::test_free"})
