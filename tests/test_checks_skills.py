@@ -1,7 +1,8 @@
+import os
 import unittest
 from pathlib import Path
 
-from consumers import RUNWAY, WAYPOINT, checks, copy, empty_consumer, ran, write
+from consumers import RUNWAY, WAYPOINT, checks, commit, copy, empty_consumer, ran, write
 
 from fleet_tools import config, vendor
 from fleet_tools.checks import skills
@@ -152,6 +153,20 @@ class SkillHomes(unittest.TestCase):
         write(root, ".gitignore", "build/\n")
         write(root, "build/x/SKILL.md", "x\n")
         self.assertEqual(homes(root), [f".agents/x/SKILL.md: {HOME}"])
+
+    def test_a_filename_that_isnt_utf8_is_listed_not_a_crash(self) -> None:
+        root = copy(self, WAYPOINT)
+        odd = os.fsencode(root) + b"/docs/\xff-notes"
+        try:
+            os.makedirs(odd)
+            with open(odd + b"/SKILL.md", "wb") as file:
+                file.write(b"x\n")
+            with open(os.fsencode(root) + b"/docs/\xfe.txt", "wb") as file:
+                file.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"this filesystem can't hold a name that isn't UTF-8: {error}")
+        commit(root, "chore: names that aren't UTF-8")
+        self.assertEqual(homes(root), [os.fsdecode(b"docs/\xff-notes/SKILL.md") + f": {HOME}"])
 
     def test_the_exempt_places_and_skill_homes_ignore_are_skipped(self) -> None:
         root = copy(self, RUNWAY, repository=False)

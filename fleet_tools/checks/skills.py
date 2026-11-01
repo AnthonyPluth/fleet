@@ -1,5 +1,6 @@
 import fnmatch
 import importlib.util
+import os
 import re
 import shlex
 import subprocess
@@ -91,11 +92,12 @@ def normalized(body: str) -> str:
 def skill_files(root: Path) -> list[str]:
     try:
         listing = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=root,
-                                 check=True, capture_output=True, text=True).stdout.split("\0")
+                                 check=True, capture_output=True).stdout.split(b"\0")
+        names = [os.fsdecode(name) for name in listing]
     except (OSError, subprocess.CalledProcessError):
-        listing = [path.relative_to(root).as_posix() for path in root.rglob("SKILL.md")
-                   if ".git" not in path.relative_to(root).parts]
-    return sorted({name for name in listing if name.rsplit("/", 1)[-1] == "SKILL.md" and (root / name).is_file()})
+        names = [path.relative_to(root).as_posix() for path in root.rglob("SKILL.md")
+                 if ".git" not in path.relative_to(root).parts]
+    return sorted({name for name in names if name.rsplit("/", 1)[-1] == "SKILL.md" and (root / name).is_file()})
 
 
 def exempt(path: str, ignore: list[str]) -> bool:
