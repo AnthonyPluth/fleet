@@ -206,3 +206,146 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       groups: '["self-test-cancel-{0}", "self-test-cancel-prefix-"]'
+
+  # The second review on this pull request in dry run, with the stub reviewer and a faked event (fake-event, honoured
+  # only with fake-review), one case each from FLEET-SECOND-REVIEW's acceptance criteria. The first review is off in
+  # these (first-review: false), and each case's inputs differ, so the calls land in distinct concurrency groups.
+  second-review-label:
+    name: Second review (dry run, risky by label, blocking)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: false
+      fake-review: blocking
+      fake-event: action=opened labels=security,docs files=README.md
+      merge-gate-workflow: ""
+
+  second-review-path:
+    name: Second review (dry run, risky by path)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: false
+      fake-review: pass
+      fake-event: action=opened labels=docs files=app/photos/delete.py,README.md
+      second-review-paths: |
+        app/photos/**
+        app/library/**
+      merge-gate-workflow: ""
+
+  second-review-github:
+    name: Second review (dry run, risky by a .github change)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: false
+      fake-review: pass
+      fake-event: action=synchronize labels= files=.github/workflows/ci.yml
+      merge-gate-workflow: ""
+
+  second-review-not-risky:
+    name: Second review (dry run, not risky)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: false
+      fake-review: pass
+      fake-event: action=synchronize labels=docs files=README.md,app/app.py
+      merge-gate-workflow: ""
+
+  second-review-unlabeled-by-another:
+    name: Second review (dry run, unlabeled by a non-owner)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: false
+      fake-review: pass
+      fake-event: action=unlabeled sender=octocat label=security labels= files=.github/workflows/ci.yml
+      merge-gate-workflow: ""
+
+  second-review-unlabeled-by-owner:
+    name: Second review (dry run, unlabeled by the owner)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: false
+      fake-review: pass
+      fake-event: action=unlabeled sender=${{ github.repository_owner }} label=security labels= files=README.md
+      merge-gate-workflow: ""
+
+  # The second review's verdicts, through the reusable workflow's second-verdict output: a finding fails it, a risky
+  # change without one passes, a change that isn't risky passes saying so, a non-owner's unlabeled event posts nothing
+  # (skip), and the owner's is re-evaluated (here to not risky). On a pull request that isn't an agent's each is
+  # "Not an agent's pull request", which is right too.
+  second-review-verdicts:
+    name: Second review (dry run) verdicts
+    needs: [second-review-label, second-review-path, second-review-github, second-review-not-risky, second-review-unlabeled-by-another, second-review-unlabeled-by-owner]
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, a few lines of shell
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Each case reached the verdict it should
+        env:
+          LABEL: ${{ needs.second-review-label.outputs.second-verdict }}
+          LABEL_WHY: ${{ needs.second-review-label.outputs.second-description }}
+          PATH_V: ${{ needs.second-review-path.outputs.second-verdict }}
+          PATH_WHY: ${{ needs.second-review-path.outputs.second-description }}
+          GITHUB_V: ${{ needs.second-review-github.outputs.second-verdict }}
+          GITHUB_WHY: ${{ needs.second-review-github.outputs.second-description }}
+          NOT_RISKY: ${{ needs.second-review-not-risky.outputs.second-verdict }}
+          NOT_RISKY_WHY: ${{ needs.second-review-not-risky.outputs.second-description }}
+          OTHER: ${{ needs.second-review-unlabeled-by-another.outputs.second-verdict }}
+          OTHER_WHY: ${{ needs.second-review-unlabeled-by-another.outputs.second-description }}
+          OWNER: ${{ needs.second-review-unlabeled-by-owner.outputs.second-verdict }}
+          OWNER_WHY: ${{ needs.second-review-unlabeled-by-owner.outputs.second-description }}
+        run: |
+          echo "label: $LABEL ($LABEL_WHY); path: $PATH_V ($PATH_WHY); .github: $GITHUB_V ($GITHUB_WHY)"
+          echo "not risky: $NOT_RISKY ($NOT_RISKY_WHY); unlabeled by another: $OTHER ($OTHER_WHY); by the owner: $OWNER ($OWNER_WHY)"
+          if [ "$LABEL_WHY" = "Not an agent's pull request" ]; then
+            [ "$LABEL:$PATH_V:$GITHUB_V:$NOT_RISKY:$OWNER" = "pass:pass:pass:pass:pass" ] || { echo "::error::A non-agent pull request should pass every run"; exit 1; }
+            [ "$OTHER" = skip ] || { echo "::error::A non-owner's unlabeled event gave $OTHER, not skip"; exit 1; }
+            exit 0
+          fi
+          [ "$LABEL" = blocking ] || { echo "::error::The labelled case gave $LABEL, not blocking"; exit 1; }
+          [ "$PATH_V" = pass ] && [[ "$PATH_WHY" == "No blocking findings"* ]] || { echo "::error::The path case gave $PATH_V ($PATH_WHY)"; exit 1; }
+          [ "$GITHUB_V" = pass ] && [[ "$GITHUB_WHY" == "No blocking findings"* ]] || { echo "::error::The .github case gave $GITHUB_V ($GITHUB_WHY)"; exit 1; }
+          [ "$NOT_RISKY" = pass ] && [ "$NOT_RISKY_WHY" = "Not a risky pull request" ] || { echo "::error::The not-risky case gave $NOT_RISKY ($NOT_RISKY_WHY)"; exit 1; }
+          [ "$OTHER" = skip ] || { echo "::error::A non-owner's unlabeled event gave $OTHER, not skip"; exit 1; }
+          [ "$OWNER" = pass ] && [ "$OWNER_WHY" = "Not a risky pull request" ] || { echo "::error::The owner's unlabeled event gave $OWNER ($OWNER_WHY)"; exit 1; }

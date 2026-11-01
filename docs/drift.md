@@ -79,6 +79,14 @@ Waypoint's and Runway's `agent-review.yml`, `agent_review.py`, `agent-review-run
 | Self-test | None | None | The reusable workflow on fleet's pull requests with `dry-run: true` and `fake-review` (the stub `tests/fakes/claude`: pass, blocking, malformed → error); fleet dogfoods the real review through `agent-review-caller.yml` | The plumbing is tested without a secret |
 | `tests/test_agent_review.py` | 558 lines, the Plan cases above | 452 lines, a subset | The union, on `fleet_tools.agent_review`, plus the new decisions | No case lost |
 
+## Second review (`FLEET-SECOND-REVIEW`)
+
+Neither app had one. The second review is new, in the same reusable workflow as the first ([agent-review.md](agent-review.md)).
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| A second review | — | — ("every review uses Sonnet and never Opus", owner decision) | The `second-review` job on `claude-fable-5-1`, fixed, on risky pull requests only: a label in `second-review-labels` (`safety-critical,security`) or a path in `second-review-paths` (`.github/**`, `.claude/**` always); its own "Second review" status and `<!-- second-review -->` comment; "Not a risky pull request" passes so the gate can require it everywhere; `labeled`/`unlabeled` run only it, and only the owner's `unlabeled` re-evaluates; budget 10, turns 120; the app's `invariants.md` required with `second-review-paths` | The owner's new rule supersedes Runway's; the first review stays Sonnet |
+
 ## Opt-in workflows (`FLEET-OPTIONAL`)
 
 What each app runs beyond the core, as reusable workflows an app calls or doesn't ([adopting.md](adopting.md)). Each keeps its triggers, path filters and concurrency group in the caller.
