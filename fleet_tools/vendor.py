@@ -17,6 +17,8 @@ RESERVED = (".claude/skills/fleet-*/**/*", ".claude/agents/fleet-*", ".claude/ho
 NOTE = "vendored from fleet {version} ({source}) by `fleet sync`; edit it in fleet, not here: `fleet drift` fails on any change"
 NOTED = re.compile(r"\A(?:#![^\n]*\n|---\n)?(?:# |<!-- )vendored from fleet v\d+\.\d+\.\d+ ")
 NAME = re.compile(r"^name: (?P<name>[a-z0-9-]+)$", re.MULTILINE)
+SKILL_NOTE = re.compile("# " + re.escape(NOTE).replace(re.escape("{version}"), r"v\d+\.\d+\.\d+")
+                        .replace(re.escape("{source}"), re.escape(SKILLS.as_posix()) + r"/[a-z0-9-]+/SKILL\.md"))
 
 
 class VendorError(Exception):
@@ -107,6 +109,11 @@ def is_vendored(path: Path) -> bool:
         return bool(NOTED.match(path.read_text(encoding="utf-8")))
     except (OSError, UnicodeDecodeError):
         return False
+
+
+def is_vendored_skill(text: str) -> bool:
+    lines = text.split("\n", 2)
+    return len(lines) > 2 and lines[0] == "---" and bool(SKILL_NOTE.fullmatch(lines[1]))
 
 
 def sync(root: Path, version: str) -> list[str]:

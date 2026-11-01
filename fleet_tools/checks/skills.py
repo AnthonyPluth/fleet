@@ -1,4 +1,6 @@
+import fnmatch
 import importlib.util
+import os
 import re
 import shlex
 import subprocess
@@ -6,6 +8,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from fleet_tools import agents_md, vendor
 from fleet_tools.checks.context import Check, Context, relative
 from fleet_tools.config import ConfigError
 
@@ -13,6 +16,8 @@ SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.DOTALL)
 MD_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 TIMEOUT = 120
+EXEMPT = ("node_modules/", ".fleet/", "tests/fixtures/")
+FRONT_NAME = re.compile(r"^name:[ \t]*(?P<name>.*?)[ \t]*$", re.MULTILINE)
 
 
 def check_skill(folder: str, text: str, exists: Callable[[str], bool] = lambda rel: True,
@@ -57,7 +62,96 @@ def check_skills(root: Path, directory: Path) -> list[str]:
     problems = []
     name = relative(root, directory)
     for skill in sorted(directory.glob("*/SKILL.md")):
-        problems += check_skill(skill.parent.name, skill.read_text(encoding="utf-8"), exists_under(skill.parent), name)
+        text = read(skill)
+        if text is None:
+            problems.append(f"{name}/{skill.parent.name}/SKILL.md: isn't UTF-8 text")
+            continue
+        problems += check_skill(skill.parent.name, text, exists_under(skill.parent), name)
+    return problems
+
+
+def read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def name_and_body(text: str) -> tuple[str | None, str]:
+    found = FRONTMATTER.match(text)
+    if not found:
+        return None, text
+    name = FRONT_NAME.search(found.group(1))
+    return (name.group("name") if name else None), found.group(2)
+
+
+def normalized(body: str) -> str:
+    return " ".join(body.split())
+
+
+def skill_files(root: Path) -> list[str]:
+    try:
+        listing = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=root,
+                                 check=True, capture_output=True).stdout.split(b"\0")
+        names = [os.fsdecode(name) for name in listing]
+    except (OSError, subprocess.CalledProcessError):
+        names = [path.relative_to(root).as_posix() for path in root.rglob("SKILL.md")
+                 if ".git" not in path.relative_to(root).parts]
+    return sorted({name for name in names if name.rsplit("/", 1)[-1] == "SKILL.md" and (root / name).is_file()})
+
+
+def exempt(path: str, ignore: list[str]) -> bool:
+    if any(f"/{where}" in f"/{path}" for where in EXEMPT):
+        return True
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in ignore)
+
+
+def fleet_skills(directory: Path) -> dict[str, str]:
+    found = {}
+    own = agents_md.ROOT / vendor.SKILLS
+    for skill in sorted(own.glob("*/SKILL.md")) if own.is_dir() else []:
+        text = read(skill)
+        if text is not None:
+            found[skill.parent.name] = name_and_body(text)[1]
+    for skill in sorted(directory.glob(f"{vendor.SKILL_PREFIX}*/SKILL.md")):
+        text = read(skill)
+        if text is not None and vendor.is_vendored_skill(text):
+            found.setdefault(skill.parent.name.removeprefix(vendor.SKILL_PREFIX), name_and_body(text)[1])
+    return found
+
+
+def check_homes(root: Path, directory: Path, ignore: list[str]) -> list[str]:
+    home = relative(root, directory)
+    if not directory.is_dir():
+        return [f"{home}: [tool.fleet] skills names a directory that isn't there"]
+    problems = []
+    for path in skill_files(root):
+        parts = path.split("/")
+        if exempt(path, ignore) or (len(parts) >= 2 and "/".join(parts[:-2]) == home and parts[-2]):
+            continue
+        problems.append(f"{path}: a skill lives at {home}/<name>/SKILL.md (fleet's under {home}/"
+                        f"{vendor.SKILL_PREFIX}*, the app's own beside them), nowhere else; move it there or list it "
+                        "in skill-homes-ignore")
+    fleet = fleet_skills(directory)
+    bodies = {normalized(body): name for name, body in fleet.items() if normalized(body)}
+    for folder in sorted(path for path in directory.iterdir() if path.is_dir()):
+        where = f"{home}/{folder.name}/SKILL.md"
+        text = read(folder / "SKILL.md")
+        if folder.name.startswith(vendor.SKILL_PREFIX):
+            if text is None or not vendor.is_vendored_skill(text):
+                problems.append(f"{where}: `{vendor.SKILL_PREFIX}` is reserved for vendored skills, and this one "
+                                "lacks the line `fleet sync` writes; rename the app's own skill")
+            continue
+        if text is None:
+            continue
+        name, body = name_and_body(text)
+        if name is not None and (name in fleet or name.removeprefix(vendor.SKILL_PREFIX) in fleet):
+            problems.append(f"{where}: its name {name!r} is a fleet skill's; change the fleet skill in fleet, or give "
+                            "the app's own another name")
+        copied = bodies.get(normalized(body))
+        if copied is not None:
+            problems.append(f"{where}: its body is fleet's {copied!r} skill copied; fleet sync vendors it as "
+                            f"{home}/{vendor.SKILL_PREFIX}{copied}, so delete the copy")
     return problems
 
 
@@ -135,4 +229,16 @@ def run(context: Context) -> list[str]:
     return problems
 
 
+def homes_apply(context: Context) -> bool:
+    return context.config.has("skills")
+
+
+def homes(context: Context) -> list[str]:
+    skills = context.config.path("skills")
+    if skills is None:
+        return []
+    return check_homes(context.root, skills, context.config.strings("skill-homes-ignore"))
+
+
+HOMES = Check("skill-homes", "each skill in its one home", homes_apply, homes)
 CHECK = Check("skills", "skills well formed, generated references and feature maps current", applies, run)

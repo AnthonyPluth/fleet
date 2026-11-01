@@ -11,13 +11,13 @@ Waypoint and Runway each carry their own copy of the same automation: the indepe
 - `.github/agent-review/`, `.github/scripts/`: the review prompts and the scripts the reusable workflows run.
 - `.claude-plugin/`, `plugins/fleet/`: the Claude Code plugin (skills, the reviewer agent, the session-start hook), vendored into each app by `fleet sync` with `shim/fleet` as the app's `tools/fleet` ([adopting](docs/adopting.md#claude-code-plugin)).
 - `agents-md/sections/`: the `AGENTS.md` blocks the apps share.
-- `docs/`: [adopting fleet](docs/adopting.md), [where the apps differed](docs/drift.md), [the agent review](docs/agent-review.md), [review mining](docs/review-mining.md), the owner's [deep-scan runbook](docs/deep-scan.md) and [releasing](docs/release.md).
+- `docs/`: [adopting fleet](docs/adopting.md), [where the apps differed](docs/drift.md), [the agent review](docs/agent-review.md), [review mining](docs/review-mining.md), [where skills live](docs/skills.md), the owner's [deep-scan runbook](docs/deep-scan.md) and [releasing](docs/release.md).
 
 Most of these arrive in later issues; this repository starts with the scaffold.
 
 ## The FLEET_REF convention
 
-A called workflow can't learn its own ref: `github.workflow_ref` and `github.workflow_sha` describe the caller. So every reusable workflow (`on: workflow_call`) carries a top-level `env: FLEET_REF: <tag>` and an optional `fleet-ref` input, and a workflow that runs fleet's own files checks out `AnthonyPluth/fleet` at `inputs.fleet-ref || env.FLEET_REF` into `.fleet/` (sparse, `persist-credentials: false`) before the first step that uses one, after the caller's own checkout (which would delete `.fleet/`); that is where its scripts, prompts and tools come from, and a workflow that runs none has no such step. The release stamps the tag; until v1.0.0 the value is `main`. `fleet self-check` holds it: it fails when a reusable workflow has no `FLEET_REF`, when the value isn't `v` + `VERSION` (or `main` while `VERSION` is 0.x), and when `self-test.yml` calls a reusable workflow without `fleet-ref: ${{ github.sha }}`.
+A called workflow can't learn its own ref: `github.workflow_ref` and `github.workflow_sha` describe the caller. So every reusable workflow (`on: workflow_call`) carries a top-level `env: FLEET_REF: <tag>` and an optional `fleet-ref` input, and a workflow that runs fleet's own files checks out `AnthonyPluth/fleet` at `inputs.fleet-ref || env.FLEET_REF` into `.fleet/` (sparse, `persist-credentials: false`) before the first step that uses one, after the caller's own checkout (which would delete `.fleet/`); that is where its scripts, prompts and tools come from, and a workflow that runs none has no such step. The release stamps the tag; until v1.0.0 the value is `main`. `fleet self-check` holds it: it fails when a reusable workflow has no `FLEET_REF`, when the value isn't `v` + `VERSION` (or `main` while `VERSION` is 0.x), when a reusable workflow checks out `AnthonyPluth/fleet` at any other ref, and when `self-test.yml` calls a reusable workflow without `fleet-ref: ${{ github.sha }}`.
 
 ## Working on fleet
 
