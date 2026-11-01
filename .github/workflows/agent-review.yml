@@ -176,10 +176,16 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           ACTION: ${{ github.event.action }}
+          STUB: ${{ inputs.fake-review }}
         run: |
           agent=$(gh api --paginate "repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @json' \
                     | python3 -I .fleet/fleet_tools/agent_review.py detect)
           same_repo=$([ "$HEAD_REPO" = "$REPO" ] && echo true || echo false)
+          # Self-test only: the pull request that adds context.md has none on its base yet, so the stub falls back to fleet's own.
+          if [ -n "$STUB" ] && [ ! -s trusted/.github/agent-review/context.md ]; then
+            mkdir -p trusted/.github/agent-review
+            cp .fleet/.github/agent-review/context.md trusted/.github/agent-review/context.md
+          fi
           context=$([ -s trusted/.github/agent-review/context.md ] && echo true || echo false)
           statuses=""
           if [ "$ACTION" = ready_for_review ]; then
