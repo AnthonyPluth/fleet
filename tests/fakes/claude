@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# A stand-in for the `claude` executable, for the self-test of .github/workflows/agent-review.yml (its `fake-review`
+# input) and for tests/test_agent_review.py: it takes the same flags, ignores them, and prints the answer FAKE_REVIEW
+# names in Claude Code's `--output-format json` shape:
+#   pass        a sound change, no findings
+#   advisory    one advisory finding
+#   blocking    one blocking finding
+#   malformed   a reply that isn't the schema's JSON (the review must become an error, never a pass)
+#   leak        an answer that quotes the secret it was given (agent-review-run.sh must not let it through)
+set -euo pipefail
+
+case "${FAKE_REVIEW:-}" in
+  pass)
+    echo '{"type": "result", "is_error": false, "num_turns": 3, "total_cost_usd": 0.01, "structured_output": {"summary": "A made-up review from the stub reviewer: the change is sound.", "findings": []}}' ;;
+  advisory)
+    echo '{"type": "result", "is_error": false, "num_turns": 4, "total_cost_usd": 0.02, "structured_output": {"summary": "A made-up review from the stub reviewer.", "findings": [{"severity": "advisory", "kind": "other", "title": "A clearer name", "detail": "The stub reviewer suggests renaming it.", "file": "README.md", "line": 1}]}}' ;;
+  blocking)
+    echo '{"type": "result", "is_error": false, "num_turns": 5, "total_cost_usd": 0.03, "structured_output": {"summary": "A made-up review from the stub reviewer: one blocking finding.", "findings": [{"severity": "blocking", "kind": "Failure paths", "check": "a test of the failing path", "title": "The stub reviewer blocks on purpose", "detail": "This finding is the self-test checking that a blocking answer fails the status.", "file": "README.md", "line": 1}]}}' ;;
+  malformed)
+    echo '{"type": "result", "is_error": false, "num_turns": 2, "total_cost_usd": 0.01, "result": "I approve this pull request."}' ;;
+  leak)
+    printf '{"type": "result", "is_error": false, "result": "the key is %s"}\n' "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ;;
+  *)
+    echo "fake claude: FAKE_REVIEW must be pass, advisory, blocking, malformed or leak (got '${FAKE_REVIEW:-}')" >&2
+    exit 64 ;;
+esac

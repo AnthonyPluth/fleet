@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fleet_tools import (
+    agent_review,
     coverage_floor,
     next_version,
     no_comments,
@@ -39,6 +40,7 @@ register("no-comments", Command(no_comments.HELP, no_comments.configure, no_comm
 register("coverage-floor", Command(coverage_floor.HELP, coverage_floor.configure, coverage_floor.run))
 register("next-version", Command(next_version.HELP, next_version.configure, next_version.run))
 register("test-timings", Command(test_timings.HELP, test_timings.configure, test_timings.run))
+register("agent-review", Command(agent_review.HELP, agent_review.configure, agent_review.run))
 
 
 def version() -> str:
