@@ -1,13 +1,16 @@
 import contextlib
 import io
 import re
+import shutil
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import sync_fixture
-from consumers import FIXTURES, RUNWAY, WAYPOINT, copy, git, temporary, write
+from consumers import FIXTURES, RUNWAY, WAYPOINT, commit, copy, git, temporary, write
 
 from fleet_tools import agents_md, cli, drift, self_check, sync_workflow, vendor
 
@@ -402,7 +405,7 @@ class SyncWorkflow(unittest.TestCase):
         self.assertIn('[[ "$existing" =~ ^[0-9]+$ ]]', script)
         self.assertIn('[[ "$bot_id" =~ ^[0-9]+$ ]]', script)
         self.assertIn("--input", script)
-        for step in ("Open the migration issue unless one is open", "Push the branch and open or update the pull request", "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510   # v3.3.0"):
+        for step in ("Open the migration issue unless one is open", "Push the branch and open or update the pull request", "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510   # v3.3.0", "The App is configured"):
             self.assertIn("inputs.fixture == ''", self.steps[step], step)
             self.assertIn("!inputs.dry-run", self.steps[step], step)
 
@@ -418,21 +421,32 @@ class SyncWorkflow(unittest.TestCase):
             self.assertNotIn("${{", body)
         self.assertNotIn("secrets.", "\n".join(run_bodies(self.text)))
 
-    def test_the_planner_runs_from_fleets_checkout_and_the_sync_from_the_pins(self) -> None:
+    def test_the_planner_runs_from_fleets_checkout_and_the_sync_from_a_clone_at_the_pin(self) -> None:
         plan = self.steps["Plan"].split("run: |\n", 1)[1]
         self.assertIn("cd .fleet || exit 1", plan)
         self.assertIn('fleet_tools.cli sync-plan --root "$GITHUB_WORKSPACE/app" | tee -a "$GITHUB_OUTPUT"', plan)
-        pin_checkout = [source for source in self.steps.values() if "path: .fleet-pin" in source]
-        self.assertEqual(len(pin_checkout), 1)
-        self.assertIn("ref: ${{ inputs.fixture != '' && (inputs.fleet-ref || env.FLEET_REF) || steps.plan.outputs.pin }}", pin_checkout[0])
-        self.assertIn("CHANGELOG.md", pin_checkout[0])
+        fleet_checkouts = [source for source in self.steps.values() if "repository: AnthonyPluth/fleet" in source]
+        self.assertEqual(len(fleet_checkouts), 1)
+        self.assertIn("ref: ${{ inputs.fleet-ref || env.FLEET_REF }}", fleet_checkouts[0])
+        pin = self.steps["fleet at the pins' version"]
+        self.assertIn("if: steps.plan.outputs.action != 'none'", pin)
+        script = pin.split("run: |\n", 1)[1]
+        self.assertIn('[[ "$PIN" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]', script)
+        self.assertIn('git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin', script)
+        self.assertIn("cp -a .fleet .fleet-pin", script)
+        self.assertNotIn("GH_TOKEN", pin)
+        self.assertNotIn("secrets.", pin)
 
-    def test_the_callers_checkout_is_before_fleets_use_and_the_fixture_replaces_it(self) -> None:
+    def test_the_callers_default_branch_is_checked_out_before_fleet_and_the_fixture_replaces_it(self) -> None:
         names = list(self.steps)
-        self.assertTrue(names[0].startswith("actions/checkout@") and names[0].endswith(" path: .fleet"), names[0])
-        self.assertTrue(names[1].startswith("actions/checkout@") and names[1].endswith(" path: app"), names[1])
-        self.assertIn("if: inputs.fixture == ''", self.steps[names[1]])
+        self.assertTrue(names[0].startswith("actions/checkout@") and names[0].endswith(" path: app"), names[0])
+        self.assertTrue(names[1].startswith("actions/checkout@") and names[1].endswith(" path: .fleet"), names[1])
+        app = self.steps[names[0]]
+        self.assertIn("if: inputs.fixture == ''", app)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", app)
+        self.assertNotIn("repository:", app)
         self.assertIn("if: inputs.fixture != ''", self.steps["Build the fixture consumer (self-test)"])
+        self.assertLess(names.index(names[1]), names.index("Build the fixture consumer (self-test)"))
         self.assertLess(names.index("Build the fixture consumer (self-test)"), names.index("Plan"))
 
 
@@ -456,23 +470,74 @@ class ChecksWorkflow(unittest.TestCase):
         self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
         self.assertEqual(self.workflow["permissions"], "{}")
 
-    def test_the_consumer_is_checked_out_with_history_before_fleet_at_its_version(self) -> None:
+    def test_the_consumer_is_checked_out_into_app_with_history_before_fleet_at_the_pinned_ref(self) -> None:
         steps = steps_of(self.workflow, "checks")
         first = mapping(steps[0]["with"])
-        self.assertEqual((first["fetch-depth"], first["persist-credentials"]), ("0", "false"))
+        self.assertEqual((first["path"], first["fetch-depth"], first["persist-credentials"]), ("app", "0", "false"))
         self.assertNotIn("repository", first)
+        self.assertNotIn("ref", first)
         fleet = next(step for step in steps if "repository" in mapping(step.get("with", {})))
-        self.assertEqual(mapping(fleet["with"])["ref"], "${{ steps.version.outputs.ref }}")
-        self.assertEqual(mapping(fleet["with"])["persist-credentials"], "false")
+        inputs = mapping(fleet["with"])
+        self.assertEqual(inputs["ref"], "${{ inputs.fleet-ref || env.FLEET_REF }}")
+        self.assertEqual((inputs["path"], inputs["fetch-depth"], inputs["fetch-tags"], inputs["persist-credentials"]), (".fleet", "0", "true", "false"))
         self.assertLess(steps.index(fleet), [step_name(step) for step in steps].index("fleet checks"))
+        self.assertEqual([step_name(step) for step in steps if not str(step.get("uses", "")).startswith("actions/checkout@")],
+                         ["fleet checks", "fleet drift"])
         for step in steps:
             if isinstance(step.get("uses"), str):
                 self.assertRegex(str(step["uses"]), r"@[0-9a-f]{40}$")
+        self.assertNotIn(".fleet/version", self.text.split("    steps:\n", 1)[1])
 
-    def test_the_version_is_validated_before_it_becomes_a_ref(self) -> None:
-        script = self.steps["The fleet version the content is at"].split("run: |\n", 1)[1]
-        self.assertIn('[[ "$ref" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]', script)
-        self.assertIn("GIVEN: ${{ inputs.fleet-ref }}", self.steps["The fleet version the content is at"])
+    def test_the_tools_run_against_the_consumer_in_app(self) -> None:
+        for name in ("fleet checks", "fleet drift"):
+            script = self.steps[name].split("run: |\n", 1)[1]
+            self.assertIn('root=$(cd "app/$DIR" && pwd)', script)
+            self.assertIn("cd .fleet || exit 1", script)
+
+    def workspace(self, working_directory: str) -> tuple[Path, dict[str, str]]:
+        root = temporary(self)
+        app = root / "app"
+        if working_directory == ".":
+            copy_to = app
+        else:
+            copy_to = app / working_directory
+            copy_to.parent.mkdir(parents=True)
+        shutil.copytree(WAYPOINT, copy_to)
+        git(app, "init", "-q", "-b", "main")
+        commit(app, "chore: the consumer")
+        (root / ".fleet").symlink_to(ROOT, target_is_directory=True)
+        env = {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "GITHUB_WORKSPACE": str(root), "DIR": working_directory,
+               "EVENT": "push", "BASE": "", "HEAD": "", "EXPECT_DRIFT": "false", "HOME": str(root)}
+        return root, env
+
+    def run_step(self, name: str, root: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        body = self.steps[name].split("run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in body.splitlines())
+        return subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=root, env=env, capture_output=True, text=True, check=False)
+
+    def test_the_steps_pass_on_a_consumer_whose_fleet_version_is_at_its_root(self) -> None:
+        for working_directory in (".", "apps/one"):
+            with self.subTest(working_directory=working_directory):
+                root, env = self.workspace(working_directory)
+                version = root / "app" / working_directory / ".fleet/version"
+                self.assertTrue(version.is_file())
+                for name in ("fleet checks", "fleet drift"):
+                    done = self.run_step(name, root, env)
+                    self.assertEqual(done.returncode, 0, name + "\n" + done.stdout + done.stderr)
+                self.assertIn("Fleet checks passed", self.run_step("fleet checks", root, env).stdout)
+                self.assertIn("fleet drift: no drift", self.run_step("fleet drift", root, env).stdout)
+                self.assertTrue(version.is_file())
+
+    def test_expect_drift_passes_only_when_drift_fails(self) -> None:
+        root, env = self.workspace(".")
+        env["EXPECT_DRIFT"] = "true"
+        self.assertEqual(self.run_step("fleet drift", root, env).returncode, 1)
+        (root / "app/.fleet/version").unlink()
+        done = self.run_step("fleet drift", root, env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("as it should", done.stdout)
+        env["EXPECT_DRIFT"] = "false"
+        self.assertEqual(self.run_step("fleet drift", root, env).returncode, 1)
 
     def test_the_commit_range_comes_from_the_event_and_is_checked(self) -> None:
         checks = self.steps["fleet checks"]

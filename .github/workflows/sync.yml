@@ -88,7 +88,16 @@ jobs:
       changed: ${{ steps.content.outputs.changed }}
       body: ${{ steps.body.outputs.body }}
     steps:
-      # fleet at the pinned ref: the planner, and the fixture builder the self-test uses.
+      # The caller's default branch, whatever ref the run was started from: its workflows (the pins) and its content,
+      # which is what the pull request is built from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        if: inputs.fixture == ''
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: app
+          persist-credentials: false
+
+      # fleet at the pinned ref, after the caller's checkout: the planner, and the fixture builder the self-test uses.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
@@ -106,13 +115,6 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # The caller's default branch: its workflows (the pins) and its content.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
-        if: inputs.fixture == ''
-        with:
-          path: app
-          persist-credentials: false
-
       # Self-test only: a consumer built from fleet's fixture with its pins and its content at the given versions.
       - name: Build the fixture consumer (self-test)
         if: inputs.fixture != ''
@@ -128,29 +130,28 @@ jobs:
           cd .fleet || exit 1
           python3 -E -s -m fleet_tools.cli sync-plan --root "$GITHUB_WORKSPACE/app" | tee -a "$GITHUB_OUTPUT"
 
-      # fleet at the pins' version: `fleet sync --to <pin>` must run from the fleet that ships that version's content,
-      # and the CHANGELOG there lists what changed. The self-test has no such tag, so it takes this fleet again, with
-      # its VERSION stamped to the pin.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      # fleet at the pins' version, in .fleet-pin/: `fleet sync --to <pin>` must run from the fleet that ships that
+      # version's content, and the CHANGELOG there lists what changed. A plain clone of the public repository at the
+      # tag the planner validated (vX.Y.Z, read from the caller's own workflows on its default branch), no token; the
+      # one checkout of fleet by the action stays at this workflow's pinned ref. The self-test has no such tag, so it
+      # takes a copy of this fleet, with its VERSION stamped to the pin.
+      - name: fleet at the pins' version
         if: steps.plan.outputs.action != 'none'
-        with:
-          repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fixture != '' && (inputs.fleet-ref || env.FLEET_REF) || steps.plan.outputs.pin }}
-          path: .fleet-pin
-          sparse-checkout: |
-            fleet_tools
-            agents-md
-            plugins
-            shim
-            CHANGELOG.md
-            VERSION
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - name: Stamp the fixture's fleet at the pin (self-test)
-        if: steps.plan.outputs.action != 'none' && inputs.fixture != ''
         env:
           PIN: ${{ steps.plan.outputs.pin }}
-        run: echo "${PIN#v}" > .fleet-pin/VERSION
+          FIXTURE: ${{ inputs.fixture }}
+        run: |
+          if ! [[ "$PIN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The planned pin '${PIN:0:40}' isn't a version"
+            exit 1
+          fi
+          if [ -n "$FIXTURE" ]; then
+            cp -a .fleet .fleet-pin
+            echo "${PIN#v}" > .fleet-pin/VERSION
+          else
+            git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin
+          fi
+          echo "fleet $(cat .fleet-pin/VERSION) in .fleet-pin"
 
       - name: Write the pull request's or the issue's body
         id: body

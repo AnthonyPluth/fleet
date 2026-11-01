@@ -131,7 +131,7 @@ What each app runs beyond the core, as reusable workflows an app calls or doesn'
 
 | Piece | Waypoint | Runway | fleet takes | Why |
 | --- | --- | --- | --- | --- |
-| `fleet-checks` job | Its own job in `ci.yml` running `tools/fleet_checks.py` | The same | `checks.yml`: `fleet checks` (`--commits <base>..<head>` on a pull request) and `fleet drift`, from fleet at `.fleet/version`; inputs `runs-on`, `working-directory`, `expect-drift`, `fleet-ref` | The tools moved to fleet; the job that runs them follows, at the version the app's content is at |
+| `fleet-checks` job | Its own job in `ci.yml` running `tools/fleet_checks.py` | The same | `checks.yml`: `fleet checks` (`--commits <base>..<head>` on a pull request) and `fleet drift`, from fleet at the workflow's pinned ref, the app checked out into `app/`; inputs `runs-on`, `working-directory`, `expect-drift`, `fleet-ref` | The tools moved to fleet; the job that runs them follows. The tools come from the pinned ref, never from a ref the pull request names; `fleet drift` reads the content's version from fleet's history |
 | Keeping the shared content current | By hand, when someone noticed | By hand | `sync.yml`: Dependabot bumps the workflow pins; the sync reads them (they must agree), runs `fleet sync --to <pin>` from fleet at the pin and opens `chore: fleet content vX.Y.Z` from `fleet/sync` with the fleet-bot App's token; a newer major opens a migration issue instead; `fleet sync-plan` plans it | A pull request opened with the workflow's own token starts no checks, so a second bot opens it; the App has no Workflows permission and the sync writes nothing under `.github/workflows/`; a major needs a person |
 
 ## Claude Code plugin (`FLEET-PLUGIN`)

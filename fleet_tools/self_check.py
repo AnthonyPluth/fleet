@@ -10,6 +10,8 @@ HELP = "check fleet's own conventions (the FLEET_REF stamp on every reusable wor
 WORKFLOWS = Path(".github/workflows")
 SELF_TEST = "self-test.yml"
 SELF_TEST_REF = "${{github.sha}}"
+FLEET_REPOSITORY = "AnthonyPluth/fleet"
+FLEET_CHECKOUT_REF = "${{inputs.fleet-ref||env.FLEET_REF}}"
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
 KEY_PATTERN = re.compile(r"""^(?P<q>["']?)(?P<key>[^"':#][^"':]*)(?P=q)\s*:(?:\s+(?P<value>.*))?$""")
 
@@ -166,11 +168,32 @@ def check(root: Path) -> list[str]:
             errors.append(f"{name}: a reusable workflow needs a top-level `env: FLEET_REF: {expected}`")
         elif ref != expected:
             errors.append(f"{name}: FLEET_REF is {ref!r}, but VERSION {version} needs {expected!r}")
+        errors.extend(check_fleet_checkouts(name, workflow))
     self_test = directory / SELF_TEST
     if not self_test.is_file():
         errors.append(f"{(WORKFLOWS / SELF_TEST).as_posix()}: missing")
     else:
         errors.extend(check_self_test(self_test.relative_to(root).as_posix(), parse(self_test.read_text("utf-8"))))
+    return errors
+
+
+def check_fleet_checkouts(name: str, workflow: Node) -> list[str]:
+    errors: list[str] = []
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict):
+        return errors
+    for job_name, job in jobs.items():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        for step in steps if isinstance(steps, list) else []:
+            if not isinstance(step, dict) or not str(step.get("uses", "")).startswith("actions/checkout@"):
+                continue
+            inputs = step.get("with")
+            if not isinstance(inputs, dict) or inputs.get("repository") != FLEET_REPOSITORY:
+                continue
+            ref = inputs.get("ref")
+            if not isinstance(ref, str) or re.sub(r"\s+", "", ref) != FLEET_CHECKOUT_REF:
+                errors.append(f"{name}: job {job_name} checks out {FLEET_REPOSITORY} at {ref!r}, not "
+                              "`${{ inputs.fleet-ref || env.FLEET_REF }}`: fleet's own files come from the pinned ref only")
     return errors
 
 
