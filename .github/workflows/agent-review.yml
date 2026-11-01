@@ -51,6 +51,18 @@ name: Agent review
 # AGENTS.md "Mistakes that keep coming back" item it falls under) and the comment's third hidden line carries the
 # findings as data, for the monthly mining of repeated findings (FLEET-MINING).
 #
+# What became of each finding (FLEET-FINDING-OUTCOMES): every finding has an id, the first 8 hex digits of SHA-256 over
+# its kind, file and title (lowercased, punctuation removed, whitespace collapsed), shown after its title as `f:1a2b3c4d`
+# and carried in the findings line. The comment's fourth hidden line is the outcomes record (agent-review-outcomes,
+# base64 JSON; the second review keeps its own under its marker): each id is open while a review reports it, becomes
+# resolved when a full review (or an incremental one whose diff touched its file) no longer does, and open again when it
+# comes back. The report job merges it (fleet_tools/review_outcomes.py, from fleet's checkout, with the write token:
+# it reads only line 4 of the workflow's own previous comment) and reads the owner's dismissals: a conversation
+# comment whose first line is `/fleet dismiss f:<id> <reason>` (ten characters of reason at least) from a user whose
+# author_association is OWNER; any other association, an unknown id or a malformed command is ignored, and the reason
+# is defused like every other quoted text. A dismissal is a record, never an override: it shows in the comment and
+# changes no status and no verdict. `fleet review-outcomes --repo OWNER/NAME --pr N` prints the merged outcomes.
+#
 # An agent's pull request is one whose commits carry a Claude-Session or a Claude Co-Authored-By trailer, or whose
 # description says Claude Code generated it (fleet_tools/agent_review.py). Anyone else's gets a passing status saying
 # so; Dependabot's get none (the merge gate doesn't ask for one).
@@ -179,6 +191,9 @@ jobs:
       verdict: ${{ steps.result.outputs.verdict }}
       description: ${{ steps.result.outputs.description }}
       comment: ${{ steps.result.outputs.comment }}
+      findings: ${{ steps.result.outputs.findings }}
+      incremental: ${{ steps.plan.outputs.incremental }}
+      touched: ${{ steps.plan.outputs.touched }}
     steps:
       # fleet at the pinned ref: the prompt, the schema, the locked Claude Code, the runner script, agent_review.py and
       # the stub reviewer the self-test uses.
@@ -381,7 +396,8 @@ jobs:
           fi
 
   # Posts what the review found: the comment, the "Agent review" status, and asks the merge gate to decide again
-  # (setting a status starts no workflow by itself). It never sees the pull request's code or the secrets. With
+  # (setting a status starts no workflow by itself). It never sees the pull request's code or the secrets; it checks
+  # out fleet's tools alone, for the finding outcomes (line 4 of the comment, and the owner's dismissals). With
   # dry-run it prints what it would post. A skip (a label event, a draft already reviewed) posts nothing.
   report:
     name: Report
@@ -393,10 +409,19 @@ jobs:
     runs-on: ubuntu-latest   # hosted: holds the write token for the comment and the status
     timeout-minutes: 5
     permissions:
-      pull-requests: write     # the comment
+      contents: read           # check out fleet's tools
+      pull-requests: write     # the comment (and the dismissals among the pull request's comments)
       statuses: write          # the "Agent review" status
       actions: write           # start the merge gate
     steps:
+      # fleet's tools at the pinned ref, for the finding outcomes (review_outcomes.py); nothing of the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: fleet_tools
+          persist-credentials: false
       - name: Post the review
         env:
           GH_TOKEN: ${{ github.token }}
@@ -407,6 +432,9 @@ jobs:
           VERDICT: ${{ needs.review.outputs.verdict }}
           DESCRIPTION: ${{ needs.review.outputs.description }}
           COMMENT: ${{ needs.review.outputs.comment }}
+          FINDINGS: ${{ needs.review.outputs.findings }}
+          INCREMENTAL: ${{ needs.review.outputs.incremental }}
+          TOUCHED: ${{ needs.review.outputs.touched }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MERGE_GATE: ${{ inputs.merge-gate-workflow }}
           DRY_RUN: ${{ inputs.dry-run }}
@@ -421,6 +449,12 @@ jobs:
           echo "$state: $DESCRIPTION"
           if [ -n "$COMMENT" ]; then
             base64 -d <<< "$COMMENT" > comment.md
+            # The finding outcomes: line 4 merged from the last comment's record and every finding of this review (the
+            # findings output, since line 3 is cut to fit), and the owner's dismissals shown. If this fails the comment is posted as it is (a warning says so).
+            base64 -d <<< "$TOUCHED" > touched.txt
+            base64 -d <<< "$FINDINGS" > findings.json
+            python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md --repo "$REPO" --pr "$PR" --sha "$SHA" \
+              --incremental "$INCREMENTAL" --touched touched.txt --findings findings.json
             if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
             # One comment per pull request, updated by each review (the marker is its first line).
             existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
@@ -523,6 +557,9 @@ jobs:
       verdict: ${{ steps.result.outputs.verdict }}
       description: ${{ steps.result.outputs.description }}
       comment: ${{ steps.result.outputs.comment }}
+      findings: ${{ steps.result.outputs.findings }}
+      incremental: ${{ steps.plan.outputs.incremental }}
+      touched: ${{ steps.plan.outputs.touched }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
@@ -770,10 +807,19 @@ jobs:
     runs-on: ubuntu-latest   # hosted: holds the write token for the comment and the status
     timeout-minutes: 5
     permissions:
-      pull-requests: write     # the comment
+      contents: read           # check out fleet's tools
+      pull-requests: write     # the comment (and the dismissals among the pull request's comments)
       statuses: write          # the "Second review" status
       actions: write           # start the merge gate
     steps:
+      # fleet's tools at the pinned ref, for the finding outcomes (review_outcomes.py); nothing of the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: fleet_tools
+          persist-credentials: false
       - name: Post the second review
         env:
           GH_TOKEN: ${{ github.token }}
@@ -784,6 +830,9 @@ jobs:
           VERDICT: ${{ needs.second-review.outputs.verdict }}
           DESCRIPTION: ${{ needs.second-review.outputs.description }}
           COMMENT: ${{ needs.second-review.outputs.comment }}
+          FINDINGS: ${{ needs.second-review.outputs.findings }}
+          INCREMENTAL: ${{ needs.second-review.outputs.incremental }}
+          TOUCHED: ${{ needs.second-review.outputs.touched }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MERGE_GATE: ${{ inputs.merge-gate-workflow }}
           DRY_RUN: ${{ inputs.dry-run }}
@@ -798,6 +847,11 @@ jobs:
           echo "$state: $DESCRIPTION"
           if [ -n "$COMMENT" ]; then
             base64 -d <<< "$COMMENT" > comment.md
+            # The second review's own outcomes record (its marker), merged and shown as for the first review.
+            base64 -d <<< "$TOUCHED" > touched.txt
+            base64 -d <<< "$FINDINGS" > findings.json
+            python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md --second --repo "$REPO" --pr "$PR" --sha "$SHA" \
+              --incremental "$INCREMENTAL" --touched touched.txt --findings findings.json
             if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
             # One second-review comment per pull request, updated by each second review (the marker is its first line).
             existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \

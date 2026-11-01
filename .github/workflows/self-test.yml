@@ -183,6 +183,22 @@ jobs:
           [ "$BLOCKING" = blocking ] || { echo "::error::The blocking answer gave $BLOCKING"; exit 1; }
           [ "$MALFORMED" = error ] || { echo "::error::The malformed answer gave $MALFORMED, not error"; exit 1; }
 
+  # The finding outcomes (FLEET-FINDING-OUTCOMES) with the stub reviewer, through the same runner script, verdict and
+  # outcomes steps the review runs, on fixed commits and recorded comments: a blocking finding, then a push the stub
+  # passes, gives `resolved`; the owner's `/fleet dismiss` shows and changes no status; a member's is ignored.
+  finding-outcomes:
+    name: Finding outcomes (stub reviewer)
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, the stub reviewer and a few lines of shell
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A fixed finding resolves and a dismissal changes no status
+        run: .github/scripts/finding-outcomes-self-test.sh
+
   # The verify run on a fixture tree (tests/fixtures/verify/): Python with Poetry's virtualenv, Node with the packages
   # and libfaketime are set up as for an app, no browser, and its `make smoke` checks each is there and writes a marker.
   verify:

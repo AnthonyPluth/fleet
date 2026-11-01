@@ -125,6 +125,8 @@ jobs:
 
 An app that sets `second-review-paths` also adds `.github/agent-review/invariants.md`: a numbered list of the app's invariants, each with the test or rule that holds it (fleet's own is the example). Without it, a risky pull request's second review is an `error` status naming the file. The labels `safety-critical` and `security` must exist in the repository.
 
+Every finding carries an id (`` `f:1a2b3c4d` `` after its title), and the comment records what became of each: fixed by a later push, or dismissed by the repository owner with a conversation comment `/fleet dismiss f:<id> <reason>` (ten characters of reason at least; anyone else's is ignored). A dismissal is a record for improving the reviewer, not an override: it doesn't pass the review or change the merge gate ([agent-review.md](agent-review.md)).
+
 The app adds `.github/agent-review/context.md` (what the app is, what private data looks like in its repository and where it would land, which files are generated and what checks cover them, which `AGENTS.md` sections matter most; without it every review is an `error` status naming the file) and drops its own `agent-review.yml` body, `.github/agent-review/`, `.github/scripts/agent-review-run.sh`, `.github/scripts/agent_review.py`, `tests/test_agent_review.py` and the Dependabot entry for `/.github/agent-review`: fleet locks the Claude Code version for everyone. Its `AGENTS.md` "Mistakes that keep coming back" items keep bold titles, which findings cite as their `kind`.
 
 | Input | Default | What |
@@ -191,6 +193,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet coverage-floor [coverage.json]` | coverage.py's JSON report against `[tool.fleet.coverage]`. | 0, 1, 2 (no floors, or no report) |
 | `fleet next-version [--sha] [--output]` | The next release version from the commits since the last tag (`feat:` a minor; `!:`, `BREAKING CHANGE:` or a trailing `#major` a major; else a patch; a trailing `#minor` a minor). Appends `newest`, then `version` and `new`, or `skip`, to `$GITHUB_OUTPUT`. Replaces `.github/scripts/next-version.sh`. | 0, 1 a failing `git` |
 | `fleet test-timings DIR [--top N]` | Sums up the per-test timing files a timing test result wrote. | 0 |
+| `fleet review-outcomes --repo OWNER/NAME --pr N [--json] [--second]` | What became of each of a pull request's review findings: `open`, `resolved` by a later push, or `dismissed` by the owner with `/fleet dismiss f:<id> <reason>` ([agent-review.md](agent-review.md)). Reads the review comment and the pull request's comments with `gh`. | 0, 1 a failing `gh` |
 | `fleet agent-review [second] detect\|wanted\|previous\|plan\|risky\|report` | The agent reviews' decisions (`second` for the second review's marker, status and rules), run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
 | `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--summary FILE] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings records on the pull requests updated in the window, run by `review-mining.yml` ([review-mining.md](review-mining.md)). | 0, 1 a failing `gh api`, 2 usage |
 
