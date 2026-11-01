@@ -30,6 +30,7 @@ Instructions for AI coding agents working in Runway, a self-hosted personal fina
 - **Start the session in the repository.** The session-start hook (in `.claude/hooks/`) sets up the toolchain, Poetry's environment and the web app's packages, but only for a session whose project directory is this repository. A session started one level up has none of it: the system `python3` lacks the dependencies, and the tests fail on their imports.
 - **Run Python through `poetry run` or `make`** (`make test`, or `poetry run python -m unittest tests.test_x`), never the bare `python3`. `make setup` installs the dependencies by hand.
 - **Subagents make their own worktree** under `.claude/worktrees/` (ignored by `.gitignore`), from the session's checkout, and push from there. A session whose working directory isn't a git repository can't create one for them.
+- **Skills have two homes.** fleet's skills are under `.claude/skills/fleet-*` and are changed in fleet; the app's own are under `.claude/skills/`; skills go nowhere else (`fleet checks` checks it: `skill-homes`).
 <!-- fleet:end working-in-a-container -->
 - **Some checks only run in CI.** Only in CI: the Postgres suites, the Docker image build and run, the Verify flows check, the security scans and the independent agent review. A push reaches them; a local run doesn't.
 - **A forecast or money-math test starts from `tests/forecast_support.py`'s `card_setup`** and the helpers in `tests/shared.py`. Build the case in a few lines with made-up figures, and prove the test fails before the fix.
