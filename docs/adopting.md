@@ -196,6 +196,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet review-outcomes --repo OWNER/NAME --pr N [--json] [--second]` | What became of each of a pull request's review findings: `open`, `resolved` by a later push, or `dismissed` by the owner with `/fleet dismiss f:<id> <reason>` ([agent-review.md](agent-review.md)). Reads the review comment and the pull request's comments with `gh`. | 0, 1 a failing `gh` |
 | `fleet agent-review [second] detect\|wanted\|previous\|plan\|risky\|report` | The agent reviews' decisions (`second` for the second review's marker, status and rules), run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
 | `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--summary FILE] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings records on the pull requests updated in the window, run by `review-mining.yml` ([review-mining.md](review-mining.md)). | 0, 1 a failing `gh api`, 2 usage |
+| `fleet sync-plan [--root APP] [--changelog CHANGELOG.md --body FILE]` | The content sync's plan from the workflow pins and `.fleet/version` (`action=none\|sync\|migration`, `pin`, `title`, …), and the pull request's or issue's body from fleet's CHANGELOG at the pin, run by `sync.yml` ([Content sync](#content-sync-two-pins-two-bots)). | 0, 1 pins that disagree or another state it can't act on, 2 no app root |
 
 ## `[tool.fleet]`
 
@@ -394,6 +395,91 @@ NODE_CHECK="esrap/types/public.d.ts eslint-plugin-svelte"
 ```
 
 The plugin isn't enabled: the vendored copies already give every session the skills, the agent and the hook, and enabling the plugin as well would load each skill twice in a local session (once as `fleet-<name>`, once as `fleet:<name>`) and run the hook twice. Declaring the marketplace lets someone browse or install it by hand. The app deletes its own `.claude/hooks/session-start.sh`; its own skills (`verify-waypoint`, say) stay.
+
+## Checks
+
+`.github/workflows/checks.yml` (`workflow_call`) replaces the app's own `fleet-checks` job: it checks out the app with its history, then runs `fleet checks` (with `--commits <base>..<head>` on a pull request, plain on `main`) and `fleet drift`, both from a checkout of fleet at the version the app's content is at (`.fleet/version`), the same the `tools/fleet` shim runs locally. `contents: read` only, no secrets. The caller keeps the triggers and the concurrency group and passes its runner.
+
+```yaml
+name: fleet checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: fleet-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # vX.Y.Z
+    with:
+      runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
+| `working-directory` | `.` | The app's root within the checkout (fleet's self-test passes a fixture consumer) |
+| `expect-drift` | `false` | Self-test only: the drift step passes only when `fleet drift` fails |
+| `fleet-ref` | the version in `.fleet/version` | The fleet to run the tools from (fleet's self-test only) |
+
+## Content sync: two pins, two bots
+
+An app carries two kinds of fleet pin. The **workflow pins** (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<sha>   # vX.Y.Z`) are bumped by Dependabot, in one `fleet` group so they move together; the merge gate passes such a pull request but leaves it for the owner to merge. The **content** (the `AGENTS.md` blocks, the vendored `.claude/` files and `tools/fleet`, `.fleet/version`) is what `fleet sync` writes, and Dependabot can't edit it. `.github/workflows/sync.yml` (`workflow_call`) follows each bump: it reads every fleet pin in the app's workflows (they must agree; if they don't, it fails naming the files), compares with `.fleet/version` and, when the pins are newer in the same major, runs `fleet sync --to <pin>` from fleet at that version and opens, or updates, the pull request `chore: fleet content vX.Y.Z` from the branch `fleet/sync` (rewritten by each run until it merges), with the CHANGELOG entries in between in its body. Pins at a newer major open an issue instead, "fleet vN needs a migration: see CHANGELOG", with the entries to read and the `fleet sync` to run by hand. `fleet drift` lets the content trail the pins within one major, so the app's checks stay green while the sync pull request is open.
+
+The second bot is the point: a pull request opened with a workflow's own `GITHUB_TOKEN` starts no workflows, so nothing would check it. The sync pushes and opens its pull request with the `fleet-bot` GitHub App's installation token instead (`FLEET-SETUP` created the App and installed it on the three repositories; the caller passes its `FLEET_BOT_APP_ID` variable as `app-id` and its `FLEET_BOT_PRIVATE_KEY` secret by name). The token is minted by `actions/create-github-app-token` for this repository alone, narrowed to contents and pull requests, used in one step after the content is written, and revoked when the job ends. The App has no Workflows permission, so it couldn't push a change under `.github/workflows/`; the workflow checks that the sync touched nothing there before it commits anyway. Nothing merges by itself: the merge gate and the owner decide. The migration issue uses the workflow's own token (`issues: write`). The caller runs it on a push to `main` that touches the workflows (a merged pin bump), weekly (a bump merged by hand, or a run that failed) and by hand.
+
+```yaml
+name: Sync fleet content
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/**]
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Print the plan and the pull request instead of opening it"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: fleet-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    permissions:
+      contents: read           # the checkout; the pull request is pushed with the App token
+      issues: write            # the migration issue
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # vX.Y.Z
+    with:
+      app-id: ${{ vars.FLEET_BOT_APP_ID }}
+      dry-run: ${{ inputs.dry-run || false }}
+    secrets:
+      FLEET_BOT_PRIVATE_KEY: ${{ secrets.FLEET_BOT_PRIVATE_KEY }}
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `app-id` | none | The fleet-bot App's id (`vars.FLEET_BOT_APP_ID`); needed unless `dry-run` |
+| `dry-run` | `false` | Print the plan, the diff and the pull request or issue; mint no token, push and open nothing |
+| `fixture` | none | Self-test only: build a fixture consumer (`pins=v1.1.0 content=v1.0.0`) in place of the checkout; implies `dry-run` |
+| `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the planner from (fleet's self-test only) |
+
+Secret, passed by name: `FLEET_BOT_PRIVATE_KEY`. Outputs: `action` (`none`, `sync`, `migration`), `title`, `changed` (the sync commit's files, base64) and `body` (base64). `fleet sync-plan --root APP [--changelog CHANGELOG.md --body FILE]` is the planner (`fleet_tools/sync_workflow.py`): it prints the plan as `key=value` lines and exits 1 when the pins disagree, a pin has no version comment, `.fleet/version` is missing or the content is newer than the pins.
 
 ## Verify (control smoke, verify flows)
 
