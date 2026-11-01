@@ -109,8 +109,8 @@ class Parsing(unittest.TestCase):
         self.assertEqual((caught.exception.line, "never closed" in caught.exception.rule), (1, True))
         with self.assertRaises(ParseError) as caught:
             parse(BEGIN + "\n" + HEADER + "\n" + GAP + "\n> ```\n" + END + "\n")
-        self.assertEqual(caught.exception.line, 1)
-        self.assertIn("no closing", caught.exception.rule)
+        self.assertEqual(caught.exception.line, 4)
+        self.assertIn("never closed", caught.exception.rule)
         with self.assertRaises(ParseError) as caught:
             parse(record(GAP, before="") + "```\n" + record(ROW, before=""))
         self.assertEqual(caught.exception.line, 1 + record(GAP, before="").count("\n"))
@@ -190,6 +190,14 @@ class Parsing(unittest.TestCase):
                     self.assertFalse(verification.is_separator("|" + " " * run + "x"))
                     self.assertFalse(verification.is_separator("|" + " " * run + "|"))
                     self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_a_row_without_a_leading_pipe_is_still_a_row(self) -> None:
+        found = parse(record("The page renders | verified | `make verify` | a screenshot", "Live sync | not verified | no fake | -"))
+        self.assertEqual([(d.dimension, d.status) for d in found], [("The page renders", "verified"), ("Live sync", "not verified")])
+        self.check_rejects(record("a | maybe | h | e"), 8, "isn't `verified` or `not verified`")
+        self.check_rejects(record(ROW, "a note with a | in it"), 9, "2 cells, not 4")
+        self.check_rejects(record(ROW, "a \\| verified | h | e"), 9, "3 cells, not 4")
+        self.assertEqual(len(parse(record(ROW, "a note with an escaped \\| in it is prose"))), 1)
 
     def test_an_escaped_pipe_is_a_literal_pipe_in_a_cell(self) -> None:
         found = parse(record("| a \\| b | verified | `x \\| y` | out \\| put |"))

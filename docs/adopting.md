@@ -412,7 +412,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, edited]   # edited: a fixed description re-runs the verification check
+    types: [opened, synchronize, reopened, ready_for_review, edited]   # edited and ready_for_review: a fixed description, or a draft marked ready, re-runs the verification check
 
 permissions: {}
 
@@ -464,7 +464,7 @@ The record sits under a `## Verification` heading, between two marker lines, eac
 
 The rules (`fleet_tools/verification.py`, which later tools reuse): the header is exactly `| Dimension | Status | How | Evidence |` and there is at least one row; Status is exactly `verified` or `not verified`; a `verified` row has a non-empty How (the command, flow, test or manual step) and Evidence (a test name, a flow name, a screenshot path, a command's output summary); a `not verified` row's How says why it couldn't be verified and what would make it verifiable; `-` and `—` count as empty; `\|` is a literal pipe in a cell; other text between the markers, and everything outside them, is ignored; exactly one block per description, and markers inside fenced code blocks don't count; `\r\n` endings parse as `\n`. A description over 65,536 characters, a block over 100 rows or a cell over 1,000 characters is a parse error, never a silent cut. The description is untrusted: the parser is text processing only (nothing in a cell is run, fetched, followed or expanded), `fleet verification show` defuses mentions and HTML comments in its text output, and the check's messages name the line and the rule and never quote the description, escaped for workflow commands.
 
-The check (`verification`) runs only where the table is set and only when `fleet checks` is given `--pr-event PATH`, which `checks.yml` passes on pull request events (`$GITHUB_EVENT_PATH`); on a push to `main` or a local run without it, it's silent. It reads `pull_request.body`, `pull_request.user.login` and `pull_request.draft` from the payload, skips an author in `exempt-authors`, and otherwise requires exactly one block that parses. With `required = false`, or on a draft pull request, each failure is a warning (`::warning::` on Actions, exit 0); with `required = true` on a ready pull request it's a problem like any other. Add `edited` to the caller's `pull_request` types ([Checks](#checks)) so a fixed description re-runs it.
+The check (`verification`) runs only where the table is set and only when `fleet checks` is given `--pr-event PATH`, which `checks.yml` passes on pull request events (`$GITHUB_EVENT_PATH`); on a push to `main` or a local run without it, it's silent. It reads `pull_request.body`, `pull_request.user.login` and `pull_request.draft` from the payload, skips an author in `exempt-authors`, and otherwise requires exactly one block that parses. With `required = false`, or on a draft pull request, each failure is a warning (`::warning::` on Actions, exit 0); with `required = true` on a ready pull request it's a problem like any other. Add `edited` and `ready_for_review` to the caller's `pull_request` types ([Checks](#checks)) so a fixed description re-runs it, and so a draft marked ready is checked as a ready pull request (with `required = true`, the warning becomes a problem there).
 
 The app's pull request template keeps its "Testing" section and gains this one after it, with a comment that says what goes in each column and that every gap is listed as `not verified`:
 
@@ -478,7 +478,7 @@ The app's pull request template keeps its "Testing" section and gains this one a
 <!-- /fleet-verification -->
 ```
 
-From advisory to required: set the table with `required = false` and `edited` in the caller's types, read the warnings on a few agents' pull requests until the records are complete and honest, then flip `required = true`; a ready pull request without a parseable record then fails "fleet checks", which the merge gate sees, while drafts stay warnings. `fleet verification show --pr N` prints a record as the tools read it.
+From advisory to required: set the table with `required = false` and `edited` and `ready_for_review` in the caller's types, read the warnings on a few agents' pull requests until the records are complete and honest, then flip `required = true`; a ready pull request without a parseable record then fails "fleet checks", which the merge gate sees, while drafts stay warnings. `fleet verification show --pr N` prints a record as the tools read it.
 
 ## Content sync: two pins, two bots
 

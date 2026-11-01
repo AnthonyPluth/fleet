@@ -105,6 +105,10 @@ def prefixed_marker(line: str) -> bool:
     return stripped in (BEGIN, END) and line.strip() != stripped
 
 
+def is_row(line: str) -> bool:
+    return line.lstrip().startswith("|") or CELL_SPLIT.search(line) is not None
+
+
 def is_separator(line: str) -> bool:
     found = cells(line)
     return bool(found) and all(SEPARATOR_CELL.fullmatch(cell) for cell in found)
@@ -198,7 +202,7 @@ def parse(body: str) -> list[Dimension]:
         raise ParseError(1, f"the description is over {MAX_BODY:,} characters")
     lines = body.replace("\r\n", "\n").split("\n")
     begin, end = block(lines)
-    table = [(number, lines[number - 1]) for number in range(begin + 1, end) if lines[number - 1].lstrip().startswith("|")]
+    table = [(number, lines[number - 1]) for number in range(begin + 1, end) if is_row(lines[number - 1])]
     if not table:
         raise ParseError(begin, f"the verification block has no table; its header is `{HEADER}`")
     number, header = table[0]
