@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+.mypy_cache/
+.ruff_cache/
+
+.coverage
+coverage.json
+coverage.xml
+
+.tools/
+.fleet/
+
+.DS_Store
