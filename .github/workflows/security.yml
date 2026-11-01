@@ -256,7 +256,8 @@ jobs:
           SARIF_UPLOAD: ${{ inputs.sarif-upload }}
           ZIZMOR_PATHS: ${{ inputs.zizmor-paths }}
         run: |
-          read -r -a paths <<< "$ZIZMOR_PATHS"
+          read -r -a paths <<< "${ZIZMOR_PATHS:-.}"
+          if [ "${#paths[@]}" -eq 0 ]; then paths=(.); fi
           if [ "$SARIF_UPLOAD" = true ]; then
             pipx run zizmor==1.31.1 --format sarif "${paths[@]}" > zizmor.sarif
           else
