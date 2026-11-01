@@ -24,6 +24,7 @@ SEVERITIES = ("blocking", "advisory")
 MAX_COMMENT = 60000
 MAX_FINDINGS_LINE = 8192
 SECRETS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+WITHHELD = "error_secret_in_answer"
 STATUS_CONTEXT = "Agent review"
 BOT = "github-actions[bot]"
 LABEL_EVENTS = ("labeled", "unlabeled")
@@ -314,7 +315,7 @@ def report(path: str) -> dict[str, str]:
     comment = render(findings, str(answer.get("summary") or ""), run_url, os.environ.get("REVIEWED_SHA", ""))
     raw = json.dumps(output)
     if any(key and key in raw for key in (os.environ.get(name, "") for name in SECRETS)):
-        return {**error, "description": LIMITS["error_secret_in_answer"]}
+        return {**error, "description": LIMITS[WITHHELD]}
     blocking = sum(f["severity"] == "blocking" for f in findings)
     if blocking:
         return {"verdict": "blocking", "description": f"{blocking} blocking finding(s); see the comment", "comment": comment}
