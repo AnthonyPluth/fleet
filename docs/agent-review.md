@@ -16,7 +16,7 @@ Both run on `ubuntu-latest` (`# hosted:`): the review job reads untrusted conten
 - A pull request **from a fork** isn't reviewed (that would spend the secret on anyone's code): an agent's from a fork gets an `error` status, for a maintainer to push it to a branch of the repository.
 - A consumer **without `.github/agent-review/context.md`** on main gets an `error` status that names the file.
 - **`ready_for_review`** reviews only when the head has no "Agent review" status set by the workflow yet (`wanted`): a draft is reviewed on each push like any pull request, and marking it ready doesn't pay for it twice.
-- **`labeled` and `unlabeled`** run no first review: the review job's `if:` keeps them out, and the concurrency group (`agent-review-<pr>`, `cancel-in-progress`) is the job's, not the workflow's, so a label event can't cancel a running review. Only the second review (`FLEET-SECOND-REVIEW`) reacts to labels.
+- **`labeled` and `unlabeled`** run no first review: the review job's `if:` keeps them out, and the concurrency group (`agent-review-<pr>-<fake-review>`, the last part empty outside the self-test, `cancel-in-progress`) is the job's, not the workflow's, so a label event can't cancel a running review. Only the second review (`FLEET-SECOND-REVIEW`) reacts to labels.
 - **`first-review: false`** runs neither job: no status, no comment, for a consumer that keeps the first review off.
 
 ## The re-review and the carried verdict

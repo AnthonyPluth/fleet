@@ -75,7 +75,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(mapping(jobs["review"])["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "read"})
         self.assertEqual(mapping(jobs["report"])["permissions"], {"pull-requests": "write", "statuses": "write", "actions": "write"})
         self.assertEqual(mapping(mapping(jobs["review"])["concurrency"]),
-                         {"group": "agent-review-${{ github.event.pull_request.number }}", "cancel-in-progress": "true"})
+                         {"group": "agent-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}", "cancel-in-progress": "true"})
         self.assertNotIn("concurrency", mapping(jobs["report"]))
 
     def test_the_pull_request_checkout_keeps_no_credentials_and_every_checkout_says_so(self) -> None:

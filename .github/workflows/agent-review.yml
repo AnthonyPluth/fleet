@@ -131,7 +131,7 @@ jobs:
     timeout-minutes: 30
     # A newer push replaces a review still running (github.ref is main's on pull_request_target).
     concurrency:
-      group: agent-review-${{ github.event.pull_request.number }}
+      group: agent-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}
       cancel-in-progress: true
     permissions:
       contents: read           # check out fleet, main's instructions and the pull request's code
