@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest   # hosted: Runway runs on GitHub's runners only
+    permissions:
+      contents: read
+    env:
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make check

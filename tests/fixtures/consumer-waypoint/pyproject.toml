@@ -14,6 +14,7 @@ image-homes = ["docs/public/", "waypoint/static/", "waypoint/storage/logos/"]
 image-files = ["docs/src/assets/logo.png"]
 skills = ".claude/skills"
 extra-checks = "tools.app_checks:CHECKS"
+feature-maps = ["tools/user_feature_map.py"]
 
 [tool.fleet.screenshots]
 dir = "docs/src/assets/screenshots/"
@@ -24,6 +25,7 @@ flows = "frontend/verify/flows"
 [[tool.fleet.generated]]
 path = ".claude/skills/verify-waypoint/references/cli.md"
 command = "make --no-print-directory -s verify-skill-print"
+fix = "make verify-skill"
 
 [tool.fleet.no-comments]
 paths = ["waypoint", "tests", "tools", "frontend/src"]

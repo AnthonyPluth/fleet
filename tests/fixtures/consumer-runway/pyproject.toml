@@ -10,7 +10,8 @@ package-mode = false
 migrations = "runway/storage/migrations/versions"
 migration-tests = "tests/test_migrations.py"
 tested-from = "0001"
-image-homes = ["docs/public/", "runway/static/", "screenshots/"]
+image-homes = ["extension/icons/", "runway/static/"]
+image-files = ["docs/src/assets/logo.png"]
 skills = ".claude/skills"
 extra-checks = "tools.app_checks:CHECKS"
 
@@ -23,3 +24,4 @@ flows = "frontend/verify/flows"
 [[tool.fleet.generated]]
 path = ".claude/skills/verify-runway/references/cli.md"
 command = "make --no-print-directory -s verify-skill-print"
+fix = "make verify-skill"

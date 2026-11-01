@@ -25,7 +25,7 @@ class FixtureConsumersTest(unittest.TestCase):
         self.assertEqual(
             conf.tables("generated"),
             [{"path": ".claude/skills/verify-waypoint/references/cli.md",
-              "command": "make --no-print-directory -s verify-skill-print"}],
+              "command": "make --no-print-directory -s verify-skill-print", "fix": "make verify-skill"}],
         )
 
     def test_runway(self) -> None:
@@ -35,7 +35,7 @@ class FixtureConsumersTest(unittest.TestCase):
         self.assertFalse(conf.has("no-comments"))
         self.assertEqual(conf.section("no-comments"), {})
         self.assertFalse(conf.has("coverage"))
-        self.assertEqual(conf.strings("image-files"), [])
+        self.assertEqual(conf.strings("image-files"), ["docs/src/assets/logo.png"])
         self.assertEqual(len(conf.tables("generated")), 1)
 
     def test_each_fixture_has_the_layout_its_config_names(self) -> None:
