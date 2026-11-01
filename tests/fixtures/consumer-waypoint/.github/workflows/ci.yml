@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make check
+  publish:
+    runs-on: ubuntu-latest   # hosted: publishes from GitHub's runners only
+    permissions: {}
+    steps:
+      - env:
+          OUT: ${{ runner.temp }}/out
+        run: gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?per_page=100" > "$OUT"
