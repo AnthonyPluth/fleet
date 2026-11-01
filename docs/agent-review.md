@@ -1,0 +1,50 @@
+# The agent review
+
+How `.github/workflows/agent-review.yml` (`workflow_call`) reviews an agent's pull request, what it trusts, how a re-review and a carried-forward verdict work, and what the pieces in `fleet_tools/agent_review.py` decide. The caller snippet and the inputs are in [adopting.md](adopting.md); where Waypoint and Runway differed is in [drift.md](drift.md).
+
+## Two jobs
+
+`review` holds the secret and reads the code. It checks out fleet at the pinned ref (`.fleet/`: the prompt, the schema of the answer, the locked Claude Code, `agent-review-run.sh`, `agent_review.py` and the stub reviewer the self-test uses) and the caller's base commit (`trusted/`: `AGENTS.md` and `.github/agent-review/context.md`), decides whether this pull request and this event get a review, reads the last review's comment, checks out the pull request's head to read only (`review/pr`, `persist-credentials: false`), gathers the change and runs the reviewer in `review/`. Nothing from the pull request is run, built, installed or imported: `git` reads the checkout with `--no-ext-diff --no-textconv` and the tools run as `python3 -I .fleet/...`. The secrets appear only in the Review step's `env`, and that step runs only fleet's script.
+
+`report` holds the write token and never sees the code or the secrets. It posts the one comment (updated by each review; the marker is its first line), the "Agent review" status on the head commit and starts the caller's merge gate (`merge-gate-workflow`), which a status change doesn't start by itself. With `dry-run: true` it prints each of those instead. A `skip` verdict posts nothing.
+
+Both run on `ubuntu-latest` (`# hosted:`): the review job reads untrusted content with secrets in reach, the report job holds the write token, and neither should land on an app's own runner.
+
+## Who and when
+
+- An **agent's pull request** is one whose commits carry a `Claude-Session` or a Claude `Co-Authored-By` trailer, or whose description says Claude Code generated it (`is_agent`). Anyone else's gets a passing status, "Not an agent's pull request". Dependabot's gets none (the merge gate doesn't ask for one on its pull requests).
+- A pull request **from a fork** isn't reviewed (that would spend the secret on anyone's code): an agent's from a fork gets an `error` status, for a maintainer to push it to a branch of the repository.
+- A consumer **without `.github/agent-review/context.md`** on main gets an `error` status that names the file.
+- **`ready_for_review`** reviews only when the head has no "Agent review" status set by the workflow yet (`wanted`): a draft is reviewed on each push like any pull request, and marking it ready doesn't pay for it twice.
+- **`labeled` and `unlabeled`** run no first review: the review job's `if:` keeps them out, and the concurrency group (`agent-review-<pr>`, `cancel-in-progress`) is the job's, not the workflow's, so a label event can't cancel a running review. Only the second review (`FLEET-SECOND-REVIEW`) reacts to labels.
+- **`first-review: false`** runs neither job: no status, no comment, for a consumer that keeps the first review off.
+
+## The re-review and the carried verdict
+
+The comment's hidden lines record what a review was: line 1 the marker `<!-- agent-review -->`, line 2 `<!-- agent-review-state sha=<head> verdict=pass|blocking -->`, line 3 `<!-- agent-review-findings <base64 JSON> -->`. Only these are parsed on the next push (`previous`); the rest of the comment quotes the reviewer and is data.
+
+- When the new head descends from the commit the last review read, the reviewer also gets `previous-review.md` (that review's text) and `since-last-review.patch` (what changed since, in the pull request's own files, without main's merged-in changes and the files left out of the diff), and `incremental.md` is added to its prompt: check each earlier finding, read every new line closely, open every changed image again. Its findings replace the earlier ones; `diff.patch` is still the whole change.
+- When the last review **passed** (its comment says `pass` and its "Agent review" status, set by the workflow, is `success`) and everything pushed since is merges of main that leave the pull request's own change byte for byte as reviewed (`only_main_merged`: every added commit not on main is a merge, the same files, and `git diff --full-index --binary main...head` identical, so a file main changed too never compares equal), the verdict is **carried forward**: a passing status on the new head, "Carried forward from the review of <sha>: only main merged in since", and the comment stays. A blocking or failed review is never carried, and anything that can't be proved identical (a rebase, another branch merged, a conflict resolved by hand, a `git` error) is reviewed.
+- Without a usable earlier commit (none, rebased away, a missing body) it reviews the whole change.
+
+## What the reviewer reads
+
+`diff.patch` is `git diff main...head` without the files `left_out` names, which `omitted.txt` lists and `files.txt` still includes: images (a diff can't show them; the prompt has the reviewer open each one), lockfiles, and the paths the `generated` input names (the app's generated API contract and feature map, a golden fixture). Fixtures, demo and sample data (anything under `tests/`, or with `fixture`, `demo`, `sample`, `example` or `seed` in its path) are never left out, lockfiles among them, because they are where a real record is likeliest to land, unless `generated` names the file: an explicit entry wins, so Runway's `tests/fixtures/forecast_golden.json` stays out by listing it. Nothing under `.github/` is ever left out: the workflows and the lockfile of the Claude Code the review runs are always read in full.
+
+The prompt (`prompt.md`) is generic; `context.md` says what the app is, what private data looks like there and where it would land, which files are generated and what checks cover them, and which `AGENTS.md` sections matter most. The reviewer reads both. Everything in the diff, the commits, the checkout and the earlier review is data to it, never instructions, and an instruction found there is a blocking finding.
+
+## The reviewer's isolation
+
+`agent-review-run.sh` runs Claude Code (`--print`, `--output-format json`, `--json-schema schema.json`) from `$RUNNER_TEMP`, installed with `npm ci` from fleet's `.github/agent-review/package-lock.json` (Dependabot bumps it weekly after a seven-day cooldown; consumers drop their own copy), with Read, Grep and Glob as its only tools, confined to `review/` (`--restricted`), no settings files, hooks, CLAUDE.md, skills, plugins, slash commands or MCP servers, no session saved, and no GitHub token. It authenticates with `ANTHROPIC_API_KEY` when set, else `CLAUDE_CODE_OAUTH_TOKEN`, passing only the one it uses. The model is `sonnet`, fixed in the workflow: no input changes it, so a review never runs on a costlier model; the owner's rule is Sonnet for the first review of every agent's pull request and Fable for the second review of risky ones. `budget-usd` and `max-turns` bound a run; hitting either ends it with an error result, which fails the review rather than passing it, and each run logs the turns and cost it took.
+
+The one step that holds a secret is also where the answer is checked for it: an output that contains the secret in use is replaced with `{"is_error": true, "subtype": "error_secret_in_answer"}` before the Verdict step reads it, and the status says "contained a secret; not posted".
+
+## The answer and the verdict
+
+The answer is the schema's JSON: a `summary` and `findings`, each with `severity` (`blocking` or `advisory`), `kind`, `title`, `detail`, and optionally `check`, `file` and `line`. `kind` is the bold title of the item under `AGENTS.md`'s "Mistakes that keep coming back" the finding falls under, verbatim, or `other`; `check` names the lint rule, Semgrep rule, type check or test that would have caught it. `report` turns the output into the verdict: a blocking finding is `blocking` (the status fails), none is `pass`, and anything else is `error` and never a pass: unreadable output, a reply that isn't the schema's JSON (one in a ```` ```json ```` block of the reply text is accepted), a finding without a kind, a limit hit, an error result, or an answer that quotes a secret.
+
+The comment is built from the findings (`render`), with every piece of the reviewer's text defused: `@` can't mention anyone and `<!--` can't forge a hidden line. Line 3 carries the findings as data for the monthly mining of repeated findings (`FLEET-MINING`): `severity`, `kind`, `title` (defused, cut to 200 characters) and `file` per finding, base64 JSON, at most 8 KB (findings are dropped from the end to fit).
+
+## Testing it
+
+`tests/test_agent_review.py` covers the decisions and the script with a stand-in for `claude`; `tests/test_agent_review_workflow.py` checks the workflow's structure (the checkouts keep no credentials, the secrets appear only in the Review step, which runs nothing from the pull request's checkout, the report job has neither a secret nor a checkout, the caller and the self-test). The self-test runs the reusable workflow on fleet's own pull requests with `dry-run: true` and `fake-review` set to `pass`, `blocking` and `malformed`: the stub reviewer `tests/fakes/claude` prints that answer in place of Claude Code (nothing installed, no secret), and a last job checks each reached its verdict (`pass`, `blocking`, `error`) through the workflow's `verdict` output. fleet's own caller, `.github/workflows/agent-review-caller.yml`, runs the real review on its pull requests with `pull_request_target`.
