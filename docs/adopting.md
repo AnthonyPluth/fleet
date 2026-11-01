@@ -146,6 +146,35 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 
 Secrets, both optional and passed by name: `ANTHROPIC_API_KEY` (an API key, which wins when both are set) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Pro or Max subscription's token from `claude setup-token`); both reviews use them, each in its own job. Outputs: `verdict` (`pass`, `blocking`, `error`, `skip`) and `description` for the first review, `second-verdict` and `second-description` for the second. The models are `sonnet` (first) and `claude-fable-5-1` (second) and not inputs: changing either is a fleet pull request.
 
+## Review mining
+
+`.github/workflows/review-mining.yml` (`workflow_call`) keeps one issue per repository, "Repeated review findings" (label `review-mining`, which must exist), rewritten each run: the kinds of review finding that came back on two or more pull requests in the window, with the check each should become, read from the reviews' hidden findings records and `AGENTS.md`'s "Mistakes that keep coming back" states; no model, no secrets. Each row ends with a checkbox, "becomes an Agent task", that keeps its tick across rewrites. The report and its rules are in [review-mining.md](review-mining.md). The caller schedules it monthly, or weekly (`"17 6 * * 1"`): the issue is rewritten either way.
+
+```yaml
+name: Review mining
+
+on:
+  schedule:
+    - cron: "17 6 1 * *"   # monthly; weekly instead: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  mine:
+    permissions:
+      contents: read           # AGENTS.md
+      issues: write            # the one issue
+      pull-requests: read      # the pull requests in the window
+    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # vX.Y.Z
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `days` | `90` | The window, in days before the run, a pull request must have been updated in |
+| `dry-run` | `false` | Print the issue instead of opening or rewriting it |
+| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the tool from (fleet's self-test only) |
+
 ## The `fleet` command
 
 `fleet_tools` is standard library only (Python 3.11 or newer), so a runner's system `python3` runs it from a checkout of fleet with nothing installed:
@@ -165,6 +194,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet test-timings DIR [--top N]` | Sums up the per-test timing files a timing test result wrote. | 0 |
 | `fleet review-outcomes --repo OWNER/NAME --pr N [--json] [--second]` | What became of each of a pull request's review findings: `open`, `resolved` by a later push, or `dismissed` by the owner with `/fleet dismiss f:<id> <reason>` ([agent-review.md](agent-review.md)). Reads the review comment and the pull request's comments with `gh`. | 0, 1 a failing `gh` |
 | `fleet agent-review [second] detect\|wanted\|previous\|plan\|risky\|report` | The agent reviews' decisions (`second` for the second review's marker, status and rules), run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
+| `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--summary FILE] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings records on the pull requests updated in the window, run by `review-mining.yml` ([review-mining.md](review-mining.md)). | 0, 1 a failing `gh api`, 2 usage |
 
 ## `[tool.fleet]`
 

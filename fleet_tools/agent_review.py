@@ -277,7 +277,8 @@ def with_ids(findings: list[Json]) -> list[Json]:
 
 def findings_line(findings: list[Json], review: Review = FIRST) -> str:
     rows = [{"id": finding_id(f["kind"], f.get("file"), f["title"]), "severity": f["severity"], "kind": defuse(f["kind"], 120),
-             "title": defuse(f["title"], 200), "file": defuse(f.get("file") or "", 300)} for f in findings]
+             "title": defuse(f["title"], 200), "file": defuse(f.get("file") or "", 300),
+             "check": defuse(f.get("check") or "", 300)} for f in findings]
     while True:
         line = f"<!-- {review.key}-findings {base64.b64encode(json.dumps(rows, ensure_ascii=False).encode()).decode()} -->"
         if len(line.encode()) <= MAX_FINDINGS_LINE or not rows:

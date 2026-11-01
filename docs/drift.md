@@ -108,6 +108,14 @@ Neither app recorded what happened to a finding after the review ([agent-review.
 | --- | --- | --- | --- | --- |
 | Finding outcomes | — | — | A stable id per finding (SHA-256 over kind, file and normalized title, 8 hex digits, shown as `f:…`); line 4 of each review's comment records each id as `open` or `resolved` (a full review, or an incremental one touching the file, no longer reporting it), capped at 200 entries and 16 KB; the owner's `/fleet dismiss f:<id> <reason>` comments (author association `OWNER` only) are read beside it and never change a verdict; `fleet review-outcomes` prints the merge | A fixed finding and a dismissed one are the signals for turning kinds into checks and for correcting an over-flagging reviewer, and must be told apart deterministically |
 
+## Review mining (`FLEET-MINING`)
+
+Neither app counted its review findings; both carried the rule that a repeated mistake becomes a check, with nobody to notice the repeats. The report is new ([review-mining.md](review-mining.md)).
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| Noticing repeats | By hand, when someone remembered | By hand | `review-mining.yml` and `fleet review-mine`: the reviews' hidden findings records (now with the reviewer's `check`), counted per AGENTS.md kind over the pull requests of the window, into one "Repeated review findings" issue rewritten each run, with a stable `row:` id and a "becomes an Agent task" checkbox per row; monthly by default, weekly as an option; no model, no secrets | The rule needs a counter, and counting needs no judgement |
+
 ## Opt-in workflows (`FLEET-OPTIONAL`)
 
 What each app runs beyond the core, as reusable workflows an app calls or doesn't ([adopting.md](adopting.md)). Each keeps its triggers, path filters and concurrency group in the caller.

@@ -284,7 +284,7 @@ class Comment(unittest.TestCase):
         self.assertEqual(ar.previous([second]), ("", "", ""))
         self.assertIsNone(ar.previous_findings(second))
         self.assertEqual(ar.previous_findings(second, ar.SECOND),
-                         [{"id": ar.finding_id("other", "", "t"), "severity": "blocking", "kind": "other", "title": "t", "file": ""}])
+                         [{"id": ar.finding_id("other", "", "t"), "severity": "blocking", "kind": "other", "title": "t", "file": "", "check": ""}])
         self.assertTrue(ar.previous([second], ar.SECOND)[2].startswith("## Second review"))
 
     def test_a_first_review_s_state_line_can_t_pass_for_the_second_s(self) -> None:
