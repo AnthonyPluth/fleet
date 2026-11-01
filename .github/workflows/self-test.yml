@@ -72,3 +72,22 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
+
+  # The merge gate decides this pull request's own head in dry run: it prints the status it would post (pending while
+  # this very workflow runs) and never posts, merges or starts anything. The called job asks for the write permissions
+  # the real gate needs, so the caller must grant them (a called workflow can't be given more than its caller has).
+  merge-gate:
+    name: Merge gate (dry run)
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+      actions: write
+      checks: read
+    uses: ./.github/workflows/merge-gate.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      sha: ${{ github.event.pull_request.head.sha }}
+      required-workflows: fleet CI
+      required-statuses: ""
+      dry-run: true
