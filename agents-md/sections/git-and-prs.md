@@ -1,0 +1,10 @@
+---
+heading: Git and PRs
+---
+- Work on the branch you were given; never push to `main`.
+- Keep commits focused, with a clear message. An agent's commit ends with a `Co-Authored-By: Claude <Model> <version> <noreply@anthropic.com>` trailer naming the model that wrote it (checked on every pull request).
+- Before pushing to a pull request, run `make check`.
+- Open a pull request for every change, once it's pushed, and summarize what changed and why. Keep the description short and professional: a few bullets on the change and how it was tested, not an essay. Don't say who asked for it or reported it.
+- A pull request's title decides the next version when it's merged: `feat: …` releases a minor version, `fix: …` or anything else a patch, and `feat!: …` (or a `BREAKING CHANGE:` line) a major one, for a change that breaks an existing setup.
+- A pull request is ready when its "Merge gate" check passes: every check green, including, on an agent's pull request, the independent "Agent review" with no blocking finding and, on a risky one (labelled `safety-critical` or `security`, or touching the paths the review lists), the "Second review". Dependabot's updates merge themselves through it.
+- Don't hard-wrap lines in pull request descriptions, comments, issues or the body of a commit message: write each paragraph or list item as one line, and let GitHub wrap it to the screen. Only code and repo files keep their own wrapping. Keep the commit subject to one short line.
