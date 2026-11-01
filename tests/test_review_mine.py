@@ -203,7 +203,7 @@ class TableTest(unittest.TestCase):
         text = rm.render(rows, REPO, 90, SINCE, (2, 2))
         self.assertNotIn("@octocat", text)
         self.assertNotIn("@me", text)
-        self.assertEqual(re.findall(r"<!--.*?-->", text), [rm.MARKER, f"<!-- row:{rows[0].id} -->"])
+        self.assertEqual(re.findall(r"<!--.*?-->", text, re.DOTALL), [rm.MARKER, f"<!-- row:{rows[0].id} -->"])
         self.assertIn("a \\| b", text)
         self.assertRegex(rows[0].id, r"^repeated:other:[a-z0-9-]+$")
         self.assertIn(f"[#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2)", text)
