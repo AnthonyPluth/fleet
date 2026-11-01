@@ -1,0 +1,14 @@
+name: Self-test
+
+on:
+  pull_request:
+
+jobs:
+  reusable:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      other: value
+  pinned:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      fleet-ref: main

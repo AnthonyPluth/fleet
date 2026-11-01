@@ -1,0 +1,11 @@
+name: Not reusable
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "workflow_call"

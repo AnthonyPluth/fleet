@@ -1,0 +1,13 @@
+name: Reusable without FLEET_REF
+
+on:
+  workflow_call:
+
+env:
+  OTHER: value
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "FLEET_REF: main"

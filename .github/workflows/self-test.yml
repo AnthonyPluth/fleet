@@ -1,0 +1,28 @@
+name: Self-test
+
+# Calls each of fleet's reusable workflows by local path, with `fleet-ref: ${{ github.sha }}` so it fetches its scripts
+# from this pull request's own commit rather than its FLEET_REF, and with test inputs. Each extraction issue adds its
+# case here; `fleet self-check` fails on a call without that fleet-ref. Until the first one lands, a no-op job keeps
+# the check present.
+on:
+  pull_request:
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  noop:
+    name: No reusable workflows yet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "No reusable workflows to call yet; each extraction issue adds its case."

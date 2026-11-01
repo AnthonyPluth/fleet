@@ -1,0 +1,12 @@
+name: Reusable with a stale FLEET_REF
+
+"on": [workflow_call, workflow_dispatch]
+
+env:
+  FLEET_REF: "v0.0.9"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello

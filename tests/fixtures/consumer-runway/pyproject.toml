@@ -1,0 +1,25 @@
+[project]
+name = "runway"
+version = "1.0.0"
+requires-python = ">=3.14,<4.0"
+
+[tool.poetry]
+package-mode = false
+
+[tool.fleet]
+migrations = "runway/storage/migrations/versions"
+migration-tests = "tests/test_migrations.py"
+tested-from = "0001"
+image-homes = ["docs/public/", "runway/static/", "screenshots/"]
+skills = ".claude/skills"
+extra-checks = "tools.app_checks:CHECKS"
+
+[tool.fleet.screenshots]
+dir = "screenshots/"
+names = "pages-and-flows"
+verify = "frontend/verify/verify.mjs"
+flows = "frontend/verify/flows"
+
+[[tool.fleet.generated]]
+path = ".claude/skills/verify-runway/references/cli.md"
+command = "make --no-print-directory -s verify-skill-print"
