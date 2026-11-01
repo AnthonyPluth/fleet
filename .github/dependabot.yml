@@ -30,3 +30,14 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: ci
+
+  # The Claude Code that the reusable agent review runs (.github/agent-review/package.json), locked for every consumer
+  - package-ecosystem: npm
+    directory: /.github/agent-review
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci

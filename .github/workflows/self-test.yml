@@ -91,3 +91,79 @@ jobs:
       required-workflows: fleet CI
       required-statuses: ""
       dry-run: true
+
+  # The agent review on this pull request in dry run, with fleet's stub reviewer (tests/fakes/claude) in place of
+  # Claude Code, so the plumbing is tested without a secret: the detection, the last review's state, the checkout and
+  # the gathering of the change, the runner script, the verdict and the report job, which prints the comment and the
+  # status instead of posting them. Three answers: a pass, a blocking finding, and a malformed answer, which must be
+  # an error, never a pass. The called jobs ask for the write permissions the real review needs, so the caller grants
+  # them (a called workflow can't be given more than its caller has).
+  agent-review-pass:
+    name: Agent review (dry run, passing)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      fake-review: pass
+      merge-gate-workflow: ""
+
+  agent-review-blocking:
+    name: Agent review (dry run, blocking)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      fake-review: blocking
+      merge-gate-workflow: ""
+
+  agent-review-malformed:
+    name: Agent review (dry run, malformed answer)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      fake-review: malformed
+      merge-gate-workflow: ""
+
+  # The verdicts the three runs reached, through the reusable workflow's outputs. A pull request that isn't an agent's
+  # (the owner's by hand) gets "Not an agent's pull request" from each and runs no stub, which is the right answer too.
+  agent-review-verdicts:
+    name: Agent review (dry run) verdicts
+    needs: [agent-review-pass, agent-review-blocking, agent-review-malformed]
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, a few lines of shell
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Each stub answer reached the verdict it should
+        env:
+          PASS: ${{ needs.agent-review-pass.outputs.verdict }}
+          PASS_WHY: ${{ needs.agent-review-pass.outputs.description }}
+          BLOCKING: ${{ needs.agent-review-blocking.outputs.verdict }}
+          BLOCKING_WHY: ${{ needs.agent-review-blocking.outputs.description }}
+          MALFORMED: ${{ needs.agent-review-malformed.outputs.verdict }}
+          MALFORMED_WHY: ${{ needs.agent-review-malformed.outputs.description }}
+        run: |
+          echo "pass: $PASS ($PASS_WHY); blocking: $BLOCKING ($BLOCKING_WHY); malformed: $MALFORMED ($MALFORMED_WHY)"
+          if [ "$PASS_WHY" = "Not an agent's pull request" ]; then
+            [ "$PASS:$BLOCKING:$MALFORMED" = "pass:pass:pass" ] || { echo "::error::A non-agent pull request should pass every run"; exit 1; }
+            exit 0
+          fi
+          [ "$PASS" = pass ] || { echo "::error::The passing answer gave $PASS"; exit 1; }
+          [ "$BLOCKING" = blocking ] || { echo "::error::The blocking answer gave $BLOCKING"; exit 1; }
+          [ "$MALFORMED" = error ] || { echo "::error::The malformed answer gave $MALFORMED, not error"; exit 1; }
