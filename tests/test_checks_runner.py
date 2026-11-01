@@ -29,7 +29,8 @@ class Reporting(unittest.TestCase):
         code, out, err = run("--root", str(copy(self, WAYPOINT, repository=False)))
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, "Fleet checks passed: one migration head, migrations tested, workflow conventions, skills "
-                              "well formed, generated references and feature maps current, the app's own checks.\n")
+                              "well formed, generated references and feature maps current, each skill in its one home, the "
+                              "app's own checks.\n")
 
     def test_commits_add_the_checks_that_read_them(self) -> None:
         root = copy(self, RUNWAY)

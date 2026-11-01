@@ -23,6 +23,7 @@ CHECKS: list[Check] = [
     migrations.CHECK,
     workflows.CHECK,
     skills.CHECK,
+    skills.HOMES,
     commits.CHECK,
     tests_removed.CHECK,
     images.CHECK,
