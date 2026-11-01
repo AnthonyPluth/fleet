@@ -5,17 +5,38 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
-HELP = "the independent review's decisions (detect, wanted, previous, plan, report), for agent-review.yml"
+HELP = "the independent reviews' decisions (detect, wanted, previous, plan, risky, report), for agent-review.yml"
 
 Json = dict[str, Any]
 
-MARKER = "<!-- agent-review -->"
-STATE = re.compile(r"^<!-- agent-review-state sha=([0-9a-f]{40}) verdict=(pass|blocking) -->$")
-FINDINGS = re.compile(r"^<!-- agent-review-findings ([A-Za-z0-9+/=]*) -->$")
+
+class Review(NamedTuple):
+    key: str
+    context: str
+    title: str
+    extra_prompt: str
+
+    @property
+    def marker(self) -> str:
+        return f"<!-- {self.key} -->"
+
+    @property
+    def state(self) -> re.Pattern[str]:
+        return re.compile(rf"^<!-- {self.key}-state sha=([0-9a-f]{{40}}) verdict=(pass|blocking) -->$")
+
+    @property
+    def findings(self) -> re.Pattern[str]:
+        return re.compile(rf"^<!-- {self.key}-findings ([A-Za-z0-9+/=]*) -->$")
+
+
+FIRST = Review("agent-review", "Agent review", "Independent review", "")
+SECOND = Review("second-review", "Second review", "Second review", "second-review.md")
+REVIEWS = {"first": FIRST, "second": SECOND}
+MARKER = FIRST.marker
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SESSION = re.compile(r"^claude-session:\s*\S", re.IGNORECASE | re.MULTILINE)
 CO_AUTHOR = re.compile(r"^co-authored-by:.*(\bclaude\b|anthropic\.com)", re.IGNORECASE | re.MULTILINE)
@@ -25,26 +46,38 @@ MAX_COMMENT = 60000
 MAX_FINDINGS_LINE = 8192
 SECRETS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 WITHHELD = "error_secret_in_answer"
-STATUS_CONTEXT = "Agent review"
+STATUS_CONTEXT = FIRST.context
 BOT = "github-actions[bot]"
 LABEL_EVENTS = ("labeled", "unlabeled")
 NOT_WANTED = {
     "label": "A label event doesn't start the first review",
     "reviewed": "Already reviewed at this commit: marking the pull request ready doesn't review it again",
+    "other_label": "The label isn't one the second review reacts to",
+    "not_owner": "A label removed by anyone but the repository owner leaves the second review as it was",
+    "reviewed_second": "Already reviewed a second time at this commit",
 }
+NOT_RISKY = "Not a risky pull request"
+DEFAULT_TRIGGER_LABELS = "safety-critical,security"
+ALWAYS_RISKY = (".github/**", ".claude/**")
+EVENT_KEYS = ("action", "sender", "label", "labels", "files")
 
 LOCKFILES = ("poetry.lock", "uv.lock", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml")
 IMAGES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".heic", ".bmp", ".tif", ".tiff")
 SAMPLE_DATA = re.compile(r"(^|/)tests/|fixture|demo|sample|example|seed", re.IGNORECASE)
 
-USAGE = """usage:
+USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second review"'s marker, status and rules)
   agent_review.py detect                          commit messages (JSON lines) on stdin, $BODY: true or false
-  agent_review.py wanted ACTION                   the head's "Agent review" statuses ([context, state, creator] JSON
-                                                  lines) on stdin: wanted=true|false and reason=... for $GITHUB_OUTPUT
+  agent_review.py wanted ACTION                   the head's statuses ([context, state, creator, description] JSON
+                                                  lines) on stdin, $SENDER, $OWNER, $LABEL, $LABELS, $TRIGGER_LABELS
+                                                  ($FAKE_EVENT, self-test only): wanted=true|false, reason=...,
+                                                  reviewed=true|false and pending=true|false for $GITHUB_OUTPUT
   agent_review.py previous COMMENTS.jsonl OUT.md  the last review's commit and verdict, its text to OUT.md
   agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff);
                                                   mode, description, incremental
-  agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment"""
+  agent_review.py risky FILES.txt [REASON.txt]    $LABELS (JSON), $TRIGGER_LABELS, $RISKY_PATHS and the changed files:
+                                                  risky=true|false and reason=... for $GITHUB_OUTPUT (and REASON.txt)
+  agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment
+                                                  ($RISKY_REASON goes into the second review's comment)"""
 
 
 def is_agent(messages: list[str], body: str) -> bool:
@@ -53,25 +86,124 @@ def is_agent(messages: list[str], body: str) -> bool:
     return any(SESSION.search(m) or CO_AUTHOR.search(m) for m in messages)
 
 
-def wanted(action: str, statuses: Sequence[Sequence[str]]) -> tuple[bool, str]:
+def split_list(text: str, separator: str = ",") -> list[str]:
+    return [item.strip() for item in text.split(separator) if item.strip()]
+
+
+def event_from_env(env: dict[str, str]) -> dict[str, Any]:
+    try:
+        labels = json.loads(env.get("LABELS") or "[]")
+    except ValueError:
+        labels = []
+    event: dict[str, Any] = {
+        "action": env.get("ACTION", ""),
+        "sender": env.get("SENDER", ""),
+        "owner": env.get("OWNER", ""),
+        "label": env.get("LABEL", ""),
+        "labels": [str(name) for name in labels] if isinstance(labels, list) else [],
+        "files": None,
+        "trigger_labels": split_list(env.get("TRIGGER_LABELS", DEFAULT_TRIGGER_LABELS)),
+    }
+    for token in env.get("FAKE_EVENT", "").split():
+        key, _, value = token.partition("=")
+        if key in EVENT_KEYS:
+            event[key] = split_list(value) if key in ("labels", "files") else value
+    return event
+
+
+def reviewed_here(statuses: Sequence[Sequence[str]], review: Review) -> bool:
+    for status in statuses:
+        if len(status) >= 3 and status[0] == review.context and status[2] == BOT:
+            if review is FIRST:
+                return True
+            return status[1] in ("success", "failure") and (len(status) < 4 or status[3] != NOT_RISKY)
+    return False
+
+
+def pending_first(action: str, statuses: Sequence[Sequence[str]], review: Review, event: dict[str, Any]) -> bool:
+    if review is FIRST or action not in LABEL_EVENTS:
+        return False
+    return wanted(action, statuses, review, event)[0] and not reviewed_here(statuses, review)
+
+
+def wanted(action: str, statuses: Sequence[Sequence[str]], review: Review = FIRST,
+           event: dict[str, Any] | None = None) -> tuple[bool, str]:
+    event = event or {}
     if action in LABEL_EVENTS:
-        return False, NOT_WANTED["label"]
-    if action == "ready_for_review":
-        for status in statuses:
-            if len(status) >= 3 and status[0] == STATUS_CONTEXT and status[2] == BOT:
-                return False, NOT_WANTED["reviewed"]
+        if review is FIRST:
+            return False, NOT_WANTED["label"]
+        if event.get("label", "") not in event.get("trigger_labels", []):
+            return False, NOT_WANTED["other_label"]
+        if action == "unlabeled" and (not event.get("owner") or event.get("sender") != event.get("owner")):
+            return False, NOT_WANTED["not_owner"]
+        return True, ""
+    if action == "ready_for_review" and reviewed_here(statuses, review):
+        return False, NOT_WANTED["reviewed"]
     return True, ""
 
 
-def hidden_lines(body: str) -> tuple[str, str, list[Json] | None, int]:
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    pattern = pattern.strip().lstrip("/")
+    out = ""
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**/", index):
+            out += "(?:.*/)?"
+            index += 3
+        elif pattern.startswith("**", index):
+            out += ".*"
+            index += 2
+        elif char == "*":
+            out += "[^/]*"
+            index += 1
+        elif char == "?":
+            out += "[^/]"
+            index += 1
+        else:
+            out += re.escape(char)
+            index += 1
+    return re.compile(f"^{out}$")
+
+
+def matches(path: str, pattern: str) -> bool:
+    return bool(glob_to_regex(pattern).match(path))
+
+
+def changed_paths(files_text: str) -> list[str]:
+    paths: list[str] = []
+    for line in files_text.splitlines():
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 2:
+            continue
+        paths += [p for p in parts[1:] if p]
+    return paths
+
+
+def risky(labels: Iterable[str], paths: Iterable[str], trigger_labels: Iterable[str],
+          patterns: Iterable[str]) -> tuple[bool, str]:
+    reasons = [f"labelled `{label}`" for label in labels if label in set(trigger_labels)]
+    globs = [*ALWAYS_RISKY, *(p for p in patterns if p.strip())]
+    for path in paths:
+        for pattern in globs:
+            if matches(path, pattern):
+                reasons.append(f"changes `{path}` (matches `{pattern.strip()}`)")
+                break
+    if not reasons:
+        return False, NOT_RISKY
+    reason = "; ".join(reasons)
+    return True, reason if len(reason) <= 1000 else reason[:1000] + " …"
+
+
+def hidden_lines(body: str, review: Review = FIRST) -> tuple[str, str, list[Json] | None, int]:
     lines = body.splitlines()
     sha = verdict = ""
     findings: list[Json] | None = None
     index = 1
     for index in range(1, min(len(lines), 3)):
-        if (state := STATE.match(lines[index])) and not sha:
+        if (state := review.state.match(lines[index])) and not sha:
             sha, verdict = state.group(1), state.group(2)
-        elif (found := FINDINGS.match(lines[index])) and findings is None:
+        elif (found := review.findings.match(lines[index])) and findings is None:
             findings = decode_findings(found.group(1))
         else:
             break
@@ -80,21 +212,21 @@ def hidden_lines(body: str) -> tuple[str, str, list[Json] | None, int]:
     return sha, verdict, findings, index
 
 
-def previous(bodies: list[str]) -> tuple[str, str, str]:
+def previous(bodies: list[str], review: Review = FIRST) -> tuple[str, str, str]:
     for body in bodies:
-        if not body.startswith(MARKER):
+        if not body.startswith(review.marker):
             continue
-        sha, verdict, _, end = hidden_lines(body)
+        sha, verdict, _, end = hidden_lines(body, review)
         if not sha:
             return "", "", ""
         return sha, verdict, "\n".join(body.splitlines()[end:]).strip() + "\n"
     return "", "", ""
 
 
-def previous_findings(body: str) -> list[Json] | None:
-    if not body.startswith(MARKER):
+def previous_findings(body: str, review: Review = FIRST) -> list[Json] | None:
+    if not body.startswith(review.marker):
         return None
-    return hidden_lines(body)[2]
+    return hidden_lines(body, review)[2]
 
 
 def decode_findings(encoded: str) -> list[Json] | None:
@@ -107,11 +239,11 @@ def decode_findings(encoded: str) -> list[Json] | None:
     return [dict(item) for item in value]
 
 
-def findings_line(findings: list[Json]) -> str:
+def findings_line(findings: list[Json], review: Review = FIRST) -> str:
     rows = [{"severity": f["severity"], "kind": defuse(f["kind"], 120), "title": defuse(f["title"], 200),
              "file": defuse(f.get("file") or "", 300)} for f in findings]
     while True:
-        line = f"<!-- agent-review-findings {base64.b64encode(json.dumps(rows, ensure_ascii=False).encode()).decode()} -->"
+        line = f"<!-- {review.key}-findings {base64.b64encode(json.dumps(rows, ensure_ascii=False).encode()).decode()} -->"
         if len(line.encode()) <= MAX_FINDINGS_LINE or not rows:
             return line
         rows.pop()
@@ -171,7 +303,7 @@ def only_main_merged(repo: str, main: str, prev: str, head: str) -> bool:
     return own_change(repo, main, prev) == own_change(repo, main, head)
 
 
-def plan(env: dict[str, str]) -> dict[str, str]:
+def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     repo, out, main, head = env["REPO_DIR"], Path(env["OUT_DIR"]), env["MAIN"], env["HEAD"]
     generated = generated_from(env.get("GENERATED", ""))
     omitted = [p for p in own_files(repo, main, head) if left_out(p, generated)]
@@ -179,6 +311,9 @@ def plan(env: dict[str, str]) -> dict[str, str]:
     (out / "omitted.txt").write_text("".join(p + "\n" for p in omitted))
     (out / "files.txt").write_text(git(repo, "diff", "--name-status", f"{main}...{head}"))
     (out / "commits.txt").write_text(git(repo, "log", "--format=commit %H%n%B", f"{main}..{head}"))
+    if review.extra_prompt:
+        with open(out / "prompt.md", "a", encoding="utf-8") as f:
+            f.write("\n" + Path(env["TRUSTED"], review.extra_prompt).read_text())
     result = {"mode": "review", "description": "", "incremental": "false"}
     prev = env.get("PREV_SHA", "")
     try:
@@ -245,18 +380,20 @@ def defuse(text: object, limit: int = 4000) -> str:
     return s if len(s) <= limit else s[:limit] + " …"
 
 
-def render(findings: list[Json], summary: str, run_url: str, sha: str = "") -> str:
+def render(findings: list[Json], summary: str, run_url: str, sha: str = "", review: Review = FIRST, reason: str = "") -> str:
     blocking = [f for f in findings if f["severity"] == "blocking"]
     advisory = [f for f in findings if f["severity"] == "advisory"]
-    lines = [MARKER]
+    lines = [review.marker]
     if SHA.match(sha):
-        lines.append(f"<!-- agent-review-state sha={sha} verdict={'blocking' if blocking else 'pass'} -->")
-    lines.append(findings_line(findings))
-    lines += ["## Independent review", ""]
+        lines.append(f"<!-- {review.key}-state sha={sha} verdict={'blocking' if blocking else 'pass'} -->")
+    lines.append(findings_line(findings, review))
+    lines += [f"## {review.title}", ""]
     if blocking:
         lines.append(f"**{len(blocking)} blocking finding(s)**: the merge gate stays red until a new push clears them.")
     else:
         lines.append("No blocking findings.")
+    if reason:
+        lines += ["", f"Reviewed a second time because the pull request is {defuse(reason, 1000)}."]
     if summary:
         lines += ["", defuse(summary, 2000)]
     for title, group in (("Blocking", blocking), ("Advisory", advisory)):
@@ -293,7 +430,7 @@ def usage(output: Json) -> None:
         print(f"The reviewer took {turns} turn(s) and about ${cost:.2f}.")
 
 
-def report(path: str) -> dict[str, str]:
+def report(path: str, review: Review = FIRST) -> dict[str, str]:
     run_url = os.environ.get("RUN_URL", "")
     error = {"verdict": "error", "comment": ""}
     try:
@@ -312,7 +449,8 @@ def report(path: str) -> dict[str, str]:
     findings = findings_of(answer) if answer is not None else None
     if answer is None or findings is None:
         return {**error, "description": "The reviewer's answer wasn't in the expected form; see the run"}
-    comment = render(findings, str(answer.get("summary") or ""), run_url, os.environ.get("REVIEWED_SHA", ""))
+    comment = render(findings, str(answer.get("summary") or ""), run_url, os.environ.get("REVIEWED_SHA", ""), review,
+                     os.environ.get("RISKY_REASON", "") if review is not FIRST else "")
     raw = json.dumps(output)
     if any(key and key in raw for key in (os.environ.get(name, "") for name in SECRETS)):
         return {**error, "description": LIMITS[WITHHELD]}
@@ -336,38 +474,55 @@ def write_outputs(values: dict[str, str]) -> None:
 
 
 def main(argv: list[str]) -> int:
+    review = FIRST
+    if argv[:1] == ["second"]:
+        review, argv = SECOND, argv[1:]
     if argv[:1] == ["detect"]:
         messages = [json.loads(line) for line in sys.stdin if line.strip()]
         print("true" if is_agent(messages, os.environ.get("BODY", "")) else "false")
         return 0
     if len(argv) == 2 and argv[0] == "wanted":
-        statuses = [json.loads(line) for line in sys.stdin if line.strip()]
-        yes, reason = wanted(argv[1], [s for s in statuses if isinstance(s, list)])
+        event = event_from_env(dict(os.environ))
+        action = str(event["action"] or argv[1])
+        statuses = [s for s in (json.loads(line) for line in sys.stdin if line.strip()) if isinstance(s, list)]
+        yes, reason = wanted(action, statuses, review, event)
         print(f"wanted={'true' if yes else 'false'}")
         print(f"reason={reason}")
+        print(f"reviewed={'true' if reviewed_here(statuses, review) else 'false'}")
+        print(f"pending={'true' if pending_first(action, statuses, review, event) else 'false'}")
         return 0
     if len(argv) == 3 and argv[0] == "previous":
         with open(argv[1], encoding="utf-8") as f:
             bodies = [b for b in (json.loads(line) for line in f if line.strip()) if isinstance(b, str)]
-        sha, verdict, text = previous(bodies)
+        sha, verdict, text = previous(bodies, review)
         if sha:
             Path(argv[2]).write_text(text, encoding="utf-8")
             print(sha, verdict)
         return 0
     if argv == ["plan"]:
-        values = plan(dict(os.environ))
+        values = plan(dict(os.environ), review)
         append_outputs([f"{k}={v}" for k, v in values.items()])
         print(", ".join(f"{k}: {v}" for k, v in values.items()))
         return 0
+    if len(argv) in (2, 3) and argv[0] == "risky":
+        event = event_from_env(dict(os.environ))
+        paths = event["files"] if event["files"] is not None else changed_paths(Path(argv[1]).read_text(encoding="utf-8"))
+        yes, reason = risky(event["labels"], paths, event["trigger_labels"], split_list(os.environ.get("RISKY_PATHS", ""), "\n"))
+        append_outputs([f"risky={'true' if yes else 'false'}", f"reason={reason}"])
+        if len(argv) == 3:
+            Path(argv[2]).write_text(reason + "\n", encoding="utf-8")
+        print(f"risky={'true' if yes else 'false'}: {reason}")
+        return 0
     if len(argv) == 2 and argv[0] == "report":
-        write_outputs(report(argv[1]))
+        write_outputs(report(argv[1], review))
         return 0
     print(USAGE, file=sys.stderr)
     return 2
 
 
 def configure(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("args", nargs=argparse.REMAINDER, help="detect | wanted ACTION | previous COMMENTS OUT | plan | report OUT")
+    parser.add_argument("args", nargs=argparse.REMAINDER,
+                        help="[second] detect | wanted ACTION | previous COMMENTS OUT | plan | risky FILES | report OUT")
 
 
 def run(args: argparse.Namespace) -> int:

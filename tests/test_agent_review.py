@@ -59,10 +59,11 @@ class Wanted(unittest.TestCase):
         lines = "\n".join(json.dumps(s) for s in self.REVIEWED) + "\n"
         with mock.patch("sys.stdin", __import__("io").StringIO(lines)), mock.patch("builtins.print") as printed:
             self.assertEqual(ar.main(["wanted", "ready_for_review"]), 0)
-        self.assertEqual([c.args[0] for c in printed.call_args_list], ["wanted=false", f"reason={ar.NOT_WANTED['reviewed']}"])
+        self.assertEqual([c.args[0] for c in printed.call_args_list],
+                         ["wanted=false", f"reason={ar.NOT_WANTED['reviewed']}", "reviewed=true", "pending=false"])
         with mock.patch("sys.stdin", __import__("io").StringIO("\n")), mock.patch("builtins.print") as printed:
             self.assertEqual(ar.main(["wanted", "synchronize"]), 0)
-        self.assertEqual([c.args[0] for c in printed.call_args_list], ["wanted=true", "reason="])
+        self.assertEqual([c.args[0] for c in printed.call_args_list], ["wanted=true", "reason=", "reviewed=false", "pending=false"])
 
 
 class Report(unittest.TestCase):
