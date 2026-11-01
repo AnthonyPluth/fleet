@@ -245,15 +245,17 @@ jobs:
       # zizmor at the version fleet's pyproject.toml pins (change both together). GH_TOKEN lets it run its online
       # audits too (impostor commits, known-vulnerable actions). It exits non-zero on findings in either mode; with
       # SARIF the upload still runs and the Security tab shows them.
+      # It audits .github (workflows and composite actions), not the whole tree, so workflow files kept as test
+      # fixtures elsewhere (with made-up pins) aren't audited as if they were the repository's own.
       - name: Audit the workflows
         env:
           GH_TOKEN: ${{ github.token }}
           SARIF_UPLOAD: ${{ inputs.sarif-upload }}
         run: |
           if [ "$SARIF_UPLOAD" = true ]; then
-            pipx run zizmor==1.31.1 --format sarif . > zizmor.sarif
+            pipx run zizmor==1.31.1 --format sarif .github > zizmor.sarif
           else
-            pipx run zizmor==1.31.1 .
+            pipx run zizmor==1.31.1 .github
           fi
       - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
         if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('zizmor.sarif') != '' }}
