@@ -1,0 +1,531 @@
+import json
+import os
+import shlex
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+from fleet_tools import cli, self_check
+
+SCRIPT = cli.ROOT / ".github" / "scripts" / "merge-gate.sh"
+FAKES = cli.ROOT / "tests" / "fakes"
+REPO = "example/app"
+SHA = "a" * 40
+NUMBER = 12
+DEPENDABOT = "dependabot[bot]"
+Json = dict[str, Any]
+
+
+def pull(
+    number: int = NUMBER, author: str = "octocat", sha: str = SHA, head_repo: str = REPO, draft: bool = False
+) -> Json:
+    return {"number": number, "user": {"login": author}, "head": {"sha": sha, "repo": {"full_name": head_repo}}, "draft": draft}
+
+
+def run(
+    name: str,
+    status: str = "completed",
+    conclusion: str | None = "success",
+    created_at: str = "2026-01-01T10:00:00Z",
+    workflow_id: int | None = None,
+) -> Json:
+    return {
+        "name": name,
+        "workflow_id": workflow_id if workflow_id is not None else abs(hash(name)) % 10000,
+        "event": "pull_request",
+        "path": f".github/workflows/{name.lower().replace(' ', '-')}.yml",
+        "status": status,
+        "conclusion": conclusion,
+        "created_at": created_at,
+    }
+
+
+def codeql_run(status: str = "completed", conclusion: str | None = "success") -> Json:
+    return {
+        **run(f"PR #{NUMBER}", status, conclusion, workflow_id=99),
+        "event": "dynamic",
+        "path": "dynamic/github-code-scanning/codeql",
+    }
+
+
+def check(app: str, name: str, status: str = "completed", conclusion: str | None = "success") -> Json:
+    return {"app": {"slug": app}, "name": name, "status": status, "conclusion": conclusion}
+
+
+def status(context: str, state: str = "success") -> Json:
+    return {"context": context, "state": state}
+
+
+def commit(author: str = DEPENDABOT, verified: bool = True) -> Json:
+    return {"sha": "c" * 40, "author": {"login": author}, "commit": {"verification": {"verified": verified}}}
+
+
+def changed_file(filename: str, patch: str) -> Json:
+    return {"filename": filename, "patch": patch}
+
+
+class Result:
+    def __init__(self, completed: subprocess.CompletedProcess[str], log: Path) -> None:
+        self.returncode = completed.returncode
+        self.stdout = completed.stdout
+        self.stderr = completed.stderr
+        self.calls = [shlex.split(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    @property
+    def posted(self) -> list[tuple[str, str]]:
+        posted = []
+        for call in self.calls:
+            if call[1:3] != ["api", "-X"] or "/statuses/" not in call[4]:
+                continue
+            fields = dict(call[index + 1].split("=", 1) for index, word in enumerate(call) if word == "-f")
+            posted.append((fields["state"], fields["description"]))
+        return posted
+
+    @property
+    def merged(self) -> bool:
+        return any(call[1:3] == ["pr", "merge"] for call in self.calls)
+
+    def reads_of(self, path: str) -> int:
+        return sum(1 for call in self.calls if call[1] == "api" and "-X" not in call and any(path in word for word in call))
+
+
+class Gate:
+    def __init__(self, test: unittest.TestCase) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        test.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.answers = self.root / "answers"
+        self.answers.mkdir()
+        self.log = self.root / "gh.log"
+        self.log.touch()
+        self.pulls([pull()])
+        self.runs([run("Security scans"), codeql_run()])
+        self.checks([check("github-code-scanning", "CodeQL"), check("codecov", "codecov/patch", conclusion="failure")])
+        self.statuses([status("Agent review"), status("Second review")])
+
+    def record(self, name: str, answer: object) -> None:
+        (self.answers / f"{name}.json").write_text(json.dumps(answer), encoding="utf-8")
+
+    def record_series(self, name: str, answers: list[object]) -> None:
+        for index, answer in enumerate(answers, start=1):
+            self.record(f"{name}.{index}", answer)
+
+    def pulls(self, pulls: list[Json]) -> None:
+        self.record("pulls", pulls)
+
+    def runs(self, runs: list[Json]) -> None:
+        self.record("actions__runs", {"workflow_runs": runs})
+
+    def checks(self, checks: list[Json]) -> None:
+        self.record("commits__SHA__check-runs", {"check_runs": checks})
+
+    def statuses(self, statuses: list[Json]) -> None:
+        self.record("commits__SHA__statuses", statuses)
+
+    def commits(self, commits: list[Json]) -> None:
+        self.record("pulls__N__commits", commits)
+
+    def files(self, files: list[Json]) -> None:
+        self.record("pulls__N__files", files)
+
+    def dependabot(self, files: list[Json] | None = None) -> None:
+        self.pulls([pull(author=DEPENDABOT)])
+        self.runs([run("Security scans")])
+        self.statuses([])
+        self.commits([commit()])
+        self.files(files if files is not None else [changed_file("poetry.lock", '-version = "1.0"\n+version = "1.1"')])
+
+    def run(self, **overrides: str | None) -> Result:
+        env: dict[str, str | None] = {
+            "PATH": f"{FAKES}{os.pathsep}{os.environ['PATH']}",
+            "LC_ALL": "C",
+            "FAKE_GH_DIR": str(self.answers),
+            "FAKE_GH_LOG": str(self.log),
+            "GH_TOKEN": "fake",
+            "REPO": REPO,
+            "SHA": SHA,
+            "POLL_SECONDS": "0",
+            "POLL_ATTEMPTS": "2",
+        }
+        env.update(overrides)
+        self.log.write_text("", encoding="utf-8")
+        for counter in self.answers.glob(".*.reads"):
+            counter.unlink()
+        completed = subprocess.run(
+            [str(SCRIPT)],
+            env={key: value for key, value in env.items() if value is not None},
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return Result(completed, self.log)
+
+
+class DecisionTest(unittest.TestCase):
+    def test_all_green_is_success(self) -> None:
+        result = Gate(self).run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertFalse(result.merged)
+
+    def test_a_required_status_missing_is_pending(self) -> None:
+        gate = Gate(self)
+        gate.statuses([status("Agent review")])
+        result = gate.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("pending", "Waiting for: Second review (not started)")])
+
+    def test_second_review_failing_is_failure(self) -> None:
+        gate = Gate(self)
+        gate.statuses([status("Agent review"), status("Second review", "failure")])
+        result = gate.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("failure", "Failed: Second review (failure)")])
+
+    def test_a_required_workflow_that_has_not_run_is_pending(self) -> None:
+        gate = Gate(self)
+        gate.runs([codeql_run()])
+        self.assertEqual(gate.run().posted, [("pending", "Waiting for: Security scans (not started)")])
+
+    def test_a_failing_workflow_fails_and_a_skipped_one_passes(self) -> None:
+        gate = Gate(self)
+        gate.runs([run("Security scans", conclusion="skipped"), run("Tests", conclusion="failure"), codeql_run()])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: Tests (failure)")])
+
+    def test_the_newest_run_of_a_workflow_wins(self) -> None:
+        gate = Gate(self)
+        gate.runs([
+            run("Security scans", conclusion="failure", created_at="2026-01-01T09:00:00Z", workflow_id=7),
+            run("Security scans", created_at="2026-01-01T11:00:00Z", workflow_id=7),
+            codeql_run(),
+        ])
+        self.assertEqual(gate.run().posted, [("success", "Every check passed")])
+
+    def test_another_apps_failing_check_fails_and_an_ignored_apps_does_not(self) -> None:
+        gate = Gate(self)
+        gate.checks([check("codecov", "codecov/project", conclusion="failure"), check("semgrep", "Semgrep", conclusion="failure")])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: Semgrep (failure)")])
+        gate = Gate(self)
+        gate.checks([check("codecov", "codecov/project", conclusion="failure"), check("trivy", "Trivy", status="in_progress", conclusion=None)])
+        self.assertEqual(gate.run().posted, [("pending", "Waiting for: Trivy")])
+
+    def test_a_pending_status_waits_and_the_gates_own_status_is_ignored(self) -> None:
+        gate = Gate(self)
+        gate.statuses([status("Merge gate", "failure"), status("Agent review", "pending"), status("Second review")])
+        self.assertEqual(gate.run().posted, [("pending", "Waiting for: Agent review")])
+
+    def test_the_newest_status_of_a_context_wins(self) -> None:
+        gate = Gate(self)
+        gate.statuses([status("Agent review"), status("Agent review", "failure"), status("Second review")])
+        self.assertEqual(gate.run().posted, [("success", "Every check passed")])
+
+    def test_two_pull_requests_on_one_head_is_failure(self) -> None:
+        gate = Gate(self)
+        gate.pulls([pull(), pull(number=13, author="hubot")])
+        result = gate.run()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.posted, [("failure", "More than one open pull request has this commit as its head")])
+        self.assertIn("::error::More than one open pull request", result.stdout)
+
+    def test_no_open_pull_request_decides_nothing(self) -> None:
+        gate = Gate(self)
+        gate.pulls([pull(sha="b" * 40)])
+        result = gate.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [])
+        self.assertIn(f"No open pull request into main at {SHA}.", result.stdout)
+
+    def test_a_pull_request_number_finds_its_head(self) -> None:
+        gate = Gate(self)
+        gate.record("pulls__N", {"head": {"sha": SHA}})
+        result = gate.run(SHA=None, PR=str(NUMBER))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertIn(f"Pull request #{NUMBER} by octocat at {SHA}", result.stdout)
+
+    def test_no_head_commit_fails(self) -> None:
+        result = Gate(self).run(SHA="not-a-commit")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("::error::No head commit to check", result.stdout)
+        self.assertEqual(result.calls, [])
+
+    def test_a_missing_recorded_answer_fails_loudly(self) -> None:
+        gate = Gate(self)
+        (gate.answers / "commits__SHA__statuses.json").unlink()
+        result = gate.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no recorded answer for repos/example/app/commits/", result.stderr)
+
+
+class PollingTest(unittest.TestCase):
+    def test_codeql_only_pending_polls_until_it_arrives(self) -> None:
+        gate = Gate(self)
+        (gate.answers / "actions__runs.json").unlink()
+        gate.record_series("actions__runs", [
+            {"workflow_runs": [run("Security scans")]},
+            {"workflow_runs": [run("Security scans"), codeql_run(status="in_progress", conclusion=None)]},
+            {"workflow_runs": [run("Security scans"), codeql_run()]},
+        ])
+        result = gate.run(POLL_ATTEMPTS="5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.reads_of("actions/runs"), 3)
+        self.assertEqual(result.posted, [
+            ("pending", "Waiting for: CodeQL (not started)"),
+            ("pending", "Waiting for: CodeQL"),
+            ("success", "Every check passed"),
+        ])
+
+    def test_polling_stops_after_poll_attempts_and_posts_each_state_once(self) -> None:
+        gate = Gate(self)
+        gate.runs([run("Security scans")])
+        result = gate.run(POLL_ATTEMPTS="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.reads_of("actions/runs"), 3)
+        self.assertEqual(result.posted, [("pending", "Waiting for: CodeQL (not started)")])
+
+    def test_anything_else_pending_does_not_poll(self) -> None:
+        gate = Gate(self)
+        gate.runs([run("Security scans")])
+        gate.statuses([status("Agent review")])
+        result = gate.run()
+        self.assertEqual(result.reads_of("actions/runs"), 1)
+        self.assertEqual(result.posted, [("pending", "Waiting for: CodeQL (not started), Second review (not started)")])
+
+
+class DependabotTest(unittest.TestCase):
+    def test_a_green_dependabot_pull_request_merges(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        result = gate.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertTrue(result.merged)
+        self.assertIn(["gh", "pr", "merge", str(NUMBER), "--repo", REPO, "--squash", "--match-head-commit", SHA], result.calls)
+        self.assertIn(["gh", "workflow", "run", "docker.yml", "--repo", REPO, "--ref", "main"], result.calls)
+        self.assertIn(["gh", "workflow", "run", "security.yml", "--repo", REPO, "--ref", "main"], result.calls)
+
+    def test_a_dry_run_prints_the_merge_instead(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        result = gate.run(DRY_RUN="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(result.merged)
+        self.assertEqual(result.posted, [])
+        self.assertIn(f"(dry run) gh api -X POST repos/{REPO}/statuses/{SHA} -f state=success", result.stdout)
+        self.assertIn(f"(dry run) gh pr merge {NUMBER} --repo {REPO} --squash --match-head-commit {SHA}", result.stdout)
+        self.assertIn(f"(dry run) gh workflow run docker.yml --repo {REPO} --ref main", result.stdout)
+        self.assertIn(f"(dry run) gh workflow run security.yml --repo {REPO} --ref main", result.stdout)
+        self.assertIn("(dry run) gh pr merge", gate.run(DRY_RUN="true").stdout)
+
+    def test_a_dependabot_pull_request_bumping_a_fleet_reference_passes_but_is_not_merged(self) -> None:
+        gate = Gate(self)
+        gate.dependabot([
+            changed_file("poetry.lock", '-version = "1.0"\n+version = "1.1"'),
+            changed_file(
+                ".github/workflows/merge-gate.yml",
+                "     merge:\n"
+                "-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # v1.0.0\n"
+                "+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb   # v1.1.0\n",
+            ),
+        ])
+        result = gate.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertFalse(result.merged)
+        self.assertIn(
+            f"::notice::#{NUMBER} changes a AnthonyPluth/fleet/ reference (.github/workflows/merge-gate.yml); leaving it for the owner.",
+            result.stdout,
+        )
+
+    def test_a_fleet_reference_only_in_unchanged_context_lines_still_merges(self) -> None:
+        gate = Gate(self)
+        gate.dependabot([
+            changed_file(
+                ".github/workflows/ci.yml",
+                "     uses: AnthonyPluth/fleet/.github/workflows/checks.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # v1.0.0\n"
+                "-    uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # v7.0.1\n"
+                "+    uses: actions/checkout@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb   # v7.0.2\n",
+            ),
+        ])
+        self.assertTrue(gate.run().merged)
+
+    def test_dependabot_needs_neither_codeql_nor_the_reviews(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        gate.checks([])
+        self.assertEqual(gate.run().posted, [("success", "Every check passed")])
+
+    def test_dependabot_still_needs_the_other_required_workflows(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        gate.runs([])
+        result = gate.run()
+        self.assertEqual(result.posted, [("pending", "Waiting for: Security scans (not started)")])
+        self.assertFalse(result.merged)
+
+    def test_a_commit_from_someone_else_is_left_for_review(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        gate.commits([commit(), commit(author="octocat")])
+        result = gate.run()
+        self.assertFalse(result.merged)
+        self.assertIn(f"::notice::#{NUMBER} has commits from someone other than Dependabot", result.stdout)
+        gate.commits([commit(verified=False)])
+        self.assertFalse(gate.run().merged)
+
+    def test_a_fork_or_a_draft_is_not_merged(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        gate.pulls([pull(author=DEPENDABOT, head_repo="someone/app")])
+        result = gate.run()
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertFalse(result.merged)
+        gate.pulls([pull(author=DEPENDABOT, draft=True)])
+        self.assertFalse(gate.run().merged)
+
+    def test_automerge_can_be_turned_off(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        result = gate.run(AUTOMERGE_DEPENDABOT="false")
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertFalse(result.merged)
+        self.assertIn(f"Not merging #{NUMBER}: AUTOMERGE_DEPENDABOT is off.", result.stdout)
+
+    def test_after_merge_workflows_are_configurable(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        result = gate.run(AFTER_MERGE_WORKFLOWS="release.yml")
+        self.assertTrue(result.merged)
+        workflow_runs = [call for call in result.calls if call[1:3] == ["workflow", "run"]]
+        self.assertEqual(workflow_runs, [["gh", "workflow", "run", "release.yml", "--repo", REPO, "--ref", "main"]])
+        gate = Gate(self)
+        gate.dependabot()
+        result = gate.run(AFTER_MERGE_WORKFLOWS="")
+        self.assertTrue(result.merged)
+        self.assertEqual([call for call in result.calls if call[1:3] == ["workflow", "run"]], [])
+
+
+WAYPOINT = {
+    "REQUIRED_WORKFLOWS": "Docker image\nSecurity scans\nCodeQL\n",
+    "IGNORED_WORKFLOWS": "",
+    "REQUIRED_STATUSES": "",
+    "IGNORED_APPS": "codecov|github-actions",
+}
+RUNWAY = {
+    "REQUIRED_WORKFLOWS": "Docker image\nSecurity scans\nCodeQL\n",
+    "IGNORED_WORKFLOWS": "Preview|Screenshot diff",
+    "REQUIRED_STATUSES": "Agent review\n",
+    "IGNORED_APPS": "codecov|github-actions",
+}
+
+
+class ConfigurationTest(unittest.TestCase):
+    def test_waypoints_configuration(self) -> None:
+        gate = Gate(self)
+        gate.runs([
+            run("Docker image"), run("Security scans"), run("Docs"), run("Control smoke"), codeql_run(),
+            run("Cancel runs on close", conclusion="failure"), run("Merge gate", status="in_progress", conclusion=None),
+        ])
+        gate.statuses([])
+        self.assertEqual(gate.run(**WAYPOINT).posted, [("success", "Every check passed")])
+        gate.runs([run("Security scans"), codeql_run()])
+        self.assertEqual(gate.run(**WAYPOINT).posted, [("pending", "Waiting for: Docker image (not started)")])
+        gate.runs([run("Docker image"), run("Security scans"), codeql_run(), run("Preview", status="in_progress", conclusion=None)])
+        self.assertEqual(gate.run(**WAYPOINT).posted, [("pending", "Waiting for: Preview")])
+
+    def test_runways_configuration(self) -> None:
+        gate = Gate(self)
+        gate.runs([
+            run("Docker image"), run("Security scans"), run("Docs"), run("Verify flows"), codeql_run(),
+            run("Preview", status="in_progress", conclusion=None), run("Screenshot diff", conclusion="failure"),
+            run("Cancel runs on close", conclusion="failure"), run("Merge gate", status="in_progress", conclusion=None),
+        ])
+        gate.statuses([status("Agent review")])
+        self.assertEqual(gate.run(**RUNWAY).posted, [("success", "Every check passed")])
+        gate.statuses([])
+        self.assertEqual(gate.run(**RUNWAY).posted, [("pending", "Waiting for: Agent review (not started)")])
+        gate.statuses([status("Agent review", "failure")])
+        self.assertEqual(gate.run(**RUNWAY).posted, [("failure", "Failed: Agent review (failure)")])
+
+    def test_unset_configuration_takes_fleets_defaults(self) -> None:
+        gate = Gate(self)
+        gate.runs([run("Docker image")])
+        gate.statuses([])
+        result = gate.run(REQUIRED_WORKFLOWS=None, IGNORED_WORKFLOWS=None, REQUIRED_STATUSES=None, IGNORED_APPS=None)
+        self.assertEqual(result.posted, [(
+            "pending",
+            "Waiting for: Security scans (not started), CodeQL (not started), Agent review (not started), Second review (not started)",
+        )])
+
+    def test_empty_configuration_requires_nothing(self) -> None:
+        gate = Gate(self)
+        gate.runs([])
+        gate.statuses([])
+        gate.checks([])
+        self.assertEqual(gate.run(REQUIRED_WORKFLOWS="", REQUIRED_STATUSES="").posted, [("success", "Every check passed")])
+
+    def test_ignored_apps_is_configurable(self) -> None:
+        gate = Gate(self)
+        gate.checks([check("codecov", "codecov/patch", conclusion="failure"), check("semgrep", "Semgrep", conclusion="failure")])
+        self.assertEqual(gate.run(IGNORED_APPS="codecov|semgrep").posted, [("success", "Every check passed")])
+        self.assertEqual(gate.run(IGNORED_APPS="").posted, [("failure", "Failed: codecov/patch (failure), Semgrep (failure)")])
+
+    def test_lists_tolerate_blank_lines_and_spaces(self) -> None:
+        gate = Gate(self)
+        gate.statuses([status("Agent review"), status("Second review")])
+        result = gate.run(REQUIRED_WORKFLOWS="\n  Security scans  \n\nCodeQL\n", REQUIRED_STATUSES=" Agent review \n Second review \n")
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+
+
+class WorkflowTest(unittest.TestCase):
+    def test_the_self_test_calls_the_gate_in_dry_run(self) -> None:
+        workflow = self_check.parse((cli.ROOT / ".github" / "workflows" / "self-test.yml").read_text(encoding="utf-8"))
+        assert isinstance(workflow, dict)
+        jobs = workflow["jobs"]
+        assert isinstance(jobs, dict)
+        calls = [job for job in jobs.values() if isinstance(job, dict) and job.get("uses") == "./.github/workflows/merge-gate.yml"]
+        self.assertEqual(len(calls), 1)
+        inputs = calls[0]["with"]
+        assert isinstance(inputs, dict)
+        self.assertEqual(inputs["dry-run"], "true")
+        self.assertEqual(inputs["fleet-ref"], "${{ github.sha }}")
+
+    def test_the_reusable_workflow_declares_every_input_the_script_reads(self) -> None:
+        workflow = self_check.parse((cli.ROOT / ".github" / "workflows" / "merge-gate.yml").read_text(encoding="utf-8"))
+        assert isinstance(workflow, dict)
+        trigger = workflow["on"]
+        assert isinstance(trigger, dict)
+        call = trigger["workflow_call"]
+        assert isinstance(call, dict)
+        inputs = call["inputs"]
+        assert isinstance(inputs, dict)
+        self.assertEqual(sorted(inputs), sorted([
+            "sha", "pr", "required-workflows", "ignored-workflows", "required-statuses", "ignored-apps", "poll-seconds",
+            "poll-attempts", "automerge-dependabot", "after-merge-workflows", "dry-run", "fleet-ref",
+        ]))
+        jobs = workflow["jobs"]
+        assert isinstance(jobs, dict)
+        gate = jobs["gate"]
+        assert isinstance(gate, dict)
+        self.assertEqual(gate["permissions"], {
+            "contents": "write", "pull-requests": "write", "statuses": "write", "actions": "write", "checks": "read",
+        })
+        steps = gate["steps"]
+        assert isinstance(steps, list)
+        decide = steps[-1]
+        assert isinstance(decide, dict)
+        self.assertEqual(decide["run"], ".fleet/.github/scripts/merge-gate.sh")
+        env = decide["env"]
+        assert isinstance(env, dict)
+        for variable in [
+            "REQUIRED_WORKFLOWS", "IGNORED_WORKFLOWS", "REQUIRED_STATUSES", "IGNORED_APPS", "POLL_SECONDS", "POLL_ATTEMPTS",
+            "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
+        ]:
+            self.assertIn(variable, env)
+
+
+if __name__ == "__main__":
+    unittest.main()
