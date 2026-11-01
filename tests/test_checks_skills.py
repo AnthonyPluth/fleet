@@ -1,8 +1,9 @@
 import unittest
+from pathlib import Path
 
 from consumers import RUNWAY, WAYPOINT, checks, copy, empty_consumer, ran, write
 
-from fleet_tools import config
+from fleet_tools import config, vendor
 from fleet_tools.checks import skills
 
 GOOD_SKILL = "---\nname: verify-waypoint\ndescription: Drive the app.\n---\n\n# Body\n\nSee [cli](references/cli.md).\n"
@@ -102,6 +103,123 @@ class FixtureConsumers(unittest.TestCase):
         root = empty_consumer(self)
         write(root, ".claude/skills/x/SKILL.md", "no frontmatter\n")
         self.assertNotIn("skills", ran(root))
+        self.assertEqual(checks(root), [])
+
+
+AGENT_TASK = ".claude/skills/fleet-agent-task/SKILL.md"
+HOME = ("a skill lives at .claude/skills/<name>/SKILL.md (fleet's under .claude/skills/fleet-*, the app's own beside "
+        "them), nowhere else; move it there or list it in skill-homes-ignore")
+
+
+def body_of(root: Path, path: str) -> str:
+    return (root / path).read_text(encoding="utf-8").split("\n---\n", 1)[1]
+
+
+def homes(root: Path) -> list[str]:
+    return [problem for problem in checks(root) if "SKILL.md: `name` should be" not in problem]
+
+
+class SkillHomes(unittest.TestCase):
+    def test_the_header_is_the_one_fleet_sync_writes(self) -> None:
+        source = Path("plugins/fleet/skills/agent-task/SKILL.md")
+        written = vendor.note("---\nname: x\n---\n\nBody.\n", "v1.2.3", source)
+        self.assertTrue(vendor.is_vendored_skill(written))
+        self.assertFalse(vendor.is_vendored_skill(written.replace("by `fleet sync`", "by hand")))
+        self.assertFalse(vendor.is_vendored_skill("---\n# vendored from fleet v1.2.3\nname: x\n---\n"))
+        self.assertFalse(vendor.is_vendored_skill("---\nname: x\n---\n"))
+
+    def test_both_layouts_pass_in_a_repository_too(self) -> None:
+        for fixture in (WAYPOINT, RUNWAY):
+            with self.subTest(fixture=fixture.name):
+                root = copy(self, fixture)
+                self.assertIn("skill-homes", ran(root))
+                self.assertEqual(checks(root), [])
+
+    def test_a_skill_anywhere_else_fires(self) -> None:
+        for fixture in (WAYPOINT, RUNWAY):
+            with self.subTest(fixture=fixture.name):
+                root = copy(self, fixture, repository=False)
+                for path in (".cursor/skills/lint/SKILL.md", ".claude/skills/verify/nested/SKILL.md",
+                             ".claude/SKILL.md", "docs/SKILL.md"):
+                    write(root, path, "---\nname: lint\ndescription: x\n---\n\nBody.\n")
+                self.assertEqual(sorted(homes(root)), sorted(f"{path}: {HOME}" for path in (
+                    ".cursor/skills/lint/SKILL.md", ".claude/skills/verify/nested/SKILL.md", ".claude/SKILL.md",
+                    "docs/SKILL.md")))
+
+    def test_an_untracked_but_unignored_skill_counts_in_a_repository(self) -> None:
+        root = copy(self, WAYPOINT)
+        write(root, ".agents/x/SKILL.md", "x\n")
+        write(root, ".gitignore", "build/\n")
+        write(root, "build/x/SKILL.md", "x\n")
+        self.assertEqual(homes(root), [f".agents/x/SKILL.md: {HOME}"])
+
+    def test_the_exempt_places_and_skill_homes_ignore_are_skipped(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        for path in ("frontend/node_modules/pkg/skills/x/SKILL.md", ".fleet/plugins/fleet/skills/x/SKILL.md",
+                     "tests/fixtures/app/.claude/skills/x/SKILL.md", "vendor/kit/SKILL.md", "vendor/kit/deep/SKILL.md", "other/SKILL.md"):
+            write(root, path, "x\n")
+        self.assertEqual(sorted(homes(root)), sorted(f"{path}: {HOME}" for path in (
+            "vendor/kit/SKILL.md", "vendor/kit/deep/SKILL.md", "other/SKILL.md")))
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text(encoding="utf-8").replace(
+            'skills = ".claude/skills"\n', 'skills = ".claude/skills"\nskill-homes-ignore = ["vendor/kit/*"]\n'),
+            encoding="utf-8")
+        self.assertEqual(homes(root), [f"other/SKILL.md: {HOME}"])
+
+    def test_a_fleet_prefixed_skill_without_the_header_fires(self) -> None:
+        for fixture in (WAYPOINT, RUNWAY):
+            with self.subTest(fixture=fixture.name):
+                root = copy(self, fixture, repository=False)
+                write(root, ".claude/skills/fleet-mine/SKILL.md", "---\nname: fleet-mine\ndescription: x\n---\n\nMine.\n")
+                (root / ".claude/skills/fleet-empty").mkdir()
+                (root / ".claude/skills/fleet-binary").mkdir()
+                (root / ".claude/skills/fleet-binary/SKILL.md").write_bytes(b"---\n\xff\xfe\n---\n")
+                text = (root / AGENT_TASK).read_text(encoding="utf-8")
+                write(root, AGENT_TASK, text.replace("by `fleet sync`", "by hand"))
+                reserved = ("`fleet-` is reserved for vendored skills, and this one lacks the line `fleet sync` writes; "
+                            "rename the app's own skill")
+                found = homes(root)
+                for folder in ("fleet-agent-task", "fleet-binary", "fleet-empty", "fleet-mine"):
+                    self.assertIn(f".claude/skills/{folder}/SKILL.md: {reserved}", found)
+
+    def test_an_app_skill_named_like_a_fleet_skill_fires(self) -> None:
+        for fixture in (WAYPOINT, RUNWAY):
+            for name in ("agent-task", "fleet-agent-task"):
+                with self.subTest(fixture=fixture.name, name=name):
+                    root = copy(self, fixture, repository=False)
+                    write(root, ".claude/skills/tasks/SKILL.md", f"---\nname: {name}\ndescription: x\n---\n\nOurs.\n")
+                    self.assertEqual(homes(root), [f".claude/skills/tasks/SKILL.md: its name {name!r} is a fleet skill's; "
+                                                   "change the fleet skill in fleet, or give the app's own another name"])
+
+    def test_an_app_skill_copied_from_a_fleet_skill_fires(self) -> None:
+        for fixture in (WAYPOINT, RUNWAY):
+            with self.subTest(fixture=fixture.name):
+                root = copy(self, fixture, repository=False)
+                body = body_of(root, ".claude/skills/fleet-design-signoff/SKILL.md")
+                spaced = "\n\n" + "  \n".join(" ".join(line.split()) for line in body.splitlines()) + "\n\n"
+                write(root, ".claude/skills/signoff/SKILL.md", f"---\nname: signoff\ndescription: Ours.\n---\n{spaced}")
+                self.assertEqual(homes(root), [".claude/skills/signoff/SKILL.md: its body is fleet's 'design-signoff' skill "
+                                               "copied; fleet sync vendors it as .claude/skills/fleet-design-signoff, so "
+                                               "delete the copy"])
+
+    def test_a_skills_directory_that_isnt_there_fires(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('skills = ".claude/skills"', 'skills = "nowhere"'),
+                             encoding="utf-8")
+        self.assertIn("nowhere: [tool.fleet] skills names a directory that isn't there", checks(root))
+
+    def test_a_skill_that_isnt_utf8_is_a_problem_not_a_crash(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        (root / ".claude/skills/odd").mkdir()
+        (root / ".claude/skills/odd/SKILL.md").write_bytes(b"\xff\xfe")
+        self.assertEqual(checks(root), [".claude/skills/odd/SKILL.md: isn't UTF-8 text"])
+
+    def test_silent_where_skills_isnt_configured(self) -> None:
+        root = empty_consumer(self)
+        write(root, ".cursor/skills/x/SKILL.md", "x\n")
+        write(root, ".claude/skills/fleet-x/SKILL.md", "x\n")
+        self.assertNotIn("skill-homes", ran(root))
         self.assertEqual(checks(root), [])
 
 
