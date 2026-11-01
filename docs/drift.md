@@ -1,3 +1,48 @@
 # Drift between the apps
 
 Where Waypoint and Runway did the same thing differently, and which way fleet took. Each extraction issue adds its rows. Where the two differ, fleet's own code follows the stricter convention (Waypoint's): no comments or docstrings in Python, actions pinned by SHA with a version comment, `bash -eo pipefail` as each workflow's default shell, and `persist-credentials: false` on every checkout.
+
+## Planned (from the backlog)
+
+The decisions the backlog made before the extractions; each extraction issue replaces its row with the detail below when it lands.
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| Agent review | Disabled; Codex comments; no required status | On, required | On, required, plus the second review | An independent review gate is the point; Codex comments don't gate merges. Waypoint decides in WP-REVIEW-DECISION (`first-review: false` is available) |
+| `ready_for_review` | Not a trigger | Triggers a review | Triggers one only if the head has no review yet | Runway's coverage without paying twice for a reviewed draft |
+| `agent_review.py` | Never omits fixtures/demo/sample data; more image types | Omits the forecast golden fixture | Waypoint's rules, plus the caller's `generated` list, where an explicit entry wins | The privacy check is the review's job; Runway's golden fixture stays out by listing it |
+| Review prompt | Travel wording | Finance wording | One generic prompt plus each app's `context.md` | One prompt to maintain |
+| Review model | Sonnet | Sonnet ("never Opus", owner decision) | Sonnet first; Fable second on risky PRs | The owner's new rule; recorded in the workflow header |
+| `merge-gate.sh` | Requires no status | Requires Agent review; ignores Preview and Screenshot diff | One script; required and ignored lists are inputs; triggers stay in the caller | Called workflows can't declare triggers |
+| `security.yml` | `vars.RUNS_ON` option | Hosted only; adds `extension/` | Inputs for paths and the runner; `sarif-upload`/`scorecard` switches | Darkroom can't upload SARIF |
+| Session-start hook | Venv-version guard, `npm install --no-save` | `node_modules` completeness check | Union, with `--no-save` | A session must not rewrite a lockfile |
+| AGENTS "Git and PRs" | Open a PR for every change | Open a PR only when asked | Every change | Every push to `main` releases, so all work lands through PRs |
+| control-smoke / verify / screenshot-diff | control-smoke | verify flows, screenshot-diff | Opt-in reusable workflows | Each repo keeps what it runs today |
+| `preview.yml` | — | Present | Stays in Runway | Runway-specific deploy; nothing to share yet |
+| `docker.yml`, `tools/control`, verify-* skills | Own | Own | Stay per app (v2 candidates) | Hundreds of lines of app-specific drift |
+
+## The fleet command (`FLEET-TOOLS`)
+
+`tools/fleet_checks.py` (Waypoint 443 lines, Runway 425) became `fleet checks`, split by concern under `fleet_tools/checks/`; each check runs only where the consumer's `[tool.fleet]` configures it ([adopting.md](adopting.md)).
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| `fleet_checks.py` as a whole | Test-removal trailers, `# hosted:` rule, parser fixtures | `EARLY_ENV` rule, a11y baseline, flow inheritance | The union of shared checks; app-only checks via `extra-checks` | Each gains the other's general checks |
+| Paths | Hard-coded for `waypoint/` | Hard-coded for `runway/` | `[tool.fleet]` keys; a check with no key doesn't run | One tool, two layouts |
+| Migrations (`checks/migrations.py`) | One head, four-digit ids, a test per migration from `0001` | The same, from `0036` | Identical logic; `migrations`, `migration-tests`, `tested-from` | The rule is the same; only where it starts differs |
+| Commit trailers (`checks/commits.py`) | Exactly one `Co-Authored-By: Claude <Model> <version>`, `Opus\|Sonnet\|Haiku\|Fable`, keyed on `Claude-Session` | Identical | Identical | No drift |
+| Removed or skipped tests (`checks/tests_removed.py`) | `Removes-Test:` / `Skips-Test:` trailers | Absent | Waypoint's, on for every consumer given `--commits`; `test-paths` (default `tests/`, `frontend/`) | A silently deleted test is the same mistake in both apps; Runway gains the check |
+| Workflow conventions (`checks/workflows.py`) | bash default, SHA pins with a version comment, paginated `gh api`, `vars.RUNS_ON` or `# hosted: <why>` | bash default, pins, paginated `gh api`, `EARLY_ENV` (no `runner`/`steps`/`job`/`env` in a workflow's or job's `env:`) | Both rule sets | Waypoint gains `EARLY_ENV` (a file GitHub rejects never runs); Runway gains the `# hosted:` rule, so each of its jobs says why it stays on GitHub's runners |
+| Images (`checks/images.py`) | Screenshots in `docs/src/assets/screenshots/`, `<page>-<width>[-hero].png` from `verify.mjs`'s `PAGES`; homes and the docs logo | Screenshots in `screenshots/`, pages (`<page>[-top]-<width>.png`) and flows (`flow-<name>[-<step>]-<width>.png`); icons, static assets and the docs logo | `[tool.fleet.screenshots] names = "pages"` or `"pages-and-flows"`, plus `image-homes` and `image-files`; widths from `DEFAULT_VIEWPORTS` (else `phone`, `desktop`); names read from the branch's head | Two naming schemes that each app's `make verify` writes; Waypoint's widths were hard-coded to the same defaults |
+| Skills (`checks/skills.py`) | Frontmatter, name, description, body, links | Identical | Identical, for the directory `skills` names | No drift |
+| Generated `references/cli.md` | Hard-coded `node frontend/verify/control.mjs help --markdown` | The same, for `verify-runway` | `[[tool.fleet.generated]]`: `path`, `command` (run from the consumer's root), optional `fix` | Any generated reference, not only one; the generator stays in the app |
+| User feature map | `tools/user_feature_map.py`'s `generate()` and `check()` | The same module shape | `feature-maps`: a list of such modules | Same shape in both; the content is the app's |
+| Mail parser fixtures | In `fleet_checks.py` | — | Stays in Waypoint, through `extra-checks` | App-only |
+| a11y baseline (shrink-only), flow inheritance | — | In `fleet_checks.py` | Stay in Runway, through `extra-checks` (its adoption issue) | App-only |
+| Dark-only stylesheets, manage links tested | In `fleet_checks.py` | — | Stay in Waypoint, through `extra-checks` (its adoption issue) | App-only: one app's theme and one app's provider table |
+| Output and exit codes | Problems on stderr (`::error::` on Actions), exit 1; a fixed "passed" sentence | The same | The same; the "passed" sentence lists the checks that ran; a config error or a failing `git` exits 2 | A consumer sees what was checked; a broken setup isn't a failed check |
+| `no_comments.py`, `coverage_floor.py` | Present | Absent | Opt-in: `fleet no-comments` runs only where `[tool.fleet.no-comments]` exists; `fleet coverage-floor` reads `[tool.fleet.coverage]` | Runway's convention allows comments ("match the surrounding comment density") |
+| `no_comments.py` paths | Every tracked file | — | `paths` (default: every tracked file), `skip` (default `.semgrep/examples/`, `node_modules/`) | Waypoint's behaviour, made configurable |
+| `coverage_floor.py` floors | 85% overall, 90% for `domain/`, `providers/`, `server/api/` in code | — | `overall` and `modules` (prefix → floor; the longest prefix wins) in config | The numbers are the app's |
+| `.github/scripts/next-version.sh` | Identical in both | Identical | `fleet next-version`, the same outputs (`version`, `new`, `newest`, `skip`) to `$GITHUB_OUTPUT` | Python is testable and runs where bash differs; `--remote` and `--branch` default to `origin` and `main` |
+| `tools/test_timings.py` | "summed over all workers" wording | "summed over all processes" wording; `dict(phases)`, `int(count)` | Runway's | 25 lines of wording and typing; Runway's is the tidier one |

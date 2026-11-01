@@ -4,7 +4,7 @@ Instructions for AI coding agents working in fleet, the shared agent build safeg
 
 ## Layout
 
-- `fleet_tools/`: the `fleet` command. `cli.py` holds the subcommand registry (`COMMANDS`), `config.py` reads a consumer's `[tool.fleet]` table, `self_check.py` checks fleet's own conventions.
+- `fleet_tools/`: the `fleet` command. `cli.py` holds the subcommand registry (`COMMANDS`), `config.py` reads a consumer's `[tool.fleet]` table, `self_check.py` checks fleet's own conventions. `checks/` holds `fleet checks`, one module per concern, and `runner.py` runs them; `no_comments.py`, `coverage_floor.py`, `next_version.py` and `test_timings.py` are the other commands.
 - `.github/workflows/`: `ci.yml` ("fleet CI", `make check`), `self-test.yml` ("Self-test", calls each reusable workflow by local path), and the reusable workflows beside them.
 - `tests/`: the `unittest` suite. `fixtures/consumer-waypoint/` and `fixtures/consumer-runway/` are minimal trees with each app's layout and `[tool.fleet]`; `fixtures/workflows/` holds workflows for `fleet self-check`'s tests; `fakes/` holds fakes of outside services.
 - `docs/`: adopting fleet, the drift between the apps and how fleet resolved it, and the release process.
