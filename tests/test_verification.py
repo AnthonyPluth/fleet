@@ -106,12 +106,15 @@ class Parsing(unittest.TestCase):
     def test_an_unclosed_fence_hides_everything_after_it(self) -> None:
         with self.assertRaises(ParseError) as caught:
             parse("- ```\n" + record(GAP, before=""))
-        self.assertIn("no verification block", caught.exception.rule)
+        self.assertEqual((caught.exception.line, "never closed" in caught.exception.rule), (1, True))
         with self.assertRaises(ParseError) as caught:
             parse(BEGIN + "\n" + HEADER + "\n" + GAP + "\n> ```\n" + END + "\n")
         self.assertEqual(caught.exception.line, 1)
         self.assertIn("no closing", caught.exception.rule)
-        self.assertEqual([d.dimension for d in parse(record(GAP, before="") + "```\n" + record(ROW, before=""))], ["Live sync"])
+        with self.assertRaises(ParseError) as caught:
+            parse(record(GAP, before="") + "```\n" + record(ROW, before=""))
+        self.assertEqual(caught.exception.line, 1 + record(GAP, before="").count("\n"))
+        self.assertIn("never closed", caught.exception.rule)
 
     def test_a_fence_line_in_another_container_doesnt_close_a_fence(self) -> None:
         fake = HEADER + "\n| in an example | verified | a | b |\n" + END + "\n"
@@ -132,7 +135,46 @@ class Parsing(unittest.TestCase):
         for outer, stray in (("- ```", "```"), ("> ```", "```"), ("```", "    ```"), ("> ```", ">> ```")):
             with self.subTest(outer=outer, stray=stray), self.assertRaises(ParseError) as caught:
                 parse(outer + "\n" + BEGIN + "\n" + stray + "\n" + fake + real)
-            self.assertIn("no verification block", caught.exception.rule)
+            self.assertEqual(caught.exception.line, 1)
+            self.assertIn("never closed", caught.exception.rule)
+
+    def test_every_container_prefix_pair_keeps_an_example_out_of_the_record(self) -> None:
+        fake = HEADER + "\n| in an example | verified | a | b |\n" + END + "\n"
+        real = record(GAP, before="")
+        openers = ["", "> ", "- ", "1. ", "- - ", "> - ", "1. - ", ">> ", "  ", "   - ", "> > - ", "* + "]
+        closers = {opener: re.sub(r"[-*+0-9.)]", " ", opener) for opener in openers}
+        for opener in openers:
+            for closer in {*closers.values(), "- ", "> ", "    ", "> > "}:
+                with self.subTest(opener=opener, closer=closer):
+                    body = opener + "```md\n" + BEGIN + "\n" + fake + closer + "```\n\n" + real
+                    try:
+                        found = [d.dimension for d in parse(body)]
+                    except ParseError as error:
+                        self.assertIn("never closed", error.rule)
+                        found = []
+                    self.assertNotIn("in an example", found)
+                    if closer == closers[opener]:
+                        self.assertEqual(found, ["Live sync"])
+
+    def test_malformed_container_punctuation_before_a_fence_fails_closed(self) -> None:
+        real = record(GAP, before="")
+        for line in ("-- ```", ">-```", "1.2 ```", "-```", "...```", "> >> - 1. ```"):
+            with self.subTest(line=line), self.assertRaises(ParseError) as caught:
+                parse(line + "\n" + BEGIN + "\n" + HEADER + "\n| in an example | verified | a | b |\n" + END + "\n```\n" + real)
+            self.assertIn("never closed", caught.exception.rule)
+        with self.assertRaises(ParseError):
+            parse(("> " * 40) + "```\n" + BEGIN + "\n" + HEADER + "\n| x | verified | a | b |\n" + END + "\n" + ("> " * 40) + "```\n" + real)
+
+    def test_a_marker_inside_a_list_item_or_blockquote_is_an_error(self) -> None:
+        for prefix in ("- ", "> ", "1. ", "> - ", "  - "):
+            with self.subTest(prefix=prefix), self.assertRaises(ParseError) as caught:
+                parse(prefix + BEGIN + "\n" + HEADER + "\n" + GAP + "\n" + prefix + END + "\n")
+            self.assertEqual(caught.exception.line, 1)
+            self.assertIn("inside a list item or blockquote", caught.exception.rule)
+            with self.assertRaises(ParseError) as caught:
+                parse(record(GAP, before="") + prefix + END + "\n")
+            self.assertEqual(caught.exception.line, 1 + record(GAP, before="").count("\n"))
+        self.assertEqual(len(parse("- ```\n  " + BEGIN + "\n  ```\n" + record(GAP, before=""))), 1)
 
     def test_a_very_long_run_of_whitespace_parses_in_linear_time(self) -> None:
         run = 60000
@@ -143,6 +185,8 @@ class Parsing(unittest.TestCase):
                     started = time.monotonic()
                     self.assertEqual([d.dimension for d in parse(line + "\n" + record(GAP, before=""))], ["Live sync"])
                     self.assertIsNone(verification.fence_of(line))
+                    self.assertIsNone(verification.fence_of(prefix + ("- " * run)[:run] + "x"))
+                    self.assertFalse(verification.prefixed_marker(line))
                     self.assertFalse(verification.is_separator("|" + " " * run + "x"))
                     self.assertFalse(verification.is_separator("|" + " " * run + "|"))
                     self.assertLess(time.monotonic() - started, 0.5)

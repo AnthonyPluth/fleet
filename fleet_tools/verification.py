@@ -21,6 +21,8 @@ MAX_BODY = 65536
 MAX_ROWS = 100
 MAX_CELL = 1000
 SEPARATOR_CELL = re.compile(r":?-+:?")
+CONTAINER_PUNCTUATION = " \t>-*+0123456789.)"
+MAX_CONTAINERS = 32
 LIST_MARKER = re.compile(r"(?:[-*+]|[0-9]{1,9}[.)])[ \t]")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
 
@@ -48,40 +50,59 @@ class Fence:
     listed: bool
     indent: int
     content: int
+    ambiguous: bool = False
 
     def closes(self, opener: "Fence") -> bool:
+        if self.ambiguous or opener.ambiguous:
+            return False
         return (self.marks[0] == opener.marks[0] and len(self.marks) >= len(opener.marks) and not self.rest.strip()
                 and self.depth == opener.depth and not self.listed and opener.content <= self.indent <= opener.content + 3)
 
 
+def fence_run(line: str, at: int) -> tuple[str, str] | None:
+    if at >= len(line) or line[at] not in "`~":
+        return None
+    end = at
+    while end < len(line) and line[end] == line[at]:
+        end += 1
+    if end - at < 3:
+        return None
+    return line[at:end], line[end:]
+
+
 def fence_of(line: str) -> Fence | None:
-    at = 0
-    depth = 0
-    start = 0
-    while True:
+    at = depth = start = containers = 0
+    listed = False
+    while containers <= MAX_CONTAINERS:
         while at < len(line) and line[at] in " \t":
             at += 1
         if at < len(line) and line[at] == ">":
             at += 1
             depth += 1
             start = at
+            containers += 1
+            continue
+        marker = LIST_MARKER.match(line, at)
+        if marker:
+            at = marker.end()
+            listed = True
+            containers += 1
             continue
         break
     indent = at - start
-    marker = LIST_MARKER.match(line, at)
-    if marker:
-        at = marker.end()
-        while at < len(line) and line[at] in " \t":
-            at += 1
-    if at >= len(line) or line[at] not in "`~":
-        return None
-    char = line[at]
-    end = at
-    while end < len(line) and line[end] == char:
-        end += 1
-    if end - at < 3:
-        return None
-    return Fence(line[at:end], line[end:], depth, marker is not None, indent, at - start if marker else 0)
+    found = fence_run(line, at) if containers <= MAX_CONTAINERS else None
+    if found:
+        return Fence(found[0], found[1], depth, listed, indent, at - start if listed else 0)
+    stripped = line.lstrip(CONTAINER_PUNCTUATION)
+    found = fence_run(line, len(line) - len(stripped))
+    if found and len(stripped) < len(line):
+        return Fence(found[0], found[1], depth, listed, indent, 0, ambiguous=True)
+    return None
+
+
+def prefixed_marker(line: str) -> bool:
+    stripped = line.lstrip(CONTAINER_PUNCTUATION).strip()
+    return stripped in (BEGIN, END) and line.strip() != stripped
 
 
 def is_separator(line: str) -> bool:
@@ -93,11 +114,12 @@ def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
     begins: list[int] = []
     ends: list[int] = []
     fence: Fence | None = None
+    opened = 0
     for index, line in enumerate(lines, start=1):
         found = fence_of(line)
         if found:
             if fence is None:
-                fence = found
+                fence, opened = found, index
             elif found.closes(fence):
                 fence = None
             continue
@@ -107,6 +129,11 @@ def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
             begins.append(index)
         elif line.strip() == END:
             ends.append(index)
+        elif prefixed_marker(line):
+            raise ParseError(index, "a marker line inside a list item or blockquote; the markers stand alone at the top level")
+    if fence is not None:
+        raise ParseError(opened, "a code fence opened here is never closed (a closing fence sits in the same list item or "
+                                 "blockquote as the opening one), so the record can't be told from example text")
     return begins, ends
 
 
