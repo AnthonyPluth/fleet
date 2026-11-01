@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import io
 import json
 import os
@@ -46,6 +47,24 @@ class Globs(unittest.TestCase):
         for path in (".github/workflows/x.yml", ".github/CODEOWNERS", ".claude/settings.json", ".claude/skills/x/SKILL.md"):
             self.assertTrue(ar.risky([], [path], [], [])[0], path)
         self.assertFalse(ar.risky([], ["app/.github/x", "docs/.claude.md", "github/x"], [], [])[0])
+
+    def test_a_caller_can_narrow_the_always_risky_paths(self) -> None:
+        always = [".github/workflows/security.yml", ".claude/**", "plugins/**"]
+        self.assertTrue(ar.risky([], [".github/workflows/security.yml"], [], [], always)[0])
+        self.assertTrue(ar.risky([], ["plugins/fleet/skills/x/SKILL.md"], [], [], always)[0])
+        self.assertFalse(ar.risky([], [".github/workflows/self-test.yml", ".github/dependabot.yml", "docs/x.md"], [], [], always)[0])
+        self.assertTrue(ar.risky(["security"], ["docs/x.md"], ("security",), [], always)[0])
+        self.assertFalse(ar.risky([], [".github/workflows/x.yml"], [], [], [])[0])
+
+    def test_the_command_reads_the_always_paths_from_the_environment(self) -> None:
+        env = {"LABELS": "[]", "TRIGGER_LABELS": "security", "RISKY_PATHS": "", "ALWAYS_PATHS": ".claude/**\n"}
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, env, clear=True):
+            files = Path(root) / "files.txt"
+            files.write_text("M\t.github/workflows/self-test.yml\n", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(ar.main(["second", "risky", str(files)]), 0)
+        self.assertIn("risky=false", out.getvalue())
 
 
 class Risky(unittest.TestCase):
