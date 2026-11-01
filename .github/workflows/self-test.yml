@@ -2,8 +2,7 @@ name: Self-test
 
 # Calls each of fleet's reusable workflows by local path, with `fleet-ref: ${{ github.sha }}` so it fetches its scripts
 # from this pull request's own commit rather than its FLEET_REF, and with test inputs. Each extraction issue adds its
-# case here; `fleet self-check` fails on a call without that fleet-ref. Until the first one lands, a no-op job keeps
-# the check present.
+# case here; `fleet self-check` fails on a call without that fleet-ref.
 on:
   pull_request:
 
@@ -19,10 +18,21 @@ defaults:
     shell: bash
 
 jobs:
-  noop:
-    name: No reusable workflows yet
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - run: echo "No reusable workflows to call yet; each extraction issue adds its case."
+  # The merge gate decides this pull request's own head in dry run: it prints the status it would post (pending while
+  # this very workflow runs) and never posts, merges or starts anything. The called job asks for the write permissions
+  # the real gate needs, so the caller must grant them (a called workflow can't be given more than its caller has).
+  merge-gate:
+    name: Merge gate (dry run)
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+      actions: write
+      checks: read
+    uses: ./.github/workflows/merge-gate.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      sha: ${{ github.event.pull_request.head.sha }}
+      required-workflows: fleet CI
+      required-statuses: ""
+      dry-run: true
