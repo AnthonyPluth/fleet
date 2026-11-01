@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import re
@@ -356,8 +357,14 @@ class SyncWorkflow(unittest.TestCase):
         self.assertEqual(job["permissions"], {"contents": "read", "issues": "write"})
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertIn("# hosted:", self.text.split("runs-on: ubuntu-latest", 1)[1].split("\n", 1)[0])
-        self.assertEqual(mapping(job["concurrency"])["group"], "fleet-sync-${{ github.ref }}-${{ inputs.fixture }}")
+        self.assertEqual(mapping(job["concurrency"])["group"], "fleet-sync-${{ github.repository }}-${{ inputs.fixture }}")
         self.assertEqual(mapping(job["concurrency"])["cancel-in-progress"], "false")
+
+    def test_the_concurrency_group_is_per_repository_not_per_ref(self) -> None:
+        group = str(mapping(mapping(mapping(self.workflow["jobs"])["sync"])["concurrency"])["group"])
+        self.assertNotIn("github.ref", group)
+        self.assertIn("github.repository", group)
+        self.assertIn("inputs.fixture", group)
 
     def test_every_checkout_keeps_no_credentials_and_is_pinned(self) -> None:
         for step in steps_of(self.workflow, "sync"):
@@ -450,6 +457,94 @@ class SyncWorkflow(unittest.TestCase):
         self.assertLess(names.index("Build the fixture consumer (self-test)"), names.index("Plan"))
 
 
+def script_of(chunk: str) -> str:
+    if "run: |\n" in chunk:
+        lines = []
+        for line in chunk.split("run: |\n", 1)[1].splitlines():
+            if line.strip() and not line.startswith("          "):
+                break
+            lines.append(line[10:])
+        return "\n".join(lines)
+    found = re.search(r"^ *run: (.+)$", chunk, re.MULTILINE)
+    assert found, chunk
+    return found.group(1)
+
+
+def sparse_paths(chunk: str) -> list[str]:
+    block = chunk.split("sparse-checkout: |\n", 1)[1]
+    paths = []
+    for line in block.splitlines():
+        if not line.startswith("            "):
+            break
+        paths.append(line.strip())
+    return paths
+
+
+class FixtureMode(unittest.TestCase):
+    NEEDED = ("fleet_tools", "agents-md", "plugins", "shim", "VERSION", "CHANGELOG.md", "tests/consumers.py", "tests/sync_fixture.py",
+              "tests/fixtures/consumer-waypoint")
+
+    def setUp(self) -> None:
+        self.steps = step_sources(SYNC.read_text(encoding="utf-8"), "sync")
+        self.fleet_checkout = next(source for source in self.steps.values() if "repository: AnthonyPluth/fleet" in source)
+
+    def test_the_sparse_checkout_holds_what_the_planner_the_fixture_copy_and_the_body_need(self) -> None:
+        paths = sparse_paths(self.fleet_checkout)
+        self.assertLessEqual(set(self.NEEDED), set(paths))
+        for path in paths:
+            self.assertTrue((ROOT / path).exists(), path)
+        body = script_of(self.steps["Write the pull request's or the issue's body"])
+        self.assertIn('--changelog "$GITHUB_WORKSPACE/.fleet-pin/CHANGELOG.md"', body)
+
+    def sparse_fleet(self, workspace: Path) -> Path:
+        fleet = workspace / ".fleet"
+        for path in sparse_paths(self.fleet_checkout):
+            source, target = ROOT / path, fleet / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                shutil.copy2(source, target)
+        return fleet
+
+    def run_step(self, name: str, workspace: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        done = subprocess.run(["bash", "-eo", "pipefail", "-c", script_of(self.steps[name])], cwd=workspace, env=env,
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, f"{name}\n{done.stdout}{done.stderr}")
+        return done
+
+    def outputs(self, env: dict[str, str]) -> dict[str, str]:
+        return dict(line.split("=", 1) for line in Path(env["GITHUB_OUTPUT"]).read_text(encoding="utf-8").splitlines() if "=" in line)
+
+    def test_the_fixture_mode_steps_run_from_the_sparse_checkout_alone(self) -> None:
+        for spec, action in (("pins=v1.1.0 content=v1.0.0", "sync"), ("pins=v2.0.0 content=v1.0.0", "migration"),
+                             ("pins=v1.0.0 content=v1.0.0", "none")):
+            with self.subTest(spec=spec):
+                workspace = temporary(self)
+                self.sparse_fleet(workspace)
+                (workspace / "temp").mkdir()
+                env = {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "HOME": str(workspace), "GITHUB_WORKSPACE": str(workspace),
+                       "RUNNER_TEMP": str(workspace / "temp"), "GITHUB_OUTPUT": str(workspace / "temp" / "output"), "SPEC": spec, "FIXTURE": spec}
+                Path(env["GITHUB_OUTPUT"]).touch()
+                self.run_step("Build the fixture consumer (self-test)", workspace, env)
+                self.run_step("Plan", workspace, env)
+                found = self.outputs(env)
+                self.assertEqual(found["action"], action)
+                if action == "none":
+                    continue
+                env["PIN"] = found["pin"]
+                self.run_step("fleet at the pins' version", workspace, env)
+                self.assertEqual((workspace / ".fleet-pin/VERSION").read_text(encoding="utf-8").strip(), found["pin"][1:])
+                self.run_step("Write the pull request's or the issue's body", workspace, env)
+                body = (workspace / "temp/body.md").read_text(encoding="utf-8")
+                self.assertIn(f"## CHANGELOG v1.0.0 → {found['pin']}", body)
+                self.assertEqual(found["title"], sync_workflow.plan(workspace / "app").title)
+                if action == "sync":
+                    self.run_step("Sync the content", workspace, env)
+                    changed = base64.b64decode(self.outputs(env)["changed"]).decode().split()
+                    self.assertEqual(sorted(changed), sync_fixture.expected())
+
+
 class ChecksWorkflow(unittest.TestCase):
     def setUp(self) -> None:
         self.text = CHECKS.read_text(encoding="utf-8")
@@ -511,9 +606,8 @@ class ChecksWorkflow(unittest.TestCase):
         return root, env
 
     def run_step(self, name: str, root: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-        body = self.steps[name].split("run: |\n", 1)[1]
-        script = "\n".join(line[10:] for line in body.splitlines())
-        return subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=root, env=env, capture_output=True, text=True, check=False)
+        return subprocess.run(["bash", "-eo", "pipefail", "-c", script_of(self.steps[name])], cwd=root, env=env, capture_output=True,
+                              text=True, check=False)
 
     def test_the_steps_pass_on_a_consumer_whose_fleet_version_is_at_its_root(self) -> None:
         for working_directory in (".", "apps/one"):

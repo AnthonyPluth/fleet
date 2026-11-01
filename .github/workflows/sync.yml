@@ -75,9 +75,10 @@ jobs:
     name: Sync fleet content
     runs-on: ubuntu-latest   # hosted: holds the App token
     timeout-minutes: 15
-    # One run at a time per repository: two would race on the fleet/sync branch. The self-test's cases differ by fixture.
+    # One run at a time per repository, whatever ref started it (the content always comes from the default branch): two
+    # would race on the fleet/sync branch. The self-test's cases differ by fixture.
     concurrency:
-      group: fleet-sync-${{ github.ref }}-${{ inputs.fixture }}
+      group: fleet-sync-${{ github.repository }}-${{ inputs.fixture }}
       cancel-in-progress: false
     permissions:
       contents: read           # the caller's checkout; the pull request is pushed with the App token
@@ -97,7 +98,8 @@ jobs:
           path: app
           persist-credentials: false
 
-      # fleet at the pinned ref, after the caller's checkout: the planner, and the fixture builder the self-test uses.
+      # fleet at the pinned ref, after the caller's checkout: the planner, the fixture builder the self-test uses, and
+      # (since the self-test copies this checkout as its "fleet at the pin") everything `fleet sync` and the body need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
@@ -111,6 +113,7 @@ jobs:
             tests/consumers.py
             tests/sync_fixture.py
             tests/fixtures/consumer-waypoint
+            CHANGELOG.md
             VERSION
           sparse-checkout-cone-mode: false
           persist-credentials: false
