@@ -1,0 +1,48 @@
+name: fleet CI
+
+# `make check` on every pull request and every push to main: ruff, mypy, the tests, fleet self-check, actionlint and
+# zizmor over the workflows, at the versions pyproject.toml and the Makefile pin.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: fleet-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step (without it, only
+# the last command in a pipeline counts, and a failed curl passes silently).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: make check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      # The oldest Python fleet_tools supports (pyproject.toml's requires-python), so nothing newer slips in.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
+        id: python
+        with:
+          python-version: "3.11"
+      - name: Install Poetry
+        env:
+          PYTHON_PATH: ${{ steps.python.outputs.python-path }}
+        run: pipx install --python "$PYTHON_PATH" "poetry==2.5.1"
+      - name: make setup
+        run: make setup
+      # GH_TOKEN lets zizmor run its online audits too (impostor commits, known-vulnerable actions).
+      - name: make check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make check
