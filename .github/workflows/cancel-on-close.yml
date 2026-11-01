@@ -1,0 +1,58 @@
+name: Cancel runs on close
+
+# The reusable cancel-on-close: when a pull request is merged or closed, stop its runs that are still going (the Docker
+# image build and tests, the security scans, the verify run). Nothing is lost, since a merge starts main's own runs.
+#
+# GitHub doesn't cancel a pull request's runs when it closes. Each of those workflows is in a concurrency group per pull
+# request with cancel-in-progress, which is how a new push already replaces an older run. One job per group below joins
+# it (the names must match the workflows'), so starting it cancels the run in progress; the job itself does nothing
+# and needs no permission. The groups are built from the pull request's number, never from github.ref: once a pull
+# request is merged, github.ref on its closed event is main's, and joining main's groups would cancel main's own
+# release and scans. GitHub's own CodeQL checks come from the repository's settings, not a workflow, so they aren't covered.
+#
+# The caller (docs/adopting.md has the snippet) keeps the trigger (`pull_request: closed`) and passes its groups.
+on:
+  workflow_call:
+    inputs:
+      groups:
+        description: >-
+          The concurrency groups to join, as a JSON array of patterns where "{0}" stands for the pull request's number
+          ('["docker-image-refs/pull/{0}/merge", "security-refs/pull/{0}/merge", "verify-{0}"]'). A pattern without
+          "{0}" is a prefix the number is appended to ("verify-").
+        type: string
+        required: true
+      runs-on:
+        description: The runner, as JSON ('"ubuntu-latest"', or a label array). Waypoint passes its vars.RUNS_ON expression.
+        type: string
+        default: '"ubuntu-latest"'
+      fleet-ref:
+        description: The fleet ref (the self-test passes its own commit). Nothing of fleet's runs here; kept for the convention every reusable workflow follows.
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cancel:
+    name: Join ${{ matrix.group }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(inputs.groups) }}
+    concurrency:
+      group: ${{ contains(matrix.group, '{0}') && format(matrix.group, github.event.pull_request.number) || format('{0}{1}', matrix.group, github.event.pull_request.number) }}
+      cancel-in-progress: true
+    steps:
+      - env:
+          GROUP: ${{ contains(matrix.group, '{0}') && format(matrix.group, github.event.pull_request.number) || format('{0}{1}', matrix.group, github.event.pull_request.number) }}
+        run: echo "Stopped any run still going in the group $GROUP."
