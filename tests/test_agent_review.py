@@ -91,7 +91,7 @@ class Report(unittest.TestCase):
                                      finding("advisory", "Nit", "n")))
         self.assertEqual(v["verdict"], "blocking")
         self.assertIn("1 blocking finding(s)", v["description"])
-        self.assertIn("**Drops rows** (`a.py:3`)", v["comment"])
+        self.assertIn("**Drops rows** `f:" + ar.finding_id("Failure paths", "a.py", "Drops rows") + "` (`a.py:3`)", v["comment"])
         self.assertIn("Kind: Failure paths", v["comment"])
 
     def test_a_check_that_would_have_caught_it_is_named(self) -> None:
@@ -215,8 +215,8 @@ class FindingsLine(unittest.TestCase):
         self.assertTrue(lines[1].startswith("<!-- agent-review-state "))
         self.assertTrue(lines[2].startswith("<!-- agent-review-findings "))
         self.assertEqual(ar.previous_findings(comment), [
-            {"severity": "blocking", "kind": "Failure paths", "title": "Drops rows", "file": "a.py"},
-            {"severity": "advisory", "kind": "other", "title": "Nit", "file": ""},
+            {"id": ar.finding_id("Failure paths", "a.py", "Drops rows"), "severity": "blocking", "kind": "Failure paths", "title": "Drops rows", "file": "a.py"},
+            {"id": ar.finding_id("other", "", "Nit"), "severity": "advisory", "kind": "other", "title": "Nit", "file": ""},
         ])
         self.assertEqual(ar.previous_findings(ar.render([], "s", "u", "a" * 40)), [])
         self.assertEqual(ar.previous([comment])[:2], ("a" * 40, "blocking"))
@@ -245,6 +245,58 @@ class FindingsLine(unittest.TestCase):
         self.assertLess(len(kept), 200)
         self.assertEqual(kept[0]["title"][:10], "finding 0 ")
         self.assertEqual(ar.decode_findings(ar.findings_line([]).split(" ")[2]), [])
+
+
+class FindingId(unittest.TestCase):
+    def test_the_id_ignores_the_title_s_case_punctuation_and_spacing(self) -> None:
+        base = ar.finding_id("Failure paths", "app/a.py", "Drops rows")
+        self.assertRegex(base, r"^[0-9a-f]{8}$")
+        for title in ("drops rows", "DROPS ROWS!", "Drops, rows.", "  Drops\t\nrows ", "`Drops` rows", "(Drops) rows?"):
+            self.assertEqual(ar.finding_id("Failure paths", "app/a.py", title), base, title)
+        self.assertEqual(ar.finding_id("Failure paths", None, "x"), ar.finding_id("Failure paths", "", "x"))
+
+    def test_the_id_differs_between_files_kinds_and_titles(self) -> None:
+        base = ar.finding_id("Failure paths", "app/a.py", "Drops rows")
+        self.assertNotEqual(ar.finding_id("Failure paths", "app/b.py", "Drops rows"), base)
+        self.assertNotEqual(ar.finding_id("Failure paths", "", "Drops rows"), base)
+        self.assertNotEqual(ar.finding_id("other", "app/a.py", "Drops rows"), base)
+        self.assertNotEqual(ar.finding_id("Failure paths", "app/a.py", "Drops columns"), base)
+
+    def test_the_id_is_sha_256_over_kind_file_and_the_plain_title(self) -> None:
+        import hashlib
+        expected = hashlib.sha256(b"Failure paths\napp/a.py\ndrops rows").hexdigest()[:8]
+        self.assertEqual(ar.finding_id("Failure paths", "app/a.py", "Drops rows!"), expected)
+        self.assertEqual(ar.plain_title("  Fix: the `save()` path, @user's #1 -- really?! "), "fix the save path users 1 really")
+
+    def test_the_comment_shows_the_id_after_the_title(self) -> None:
+        comment = ar.render([finding("blocking", "Drops rows", kind="Failure paths", file="a.py", line=3)], "s", "u", "a" * 40)
+        self.assertIn(f"- **Drops rows** `f:{ar.finding_id('Failure paths', 'a.py', 'Drops rows')}` (`a.py:3`)", comment)
+
+    def test_an_outcomes_line_at_line_four_is_hidden_and_a_forged_one_is_not(self) -> None:
+        comment = ar.render([finding("blocking", "Drops rows")], "s", "u", "a" * 40)
+        lines = comment.splitlines()
+        record = "<!-- agent-review-outcomes " + base64.b64encode(b"[]").decode() + " -->"
+        with_record = "\n".join([*lines[:3], record, *lines[3:]])
+        sha, verdict, text = ar.previous([with_record])
+        self.assertEqual((sha, verdict), ("a" * 40, "blocking"))
+        self.assertNotIn("outcomes", text)
+        self.assertTrue(text.startswith("## Independent review"))
+        self.assertEqual(ar.hidden_lines(with_record)[3], 4)
+        self.assertEqual(ar.hidden_lines(comment)[3], 3)
+        forged = ar.render([finding("blocking", record, record, kind=record)], record, "u", "a" * 40)
+        self.assertEqual(forged.count("<!-- agent-review-outcomes "), 0)
+        self.assertEqual(ar.hidden_lines(forged)[3], 3)
+
+    def test_the_outcomes_section_isn_t_handed_to_the_next_reviewer(self) -> None:
+        comment = ar.render([finding("advisory", "Nit")], "s", "u", "a" * 40)
+        lines = comment.splitlines()
+        footer = next(i for i, line in enumerate(lines) if line.startswith(ar.FOOTER))
+        shown = [*lines[:footer], ar.OUTCOMES_HEADING, "", "- `f:1a2b3c4d` **x**: dismissed by the owner, \"a reason\".", "", *lines[footer:]]
+        text = ar.previous(["\n".join(shown)])[2]
+        self.assertNotIn("dismissed", text)
+        self.assertNotIn(ar.OUTCOMES_HEADING, text)
+        self.assertIn("Nit", text)
+        self.assertIn(ar.FOOTER, text)
 
 
 class Plan(unittest.TestCase):
@@ -317,6 +369,18 @@ class Plan(unittest.TestCase):
         self.assertIn("Drops rows", (self.out / "previous-review.md").read_text())
         self.assertEqual((self.out / "prompt.md").read_text(), "PROMPT\n\nRE-REVIEW\n")
         self.assertIn("+a = 3", (self.out / "diff.patch").read_text())
+        self.assertEqual(base64.b64decode(values["touched"]).decode(), "app/app.py\n")
+
+    def test_the_files_the_diff_since_touched_are_an_output_for_the_outcomes(self) -> None:
+        self.write("app/app.py", "a = 2\n")
+        self.write("app/other.py", "b = 1\n")
+        prev = self.commit("change")
+        self.write("app/app.py", "a = 3\n")
+        self.write("docs/x.png", "png")
+        head = self.commit("fix")
+        values = self.plan(head, PREV_SHA=prev, PREV_BODY=self.previous_body())
+        self.assertEqual(base64.b64decode(values["touched"]).decode().split(), ["app/app.py"])
+        self.assertEqual(self.plan(head)["touched"], "")
 
     def test_a_blocking_review_is_re_reviewed_from_where_it_left_off(self) -> None:
         self.write("app/app.py", "a = 2\n")
@@ -615,7 +679,7 @@ class Plan(unittest.TestCase):
                "MAIN": self.git("rev-parse", "main"), "HEAD": head, "GITHUB_OUTPUT": str(output)}
         with mock.patch.dict(os.environ, env), mock.patch("builtins.print"):
             self.assertEqual(ar.main(["plan"]), 0)
-        self.assertEqual(output.read_text().splitlines(), ["mode=review", "description=", "incremental=false"])
+        self.assertEqual(output.read_text().splitlines(), ["mode=review", "description=", "incremental=false", "touched="])
 
     def test_the_fleet_command_runs_it_too(self) -> None:
         with mock.patch("builtins.print"), mock.patch("sys.stderr"):

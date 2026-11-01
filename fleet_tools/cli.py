@@ -11,6 +11,7 @@ from fleet_tools import (
     drift,
     next_version,
     no_comments,
+    review_outcomes,
     screenshot_diff,
     self_check,
     sync,
@@ -47,6 +48,7 @@ register("sync", Command(sync.HELP, sync.configure, sync.run))
 register("drift", Command(drift.HELP, drift.configure, drift.run))
 register("agent-review", Command(agent_review.HELP, agent_review.configure, agent_review.run))
 register("screenshot-diff", Command(screenshot_diff.HELP, screenshot_diff.configure, screenshot_diff.run))
+register("review-outcomes", Command(review_outcomes.HELP, review_outcomes.configure, review_outcomes.run))
 
 
 def version() -> str:

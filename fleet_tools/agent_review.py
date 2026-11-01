@@ -1,10 +1,12 @@
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -32,6 +34,10 @@ class Review(NamedTuple):
     def findings(self) -> re.Pattern[str]:
         return re.compile(rf"^<!-- {self.key}-findings ([A-Za-z0-9+/=]*) -->$")
 
+    @property
+    def outcomes(self) -> re.Pattern[str]:
+        return re.compile(rf"^<!-- {self.key}-outcomes ([A-Za-z0-9+/=]*) -->$")
+
 
 FIRST = Review("agent-review", "Agent review", "Independent review", "")
 SECOND = Review("second-review", "Second review", "Second review", "second-review.md")
@@ -44,6 +50,10 @@ BODY_SIGNS = ("Generated with [Claude Code]", "claude.ai/code/session_")
 SEVERITIES = ("blocking", "advisory")
 MAX_COMMENT = 60000
 MAX_FINDINGS_LINE = 8192
+HIDDEN_LINES = 4
+OUTCOMES_HEADING = "### Outcomes"
+FOOTER = "<sub>From a fresh session"
+FINDING_ID = re.compile(r"^[0-9a-f]{8}$")
 SECRETS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 WITHHELD = "error_secret_in_answer"
 STATUS_CONTEXT = FIRST.context
@@ -73,7 +83,7 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
                                                   reviewed=true|false and pending=true|false for $GITHUB_OUTPUT
   agent_review.py previous COMMENTS.jsonl OUT.md  the last review's commit and verdict, its text to OUT.md
   agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff);
-                                                  mode, description, incremental
+                                                  mode, description, incremental, touched (base64, one file per line)
   agent_review.py risky FILES.txt [REASON.txt]    $LABELS (JSON), $TRIGGER_LABELS, $RISKY_PATHS and the changed files:
                                                   risky=true|false and reason=... for $GITHUB_OUTPUT (and REASON.txt)
   agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment
@@ -200,15 +210,18 @@ def hidden_lines(body: str, review: Review = FIRST) -> tuple[str, str, list[Json
     sha = verdict = ""
     findings: list[Json] | None = None
     index = 1
-    for index in range(1, min(len(lines), 3)):
+    for index in range(1, min(len(lines), HIDDEN_LINES)):
         if (state := review.state.match(lines[index])) and not sha:
             sha, verdict = state.group(1), state.group(2)
         elif (found := review.findings.match(lines[index])) and findings is None:
             findings = decode_findings(found.group(1))
+        elif index == HIDDEN_LINES - 1 and review.outcomes.match(lines[index]):
+            index += 1
+            break
         else:
             break
     else:
-        index = min(len(lines), 3)
+        index = min(len(lines), HIDDEN_LINES)
     return sha, verdict, findings, index
 
 
@@ -219,8 +232,17 @@ def previous(bodies: list[str], review: Review = FIRST) -> tuple[str, str, str]:
         sha, verdict, _, end = hidden_lines(body, review)
         if not sha:
             return "", "", ""
-        return sha, verdict, "\n".join(body.splitlines()[end:]).strip() + "\n"
+        return sha, verdict, "\n".join(without_outcomes(body.splitlines()[end:])).strip() + "\n"
     return "", "", ""
+
+
+def without_outcomes(lines: list[str]) -> list[str]:
+    try:
+        start = lines.index(OUTCOMES_HEADING)
+    except ValueError:
+        return lines
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith(FOOTER)), len(lines))
+    return [*lines[:start], *lines[end:]]
 
 
 def previous_findings(body: str, review: Review = FIRST) -> list[Json] | None:
@@ -239,9 +261,23 @@ def decode_findings(encoded: str) -> list[Json] | None:
     return [dict(item) for item in value]
 
 
+def plain_title(title: object) -> str:
+    kept = "".join(c for c in str(title or "").lower() if not unicodedata.category(c).startswith(("P", "S")))
+    return " ".join(kept.split())
+
+
+def finding_id(kind: object, file: object, title: object) -> str:
+    key = "\n".join([str(kind or ""), str(file or ""), plain_title(title)])
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+def with_ids(findings: list[Json]) -> list[Json]:
+    return [{**f, "id": finding_id(f["kind"], f.get("file"), f["title"])} for f in findings]
+
+
 def findings_line(findings: list[Json], review: Review = FIRST) -> str:
-    rows = [{"severity": f["severity"], "kind": defuse(f["kind"], 120), "title": defuse(f["title"], 200),
-             "file": defuse(f.get("file") or "", 300)} for f in findings]
+    rows = [{"id": finding_id(f["kind"], f.get("file"), f["title"]), "severity": f["severity"], "kind": defuse(f["kind"], 120),
+             "title": defuse(f["title"], 200), "file": defuse(f.get("file") or "", 300)} for f in findings]
     while True:
         line = f"<!-- {review.key}-findings {base64.b64encode(json.dumps(rows, ensure_ascii=False).encode()).decode()} -->"
         if len(line.encode()) <= MAX_FINDINGS_LINE or not rows:
@@ -314,7 +350,7 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     if review.extra_prompt:
         with open(out / "prompt.md", "a", encoding="utf-8") as f:
             f.write("\n" + Path(env["TRUSTED"], review.extra_prompt).read_text())
-    result = {"mode": "review", "description": "", "incremental": "false"}
+    result = {"mode": "review", "description": "", "incremental": "false", "touched": ""}
     prev = env.get("PREV_SHA", "")
     try:
         if env.get("PREV_VERDICT") == "pass" and env.get("PREV_STATE") == "success" \
@@ -329,16 +365,19 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
             files = sorted(p for p in set(own_files(repo, main, head)) | set(own_files(repo, main, prev))
                            if not left_out(p, generated))
             since = diff(repo, prev, head, paths=files) if files else ""
+            touched = git(repo, "diff", "--name-only", prev, head, "--", *[f":(literal){p}" for p in files]) if files else ""
             (out / "since-last-review.patch").write_text(since)
             (out / "previous-review.md").write_text(body)
             with open(out / "prompt.md", "a", encoding="utf-8") as f:
                 f.write("\n" + Path(env["TRUSTED"], "incremental.md").read_text())
             result["incremental"] = "true"
+            result["touched"] = base64.b64encode(touched.encode()).decode()
     except Exception as e:
         print(f"::warning::Reviewing the whole change: the re-review couldn't be prepared ({type(e).__name__}).")
         for name in ("since-last-review.patch", "previous-review.md"):
             (out / name).unlink(missing_ok=True)
         result["incremental"] = "false"
+        result["touched"] = ""
     return result
 
 
@@ -404,14 +443,15 @@ def render(findings: list[Json], summary: str, run_url: str, sha: str = "", revi
             where = defuse(f.get("file") or "", 300)
             if where and isinstance(f.get("line"), int):
                 where += f":{f['line']}"
-            lines.append(f"- **{defuse(f['title'], 300)}**" + (f" (`{where.replace('`', '')}`)" if where else ""))
+            lines.append(f"- **{defuse(f['title'], 300)}** `f:{finding_id(f['kind'], f.get('file'), f['title'])}`"
+                         + (f" (`{where.replace('`', '')}`)" if where else ""))
             if f.get("detail"):
                 lines.append("  " + defuse(f["detail"]).replace("\n", "\n  "))
             about = f"Kind: {defuse(f['kind'], 120)}"
             if f.get("check"):
                 about += f". A check that would have caught it: {defuse(f['check'], 300)}"
             lines.append(f"  <sub>{about}</sub>")
-    lines += ["", f"<sub>From a fresh session with read-only access to this pull request's code and main's AGENTS.md, "
+    lines += ["", f"{FOOTER} with read-only access to this pull request's code and main's AGENTS.md, "
                   f"run by fleet's agent-review.yml ([run]({run_url})).</sub>"]
     text = "\n".join(lines)
     return text if len(text) <= MAX_COMMENT else text[:MAX_COMMENT] + "\n\n(cut short)"

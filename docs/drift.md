@@ -100,6 +100,14 @@ Neither app had one. The second review is new, in the same reusable workflow as 
 | --- | --- | --- | --- | --- |
 | A second review | — | — ("every review uses Sonnet and never Opus", owner decision) | The `second-review` job on `claude-fable-5-1`, fixed, on risky pull requests only: a label in `second-review-labels` (`safety-critical,security`) or a path in `second-review-paths` (`.github/**`, `.claude/**` always); its own "Second review" status and `<!-- second-review -->` comment; "Not a risky pull request" passes so the gate can require it everywhere; `labeled`/`unlabeled` run only it, and only the owner's `unlabeled` re-evaluates; budget 10, turns 120; the app's `invariants.md` required with `second-review-paths` | The owner's new rule supersedes Runway's; the first review stays Sonnet |
 
+## Finding outcomes (`FLEET-FINDING-OUTCOMES`)
+
+Neither app recorded what happened to a finding after the review ([agent-review.md](agent-review.md)).
+
+| Piece | Waypoint | Runway | fleet takes | Why |
+| --- | --- | --- | --- | --- |
+| Finding outcomes | — | — | A stable id per finding (SHA-256 over kind, file and normalized title, 8 hex digits, shown as `f:…`); line 4 of each review's comment records each id as `open` or `resolved` (a full review, or an incremental one touching the file, no longer reporting it), capped at 200 entries and 16 KB; the owner's `/fleet dismiss f:<id> <reason>` comments (author association `OWNER` only) are read beside it and never change a verdict; `fleet review-outcomes` prints the merge | A fixed finding and a dismissed one are the signals for turning kinds into checks and for correcting an over-flagging reviewer, and must be told apart deterministically |
+
 ## Opt-in workflows (`FLEET-OPTIONAL`)
 
 What each app runs beyond the core, as reusable workflows an app calls or doesn't ([adopting.md](adopting.md)). Each keeps its triggers, path filters and concurrency group in the caller.

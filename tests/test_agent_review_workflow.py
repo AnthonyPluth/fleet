@@ -87,7 +87,8 @@ class ReusableWorkflowTest(unittest.TestCase):
         for job in REVIEW_JOBS:
             self.assertEqual(mapping(jobs[job])["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "read"})
         for job in REPORT_JOBS.values():
-            self.assertEqual(mapping(jobs[job])["permissions"], {"pull-requests": "write", "statuses": "write", "actions": "write"})
+            self.assertEqual(mapping(jobs[job])["permissions"],
+                             {"contents": "read", "pull-requests": "write", "statuses": "write", "actions": "write"})
             self.assertNotIn("concurrency", mapping(jobs[job]))
         self.assertEqual(mapping(mapping(jobs["review"])["concurrency"]),
                          {"group": "agent-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}", "cancel-in-progress": "true"})
@@ -111,8 +112,8 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertEqual(len(trusted), 2)
             for inputs in trusted:
                 self.assertIn(inputs["ref"], ("${{ github.event.pull_request.base.sha }}", "${{ inputs.fleet-ref || env.FLEET_REF }}"))
-        self.assertEqual(self.text.count("actions/checkout@"), 7)
-        self.assertEqual(self.text.count("persist-credentials: false"), 7)
+        self.assertEqual(self.text.count("actions/checkout@"), 9)
+        self.assertEqual(self.text.count("persist-credentials: false"), 9)
 
     def test_the_secrets_appear_only_in_the_review_steps_which_run_nothing_from_the_pull_request(self) -> None:
         for job in REVIEW_JOBS:
@@ -177,13 +178,33 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertIn("$RUNNER_TEMP/claude-code", install[0])
             self.assertIn(".fleet/.github/agent-review/package-lock.json", install[0])
 
-    def test_the_report_jobs_have_no_secret_and_no_checkout(self) -> None:
+    def test_the_report_jobs_have_no_secret_and_check_out_only_fleet_s_tools(self) -> None:
         for review, job in REPORT_JOBS.items():
             report = job_source(self.text, job)
             self.assertIsNone(SECRET.search(report))
-            self.assertNotIn("actions/checkout", report)
-            for step in steps_of(self.workflow, job):
-                self.assertNotIn("uses", step)
+            self.assertNotIn(PR_CHECKOUT, report)
+            self.assertNotIn("head.sha }}\n          path", report)
+            steps = steps_of(self.workflow, job)
+            checkouts = [step for step in steps if "uses" in step]
+            self.assertEqual(len(checkouts), 1)
+            self.assertTrue(str(checkouts[0]["uses"]).startswith("actions/checkout@"))
+            self.assertEqual(mapping(checkouts[0]["with"]), {"repository": "AnthonyPluth/fleet", "ref": "${{ inputs.fleet-ref || env.FLEET_REF }}",
+                                                             "path": ".fleet", "sparse-checkout": "fleet_tools", "persist-credentials": "false"})
+            self.assertEqual(steps.index(checkouts[0]), 0)
+            for line in report.splitlines():
+                if "python3" in line:
+                    self.assertIn("python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md", line)
+            self.assertIn('--repo "$REPO" --pr "$PR" --sha "$SHA"', report)
+            self.assertIn('--incremental "$INCREMENTAL" --touched touched.txt', report)
+            self.assertIn('base64 -d <<< "$TOUCHED" > touched.txt', report)
+            self.assertLess(report.index("review_outcomes.py --finish"), report.index("(dry run) the comment:"))
+            self.assertLess(report.index("review_outcomes.py --finish"), report.index("existing="))
+            env = mapping(next(s for s in steps if step_name(s).startswith("Post"))["env"])
+            self.assertEqual(env["INCREMENTAL"], f"${{{{ needs.{review}.outputs.incremental }}}}")
+            self.assertEqual(env["TOUCHED"], f"${{{{ needs.{review}.outputs.touched }}}}")
+            outputs = mapping(mapping(mapping(self.workflow["jobs"])[review])["outputs"])
+            self.assertEqual(outputs["incremental"], "${{ steps.plan.outputs.incremental }}")
+            self.assertEqual(outputs["touched"], "${{ steps.plan.outputs.touched }}")
             self.assertIn("gh api -X POST \"repos/$REPO/statuses/$SHA\"", report)
             self.assertIn("success:skip)", report)
             self.assertIn("DRY_RUN", report)
@@ -198,6 +219,8 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertNotIn("second-review", first.split("name: Report", 1)[1])
         self.assertIn('-f context="Second review"', second)
         self.assertIn('startswith("<!-- second-review -->")', second)
+        self.assertIn("review_outcomes.py --finish comment.md --second ", second)
+        self.assertNotIn("--second", first)
         self.assertNotIn('"Agent review"', second)
         self.assertNotIn("<!-- agent-review -->", second)
         self.assertNotIn("needs.review.", second)
@@ -405,6 +428,21 @@ class SelfTestTest(unittest.TestCase):
         self.assertIn('[ "$LABEL" = blocking ]', source)
         self.assertIn('"Not a risky pull request"', source)
         self.assertIn('[ "$OTHER" = skip ]', source)
+
+
+class FindingOutcomesSelfTestTest(unittest.TestCase):
+    def test_the_self_test_runs_the_outcomes_script_from_the_pull_request_s_checkout(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8")
+        workflow = mapping(self_check.parse(text))
+        job = mapping(mapping(workflow["jobs"])["finding-outcomes"])
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertRegex(job_source(text, "finding-outcomes"), r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
+        steps = [mapping(s) for s in job["steps"]]
+        self.assertEqual(mapping(steps[0]["with"])["persist-credentials"], "false")
+        self.assertEqual(steps[1]["run"], ".github/scripts/finding-outcomes-self-test.sh")
+        script = cli.ROOT / ".github" / "scripts" / "finding-outcomes-self-test.sh"
+        self.assertTrue(script.is_file())
+        self.assertTrue(script.stat().st_mode & 0o111)
 
 
 class LockedClaudeCodeTest(unittest.TestCase):
