@@ -53,6 +53,7 @@ A private repository on a personal account has no code scanning: pass `sarif-upl
 | `web-dirs` | none | Directories with a `package-lock.json` to `npm audit`, one per line; a change to their `package.json` or `package-lock.json` runs it |
 | `image-paths` | none | Regex of the paths whose change rebuilds and scans the image (none: no image scan) |
 | `dockerfile` | `Dockerfile` | The image's Dockerfile |
+| `zizmor-paths` | `.` | What zizmor audits (space-separated paths); the whole tree by default |
 | `sarif-upload` | `true` | Upload findings to the Security tab; `false` fails the job on findings instead |
 | `scorecard` | `true` | Run OpenSSF Scorecard (public repositories only) |
 | `runs-on` | `"ubuntu-latest"` | The runner for every job but Scorecard's, as JSON |
