@@ -20,7 +20,7 @@ EMPTY = ("", "-", "—")
 MAX_BODY = 65536
 MAX_ROWS = 100
 MAX_CELL = 1000
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+FENCE = re.compile(r"^(?:[ \t]*>)*[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?[ \t]*(`{3,}|~{3,})")
 SEPARATOR = re.compile(r"^\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?$")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
 
@@ -50,7 +50,7 @@ def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
             marks = found.group(1)
             if not fence:
                 fence = marks
-            elif marks[0] == fence[0] and len(marks) >= len(fence) and not line.strip()[len(marks):].strip():
+            elif marks[0] == fence[0] and len(marks) >= len(fence) and not line[found.end(1):].strip():
                 fence = ""
             continue
         if fence:

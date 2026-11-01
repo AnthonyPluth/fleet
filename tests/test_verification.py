@@ -76,6 +76,36 @@ class Parsing(unittest.TestCase):
             parse(fenced)
         self.assertEqual(caught.exception.line, fenced.rstrip("\n").count("\n") + 1)
 
+    def test_a_fence_opened_in_a_list_item_or_blockquote_still_hides_its_markers(self) -> None:
+        example = BEGIN + "\n" + HEADER + "\n| --- | --- | --- | --- |\n| in an example | verified | a | b |\n" + END + "\n"
+        for prefix in ("- ", "* ", "+ ", "1. ", "12) ", "> ", "> - ", "  - ", ">> "):
+            with self.subTest(prefix=prefix):
+                fenced = prefix + "```md\n" + example + prefix + "```\n\n"
+                self.assertEqual([d.dimension for d in parse(fenced + record(GAP, before=""))], ["Live sync"])
+                self.assertEqual([d.dimension for d in parse(prefix + "~~~\n" + example + "~~~\n" + record(GAP, before=""))], ["Live sync"])
+                with self.assertRaises(ParseError) as caught:
+                    parse(fenced)
+                self.assertIn("no verification block", caught.exception.rule)
+
+    def test_a_closing_fence_matches_the_opening_one(self) -> None:
+        example = BEGIN + "\n" + HEADER + "\n| in an example | verified | a | b |\n" + END + "\n"
+        for shut in ("```", "~~~", "``` not a close"):
+            with self.subTest(shut=shut), self.assertRaises(ParseError) as caught:
+                parse("````\n" + example + shut + "\n" + record(GAP, before="") + "````\n")
+            self.assertIn("no verification block", caught.exception.rule)
+        self.assertEqual([d.dimension for d in parse("```\n" + example + "`````\n" + record(GAP, before=""))], ["Live sync"])
+        self.assertEqual([d.dimension for d in parse("- ```\n" + example + "```\n" + record(GAP, before=""))], ["Live sync"])
+
+    def test_an_unclosed_fence_hides_everything_after_it(self) -> None:
+        with self.assertRaises(ParseError) as caught:
+            parse("- ```\n" + record(GAP, before=""))
+        self.assertIn("no verification block", caught.exception.rule)
+        with self.assertRaises(ParseError) as caught:
+            parse(BEGIN + "\n" + HEADER + "\n" + GAP + "\n> ```\n" + END + "\n")
+        self.assertEqual(caught.exception.line, 1)
+        self.assertIn("no closing", caught.exception.rule)
+        self.assertEqual([d.dimension for d in parse(record(GAP, before="") + "```\n" + record(ROW, before=""))], ["Live sync"])
+
     def test_an_escaped_pipe_is_a_literal_pipe_in_a_cell(self) -> None:
         found = parse(record("| a \\| b | verified | `x \\| y` | out \\| put |"))
         self.assertEqual((found[0].dimension, found[0].how, found[0].evidence), ("a | b", "`x | y`", "out | put"))
