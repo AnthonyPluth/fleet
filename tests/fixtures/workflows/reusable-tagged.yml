@@ -1,0 +1,12 @@
+name: Reusable stamped for a release
+
+on: workflow_call
+
+env:
+  FLEET_REF: 'v1.2.0'   # stamped by the release
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello

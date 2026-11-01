@@ -1,0 +1,40 @@
+[project]
+name = "fleet"
+version = "0.1.0"   # the same as VERSION (tests/test_cli.py checks it)
+description = "Shared agent build safeguards: reusable workflows, checks and the Claude Code plugin"
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+dependencies = []   # standard library only, so a runner's system python3 runs it without Poetry
+
+[project.scripts]
+fleet = "fleet_tools.cli:main"
+
+[tool.poetry]
+packages = [{ include = "fleet_tools" }]
+
+# The tools `make check` and CI run, pinned so every run uses the same versions; Dependabot updates them here.
+# actionlint isn't a Python package: `make setup` downloads its pinned binary (Makefile).
+[tool.poetry.group.dev.dependencies]
+ruff = "0.17.2"
+mypy = "2.4.0"
+coverage = "7.17.0"
+zizmor = "1.31.1"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "UP", "SIM", "RUF", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["fleet_tools", "tests"]
+strict = true
+
+[tool.coverage.run]
+source = ["fleet_tools"]

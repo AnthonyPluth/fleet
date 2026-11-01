@@ -1,0 +1,19 @@
+name: Self-test
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  reusable:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      fleet-ref: ${{ github.sha }}
+      other: value
+  external:
+    uses: AnthonyPluth/fleet/.github/workflows/reusable.yml@main
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

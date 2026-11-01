@@ -1,0 +1,33 @@
+[project]
+name = "waypoint"
+version = "1.0.0"
+requires-python = ">=3.14,<4.0"
+
+[tool.poetry]
+package-mode = false
+
+[tool.fleet]
+migrations = "waypoint/storage/migrations/versions"
+migration-tests = "tests/test_migrations.py"
+tested-from = "0001"
+image-homes = ["docs/public/", "waypoint/static/", "waypoint/storage/logos/"]
+image-files = ["docs/src/assets/logo.png"]
+skills = ".claude/skills"
+extra-checks = "tools.app_checks:CHECKS"
+
+[tool.fleet.screenshots]
+dir = "docs/src/assets/screenshots/"
+names = "pages"
+verify = "frontend/verify/verify.mjs"
+flows = "frontend/verify/flows"
+
+[[tool.fleet.generated]]
+path = ".claude/skills/verify-waypoint/references/cli.md"
+command = "make --no-print-directory -s verify-skill-print"
+
+[tool.fleet.no-comments]
+paths = ["waypoint", "tests", "tools", "frontend/src"]
+
+[tool.fleet.coverage]
+overall = 85
+modules = { "waypoint/domain/" = 90, "waypoint/providers/" = 90, "waypoint/server/api/" = 90 }
