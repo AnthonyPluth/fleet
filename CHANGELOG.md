@@ -6,7 +6,7 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ### Added
 
-- `security.yml` audits `.github/` with zizmor instead of the whole tree, so workflow files kept as test fixtures aren't audited as the repository's own.
+- `security.yml` takes a `zizmor-paths` input (default `.`, the whole tree, as before); fleet's own self-test passes `.github` so workflow files kept as test fixtures aren't audited as the repository's own.
 - The FLEET_REF convention now requires the fleet checkout only in a workflow that runs fleet's own files, after the caller's checkout and before the first fleet file is used. `FLEET_REF` and `fleet-ref` stay on every reusable workflow.
 - The scaffold: `VERSION`, the `fleet` command (`fleet --version`, a subcommand registry, `fleet self-check`), `[tool.fleet]` config reading, `make check`, the "fleet CI" and "Self-test" workflows, and the repository's templates and policies.
 - The FLEET_REF convention for reusable workflows, held by `fleet self-check`.
