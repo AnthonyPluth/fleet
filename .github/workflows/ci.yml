@@ -46,3 +46,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: make check
+
+  system-python:
+    name: fleet checks on the system Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner's own python3, with nothing installed: -E and -s ignore PYTHON* variables and user site-packages.
+      # (-I would also drop the working directory from sys.path, and with it fleet_tools.)
+      - name: fleet checks on each fixture consumer
+        run: |
+          /usr/bin/python3 --version
+          for consumer in tests/fixtures/consumer-*/; do
+            /usr/bin/python3 -E -s -m fleet_tools.cli checks --root "$consumer"
+          done
