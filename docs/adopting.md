@@ -304,6 +304,63 @@ Inside the markers is fleet's file at the marker's version, byte for byte; every
 
 To adopt: delete the app's copies of the shared bullets, put an empty pair of markers (`<!-- fleet:begin <section> v0.0.0 -->` and `<!-- fleet:end <section> -->` on the next line) where each block should go, above the app's own items under that heading, and run `fleet sync --to vX.Y.Z`. A section without markers is inserted at the end of its heading instead. A line that mentions a marker anywhere else is a marker error, so write about them without the `<!--` form. Commit `AGENTS.md` and `.fleet/version` together.
 
+`fleet sync` and `fleet drift` also cover the plugin files fleet vendors into the app ([Claude Code plugin](#claude-code-plugin)).
+
+## Claude Code plugin
+
+fleet's Claude Code plugin (`plugins/fleet/`, listed by the marketplace in `.claude-plugin/marketplace.json`) holds the skills every app shares (`fix-with-checks`, `design-signoff`, `agent-task`, `review-guidance`), the `fleet-reviewer` agent (the first review's prompt run locally on `git diff origin/main...HEAD` with the app's `.github/agent-review/context.md`; read-only and advisory) and the session-start hook. A cloud session doesn't install the plugins a repository enables, but loads the repository's own `.claude/skills/`, `.claude/agents/` and `.claude/settings.json` hooks, and the agents run in cloud sessions. So `fleet sync --to vX.Y.Z` also vendors the plugin into the app at that version:
+
+| Vendored file | From fleet's |
+| --- | --- |
+| `.claude/skills/fleet-<name>/` (prefixed, so the app's own skills never clash) | `plugins/fleet/skills/<name>/` |
+| `.claude/agents/fleet-reviewer.md` | `plugins/fleet/agents/fleet-reviewer.md` |
+| `.claude/hooks/fleet-session-start.sh` (executable) | `plugins/fleet/hooks/session-start.sh` |
+| `tools/fleet` (executable) | `shim/fleet`: runs `uvx --from "git+https://github.com/AnthonyPluth/fleet@$(cat .fleet/version)" fleet "$@"`, installing uv first when it's missing |
+
+Each starts with a line (after the `#!` line or the front matter's opening `---`) saying it's vendored from fleet at that version and is edited in fleet. `fleet drift` fails when one is missing, differs by a byte from fleet's at `.fleet/version`, has lost its executable bit, or when a file under the `fleet-` names (`.claude/skills/fleet-*/`, `.claude/agents/fleet-*`, `.claude/hooks/fleet-*`) isn't one fleet ships; `fleet sync` replaces them and removes a vendored file a later fleet no longer ships, never the app's own. A fleet version from before the plugin vendors nothing. Commit the vendored files with `AGENTS.md` and `.fleet/version`.
+
+The hook acts only in a cloud session (`CLAUDE_CODE_REMOTE=true`) and only on what `.claude/hooks/fleet.conf` asks for; with no `fleet.conf` it does nothing. `fleet.conf` is a shell file the hook sources:
+
+| Key | What the hook does with it |
+| --- | --- |
+| `PYTHON_VERSION` | Installs uv and Poetry (pinned) when missing, finds that Python (or has uv fetch it), points Poetry's environment at it, remakes the environment with that Python's own venv when Poetry picked another, and runs `poetry install --no-root --no-interaction`. Empty: no Python step |
+| `FRONTEND_DIRS` | In each, space-separated: `npm install --no-save --no-audit --no-fund` (`--no-save`: a session must not rewrite the committed lockfile) |
+| `APT_PACKAGES` | Installs the ones `dpkg` doesn't have, with `apt-get`, then `sudo apt-get`; a failure only warns |
+| `NODE_CHECK` | What a complete `node_modules` has, space-separated: a package name (it must import from the directory) or a file under `node_modules` (`esrap/types/public.d.ts`: it must exist). When one is missing, the directory is reinstalled with `npm ci` and checked again |
+
+`.claude/hooks/session-start.local.sh`, when present, is sourced last with the configuration set, for the app's own steps (`npx playwright install`, say). What each app sets:
+
+```sh
+# Waypoint
+PYTHON_VERSION=3.14
+FRONTEND_DIRS="frontend"
+APT_PACKAGES="libfaketime"
+
+# Runway: the same, plus the completeness check its own hook ran
+NODE_CHECK="esrap/types/public.d.ts eslint-plugin-svelte"
+```
+
+`.claude/settings.json` runs the vendored hook and declares fleet's marketplace pinned to the tag the workflow pins carry, with no `enabledPlugins` entry:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/fleet-session-start.sh\""}
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "vX.Y.Z"}}
+  }
+}
+```
+
+The plugin isn't enabled: the vendored copies already give every session the skills, the agent and the hook, and enabling the plugin as well would load each skill twice in a local session (once as `fleet-<name>`, once as `fleet:<name>`) and run the hook twice. Declaring the marketplace lets someone browse or install it by hand. The app deletes its own `.claude/hooks/session-start.sh`; its own skills (`verify-waypoint`, say) stay.
+
 ## Verify (control smoke, verify flows)
 
 `.github/workflows/verify.yml` (`workflow_call`) runs one `make` target of the app in a real browser against its demo server: Waypoint's `make control-smoke`, Runway's `make verify`. It sets up Python with Poetry's virtualenv (cached by `poetry.lock`), Node with the app's packages (cached by `package-lock.json`), the Playwright browser and libfaketime, then runs the target. `contents: read` only, no secrets. The caller keeps the workflow name (the status the merge gate lists), the triggers with their path filters and the concurrency group; its job name is what the status shows.

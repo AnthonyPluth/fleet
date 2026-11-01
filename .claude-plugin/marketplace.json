@@ -1,0 +1,16 @@
+{
+  "name": "fleet",
+  "owner": {
+    "name": "fleet"
+  },
+  "metadata": {
+    "description": "fleet's Claude Code plugin: the shared skills, the fleet-reviewer agent and the session-start hook. Apps declare this marketplace pinned to a tag and vendor the plugin with `fleet sync`; they don't enable it."
+  },
+  "plugins": [
+    {
+      "name": "fleet",
+      "source": "./plugins/fleet",
+      "description": "Shared agent skills (fix-with-checks, design-signoff, agent-task, review-guidance), the fleet-reviewer agent and the session-start hook."
+    }
+  ]
+}

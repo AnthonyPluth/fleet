@@ -9,7 +9,7 @@ Waypoint and Runway each carry their own copy of the same automation: the indepe
 - `fleet_tools/`: the `fleet` command. Standard library only (Python 3.11 or newer), so a runner's or a cloud container's system `python3` runs it without Poetry (`fleet screenshot-diff` alone needs Pillow, the optional extra `fleet[images]`). A consumer configures it in a `[tool.fleet]` table in its own `pyproject.toml`.
 - `.github/workflows/`: fleet's own CI (`ci.yml`, "fleet CI"), the self-test of the reusable workflows (`self-test.yml`, "Self-test"), and the reusable workflows the apps call.
 - `.github/agent-review/`, `.github/scripts/`: the review prompts and the scripts the reusable workflows run.
-- `.claude-plugin/`, `plugins/fleet/`: the Claude Code plugin (skills, the reviewer agent, the session-start hook), vendored into each app.
+- `.claude-plugin/`, `plugins/fleet/`: the Claude Code plugin (skills, the reviewer agent, the session-start hook), vendored into each app by `fleet sync` with `shim/fleet` as the app's `tools/fleet` ([adopting](docs/adopting.md#claude-code-plugin)).
 - `agents-md/sections/`: the `AGENTS.md` blocks the apps share.
 - `docs/`: [adopting fleet](docs/adopting.md), [where the apps differed](docs/drift.md), the owner's [deep-scan runbook](docs/deep-scan.md) and [releasing](docs/release.md).
 
@@ -22,8 +22,8 @@ A called workflow can't learn its own ref: `github.workflow_ref` and `github.wor
 ## Working on fleet
 
 ```sh
-make setup   # Poetry's environment and the pinned actionlint
-make check   # ruff, mypy, the tests, fleet self-check, actionlint and zizmor
+make setup   # Poetry's environment, the pinned actionlint and the locked Claude Code
+make check   # ruff, mypy, the tests, fleet self-check, actionlint, zizmor and claude plugin validate
 ```
 
 Read [AGENTS.md](AGENTS.md) first. Adopting fleet in an app: [docs/adopting.md](docs/adopting.md).

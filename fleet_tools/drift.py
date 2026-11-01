@@ -4,10 +4,11 @@ import re
 import sys
 from pathlib import Path
 
-from fleet_tools import agents_md, config
+from fleet_tools import agents_md, config, vendor
 
 HELP = ("check that the consumer's fleet content is fleet's: every AGENTS.md block byte-equal to fleet's at the version "
-        "in its marker, one version across the markers and .fleet/version, and that version within the workflow pins")
+        "in its marker, every vendored plugin file byte-equal to fleet's at .fleet/version, one version across the markers and "
+        ".fleet/version, and that version within the workflow pins")
 
 WORKFLOWS = ".github/workflows"
 PIN = re.compile(r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*AnthonyPluth/fleet/[^@\s]+@(?P<ref>\S+)(?P<rest>.*)$",
@@ -80,6 +81,10 @@ def drift(root: Path) -> tuple[list[str], str]:
         where = [f"{block.name} {block.version}" for block in found if block.version != content]
         problems.append(f"fleet content is at more than one version: {agents_md.VERSION_FILE.as_posix()} {content}, "
                         f"{agents_md.AGENTS} {', '.join(where)}; run `fleet sync` at one version")
+    vendored = 0
+    if content:
+        vendored, vendor_problems = vendor.check(root, content)
+        problems += vendor_problems
     pinned, pin_problems = pins(root)
     problems += pin_problems
     summary = ""
@@ -90,7 +95,8 @@ def drift(root: Path) -> tuple[list[str], str]:
             why = "is newer than" if pin in newer else "is another major version than"
             problems.append(f"fleet content {content} {why} the workflow pin {pin} in {', '.join(pinned[pin])}")
         pins_text = ", ".join(sorted(pinned, key=agents_md.version_key)) if pinned else "none"
-        summary = (f"{len(found)} AGENTS.md blocks and {agents_md.VERSION_FILE.as_posix()} at {content}; "
+        summary = (f"{len(found)} AGENTS.md blocks, {vendored} vendored files and {agents_md.VERSION_FILE.as_posix()} at "
+                   f"{content}; "
                    f"fleet workflow pins: {pins_text}")
     return problems, summary
 

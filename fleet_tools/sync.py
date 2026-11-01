@@ -2,19 +2,21 @@ import argparse
 import sys
 from pathlib import Path
 
-from fleet_tools import agents_md, config
+from fleet_tools import agents_md, config, vendor
 
 HELP = ("sync fleet's content into the consumer at this fleet's version: AGENTS.md's fleet blocks (replaced, or "
-        "inserted under their heading) and .fleet/version; nothing outside the markers changes")
+        "inserted under their heading; nothing outside the markers changes), the vendored plugin files (.claude/skills/"
+        "fleet-*, .claude/agents/fleet-reviewer.md, .claude/hooks/fleet-session-start.sh, tools/fleet) and .fleet/version")
 
 
 def sync(root: Path, version: str) -> list[str]:
     path = root / agents_md.AGENTS
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     synced, changes = agents_md.sync(text, agents_md.sections(), version)
+    vendored = vendor.sync(root, version)
     if synced != text:
         path.write_text(synced, encoding="utf-8")
-    report = [f"{agents_md.AGENTS}: {change}" for change in changes]
+    report = [f"{agents_md.AGENTS}: {change}" for change in changes] + vendored
     version_file = root / agents_md.VERSION_FILE
     current = version_file.read_text(encoding="utf-8") if version_file.is_file() else None
     if current != version + "\n":
@@ -38,7 +40,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         root = (args.root or config.find_root(Path.cwd())).resolve()
         changes = sync(root, own)
-    except (config.ConfigError, agents_md.MarkerError) as error:
+    except (config.ConfigError, agents_md.MarkerError, vendor.VendorError) as error:
         print(f"fleet sync: {error}", file=sys.stderr)
         return 2
     for change in changes:

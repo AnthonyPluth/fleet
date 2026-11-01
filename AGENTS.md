@@ -7,13 +7,14 @@ Instructions for AI coding agents working in fleet, the shared agent build safeg
 - `fleet_tools/`: the `fleet` command. `cli.py` holds the subcommand registry (`COMMANDS`), `config.py` reads a consumer's `[tool.fleet]` table, `self_check.py` checks fleet's own conventions. `checks/` holds `fleet checks`, one module per concern, and `runner.py` runs them; `no_comments.py`, `coverage_floor.py`, `next_version.py` and `test_timings.py` are the other commands.
 - `.github/workflows/`: `ci.yml` ("fleet CI", `make check`), `self-test.yml` ("Self-test", calls each reusable workflow by local path), and the reusable workflows beside them.
 - `tests/`: the `unittest` suite. `fixtures/consumer-waypoint/` and `fixtures/consumer-runway/` are minimal trees with each app's layout and `[tool.fleet]`; `fixtures/workflows/` holds workflows for `fleet self-check`'s tests; `fakes/` holds fakes of outside services.
+- `.claude-plugin/marketplace.json`, `plugins/fleet/`: the Claude Code plugin (skills, the `fleet-reviewer` agent, the session-start hook) and `shim/fleet`; `fleet sync` vendors them into a consumer and `fleet drift` checks them (`fleet_tools/vendor.py`). A new skill is one file, `plugins/fleet/skills/<name>/SKILL.md`; then re-run `fleet sync` on the fixture consumers. The agent carries `.github/agent-review/prompt.md` word for word: change both together.
 - `agents-md/sections/`: the shared `AGENTS.md` blocks, one file per block, with front matter naming the heading each lives under; `fleet sync` writes them into a consumer and `fleet drift` checks them (`fleet_tools/agents_md.py`).
 - `docs/`: adopting fleet, the drift between the apps and how fleet resolved it, and the release process.
 
 ## Commands
 
-- `make setup`: Poetry's environment (the dev tools, pinned in `pyproject.toml`) and the pinned actionlint binary in `.tools/`.
-- `make check`: ruff, mypy (strict), the tests, `fleet self-check`, actionlint and zizmor over `.github/workflows/`. Run it before pushing; CI runs the same.
+- `make setup`: Poetry's environment (the dev tools, pinned in `pyproject.toml`), the pinned actionlint binary and the Claude Code `.github/agent-review/` locks, in `.tools/`.
+- `make check`: ruff, mypy (strict), the tests, `fleet self-check`, actionlint and zizmor over `.github/workflows/`, and `claude plugin validate --strict` over the marketplace and the plugin (`make plugin`). Run it before pushing; CI runs the same.
 - `make fix`: ruff's safe fixes; review the diff afterwards.
 
 ## Rules
@@ -45,7 +46,7 @@ Instructions for AI coding agents working in fleet, the shared agent build safeg
 - **Run Python through `poetry run` or `make`** (`make test`, or `poetry run python -m unittest tests.test_x`), never the bare `python3`. `make setup` installs the dependencies by hand.
 - **Subagents make their own worktree** under `.claude/worktrees/` (ignored by `.gitignore`), from the session's checkout, and push from there. A session whose working directory isn't a git repository can't create one for them.
 <!-- fleet:end working-in-a-container -->
-- fleet has no session-start hook of its own yet (`FLEET-PLUGIN` adds it): run `make setup` once in a fresh container.
+- fleet's own session-start hook is its plugin's (`plugins/fleet/hooks/session-start.sh`, configured by `.claude/hooks/fleet.conf`), and `.claude/hooks/session-start.local.sh` runs `make setup`; outside a cloud session, run `make setup` once yourself.
 
 ## Mistakes that keep coming back
 

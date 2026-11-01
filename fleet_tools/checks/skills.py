@@ -24,6 +24,8 @@ def check_skill(folder: str, text: str, exists: Callable[[str], bool] = lambda r
     fields: dict[str, str] = {}
     problems = []
     for line in found.group(1).splitlines():
+        if line.startswith("#"):
+            continue
         key, sep, value = line.partition(":")
         if not sep or not key.strip() or key != key.strip():
             problems.append(f"{where}: frontmatter line isn't `key: value`: {line[:60]!r}")

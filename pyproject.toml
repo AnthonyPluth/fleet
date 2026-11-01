@@ -17,8 +17,15 @@ fleet = "fleet_tools.cli:main"
 
 [tool.poetry]
 packages = [{ include = "fleet_tools" }]
-# The AGENTS.md sections ship beside the package, so `fleet sync` at a version writes that version's text.
-include = [{ path = "agents-md/sections/*.md", format = ["sdist", "wheel"] }]
+# The AGENTS.md sections and the files `fleet sync` vendors ship beside the package, so `fleet sync` at a version
+# writes that version's text.
+include = [
+  { path = "agents-md/sections/*.md", format = ["sdist", "wheel"] },
+  { path = "plugins/fleet/skills/**/*", format = ["sdist", "wheel"] },
+  { path = "plugins/fleet/agents/*.md", format = ["sdist", "wheel"] },
+  { path = "plugins/fleet/hooks/session-start.sh", format = ["sdist", "wheel"] },
+  { path = "shim/fleet", format = ["sdist", "wheel"] },
+]
 
 # The tools `make check` and CI run, pinned so every run uses the same versions; Dependabot updates them here.
 # actionlint isn't a Python package: `make setup` downloads its pinned binary (Makefile).
