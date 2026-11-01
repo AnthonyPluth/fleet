@@ -1,4 +1,5 @@
 import argparse
+import importlib.metadata
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -29,7 +30,10 @@ register("self-check", Command(self_check.HELP, self_check.configure, self_check
 
 
 def version() -> str:
-    return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    version_file = ROOT / "VERSION"
+    if version_file.is_file():
+        return version_file.read_text(encoding="utf-8").strip()
+    return importlib.metadata.version("fleet")
 
 
 def build_parser() -> argparse.ArgumentParser:
