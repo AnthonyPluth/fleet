@@ -70,10 +70,7 @@ def sections(root: Path | None = None) -> dict[str, Section]:
     return {name: parse_section(name, (root / SECTIONS / f"{name}.md").read_text(encoding="utf-8")) for name in ORDER}
 
 
-def sections_at(version: str, root: Path | None = None) -> dict[str, Section] | None:
-    root = root or ROOT
-    if version == own_version():
-        return sections(root)
+def tagged_sections(version: str, root: Path) -> dict[str, Section] | None:
     if not (root / ".git").exists():
         return None
     try:
@@ -88,6 +85,16 @@ def sections_at(version: str, root: Path | None = None) -> dict[str, Section] | 
     except (subprocess.CalledProcessError, OSError):
         return None
     return found
+
+
+def sections_at(version: str, root: Path | None = None) -> dict[str, Section] | None:
+    root = root or ROOT
+    tagged = tagged_sections(version, root)
+    if tagged is not None:
+        return tagged
+    if version == own_version():
+        return sections(root)
+    return None
 
 
 def render(section: Section, version: str) -> str:

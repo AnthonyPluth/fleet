@@ -203,6 +203,16 @@ class OtherVersions(unittest.TestCase):
                                                     "it in fleet (agents-md/sections/mistakes.md), not here, or run "
                                                     "`fleet sync`"])
 
+    def test_a_released_version_is_read_from_its_tag_not_the_working_tree(self) -> None:
+        fleet = self.fleet()
+        path = fleet / "agents-md/sections/mistakes.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("Old layout", "Newer layout"), encoding="utf-8")
+        with mock.patch.object(agents_md, "own_version", return_value="v0.0.5"):
+            found = agents_md.sections_at("v0.0.5", fleet)
+        assert found is not None
+        self.assertIn("Old layout", found["mistakes"].body)
+        self.assertNotIn("Newer layout", found["mistakes"].body)
+
     def test_an_unknown_tag_cannot_be_compared(self) -> None:
         fleet = self.fleet()
         self.assertIsNone(agents_md.sections_at("v9.9.9", fleet))
