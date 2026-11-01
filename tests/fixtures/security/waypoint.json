@@ -1,0 +1,22 @@
+{
+  "inputs": {
+    "code-paths": "^(waypoint|frontend/src|\\.semgrep)/",
+    "web-dirs": "frontend\n",
+    "image-paths": "^(Dockerfile|\\.dockerignore|pyproject\\.toml|poetry\\.lock)$"
+  },
+  "cases": [
+    {"name": "app code", "files": ["waypoint/server/api/trips.py"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "web app code", "files": ["frontend/src/App.tsx"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "own semgrep rules", "files": [".semgrep/waypoint.yml"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "web dependencies", "files": ["frontend/package-lock.json"], "expect": {"code": false, "web_deps": true, "image": false, "workflows": false}},
+    {"name": "web manifest", "files": ["frontend/package.json"], "expect": {"code": false, "web_deps": true, "image": false, "workflows": false}},
+    {"name": "a nested package.json is not the web app's", "files": ["frontend/verify/package.json"], "expect": {"code": false, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "image inputs", "files": ["poetry.lock"], "expect": {"code": false, "web_deps": false, "image": true, "workflows": false}},
+    {"name": "dockerfile", "files": ["Dockerfile"], "expect": {"code": false, "web_deps": false, "image": true, "workflows": false}},
+    {"name": "workflows run everything", "files": [".github/workflows/docs.yml"], "expect": {"code": true, "web_deps": true, "image": true, "workflows": true}},
+    {"name": "docs touch nothing", "files": ["docs/src/content/docs/index.md", "README.md"], "expect": {"code": false, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "tests are not scanned", "files": ["tests/test_trips.py", "tools/fleet_checks.py"], "expect": {"code": false, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "a rename counts for its old path", "files": ["waypoint/new.py"], "renamed_from": ["waypoint/old.py"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "a rename out of the code counts too", "files": ["docs/moved.py"], "renamed_from": ["waypoint/moved.py"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}}
+  ]
+}

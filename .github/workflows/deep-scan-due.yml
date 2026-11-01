@@ -1,0 +1,56 @@
+name: Deep scan due
+
+# The reminder for the deep security scan (docs/deep-scan.md), which can't run in a workflow: the claude-security
+# plugin asks a confirmation only the owner's own request can answer and refuses in a non-interactive session. This
+# opens one issue, "Deep security scan due" (labels `manual`, `security`), unless one is open, with the runbook link
+# at the pinned fleet ref, the revision of the last scan (read from the last closed issue with that title) and the
+# number of commits on the default branch since. The caller schedules it (quarterly, or whenever the app decides) and
+# may run it by hand. The script is .github/scripts/deep_scan_due.py, fetched from fleet at the pinned ref. No secrets:
+# the workflow's own token, with `issues: write` only.
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: Print the issue that would be opened instead of opening it.
+        type: boolean
+        default: false
+      fleet-ref:
+        description: The fleet ref to fetch scripts from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  remind:
+    name: Deep scan due
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Open the reminder unless one is open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUNBOOK_REF: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          flags=()
+          if [ "$DRY_RUN" = true ]; then flags+=(--dry-run); fi
+          python3 .fleet/.github/scripts/deep_scan_due.py --repo "$REPO" --fleet-ref "$RUNBOOK_REF" "${flags[@]}"

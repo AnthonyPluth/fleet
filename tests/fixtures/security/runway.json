@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "code-paths": "^(runway|frontend/src|extension|\\.semgrep)/",
+    "web-dirs": "frontend",
+    "image-paths": "^(Dockerfile|\\.dockerignore|pyproject\\.toml|poetry\\.lock)$"
+  },
+  "cases": [
+    {"name": "app code", "files": ["runway/domain/budget.py"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "the browser extension", "files": ["extension/background.ts"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "web app code", "files": ["frontend/src/main.tsx"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "web dependencies", "files": ["frontend/package-lock.json"], "expect": {"code": false, "web_deps": true, "image": false, "workflows": false}},
+    {"name": "image inputs", "files": [".dockerignore", "pyproject.toml"], "expect": {"code": false, "web_deps": false, "image": true, "workflows": false}},
+    {"name": "workflows run everything", "files": [".github/dependabot.yml"], "expect": {"code": true, "web_deps": true, "image": true, "workflows": true}},
+    {"name": "the preview deploy touches nothing", "files": ["fly.toml", "docs/public/logo.png"], "expect": {"code": false, "web_deps": false, "image": false, "workflows": false}}
+  ]
+}
