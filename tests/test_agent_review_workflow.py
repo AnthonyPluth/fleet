@@ -10,6 +10,8 @@ REVIEW = WORKFLOWS / "agent-review.yml"
 CALLER = WORKFLOWS / "agent-review-caller.yml"
 SELF_TEST = WORKFLOWS / "self-test.yml"
 PR_CHECKOUT = "review/pr"
+REVIEW_JOBS = ("review", "second-review")
+REPORT_JOBS = {"review": "report", "second-review": "second-report"}
 SECRET = re.compile(r"\$\{\{\s*secrets\.")
 Node = dict[str, Any]
 
@@ -50,103 +52,160 @@ class ReusableWorkflowTest(unittest.TestCase):
         call = mapping(mapping(self.workflow["on"])["workflow_call"])
         self.assertEqual(sorted(call["inputs"]), sorted([
             "generated", "first-review", "budget-usd", "max-turns", "merge-gate-workflow", "fleet-ref", "dry-run", "fake-review",
+            "second-review-labels", "second-review-paths", "second-review-budget-usd", "second-review-max-turns", "fake-event",
         ]))
         inputs = mapping(call["inputs"])
         self.assertEqual(mapping(inputs["first-review"])["default"], "true")
         self.assertEqual(mapping(inputs["budget-usd"])["default"], "3")
         self.assertEqual(mapping(inputs["max-turns"])["default"], "60")
+        self.assertEqual(mapping(inputs["second-review-labels"])["default"], "safety-critical,security")
+        self.assertEqual(mapping(inputs["second-review-paths"])["default"], "")
+        self.assertEqual(mapping(inputs["second-review-budget-usd"])["default"], "10")
+        self.assertEqual(mapping(inputs["second-review-max-turns"])["default"], "120")
         self.assertEqual(mapping(inputs["merge-gate-workflow"])["default"], "merge-gate.yml")
         self.assertEqual(mapping(inputs["dry-run"])["default"], "false")
+        self.assertEqual(mapping(inputs["fake-event"])["default"], "")
         self.assertNotIn("model", inputs)
+        self.assertNotIn("second-review-model", inputs)
         secrets = mapping(call["secrets"])
         self.assertEqual(sorted(secrets), ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"])
         for secret in secrets.values():
             self.assertEqual(mapping(secret)["required"], "false")
-        self.assertEqual(sorted(call["outputs"]), ["description", "verdict"])
+        self.assertEqual(sorted(call["outputs"]), ["description", "second-description", "second-verdict", "verdict"])
+        outputs = mapping(call["outputs"])
+        self.assertEqual(mapping(outputs["second-verdict"])["value"], "${{ jobs.second-review.outputs.verdict }}")
+        self.assertEqual(mapping(outputs["verdict"])["value"], "${{ jobs.review.outputs.verdict }}")
         self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
 
-    def test_both_jobs_run_hosted_with_the_reason_and_the_least_permissions(self) -> None:
+    def test_every_job_runs_hosted_with_the_reason_and_the_least_permissions(self) -> None:
         jobs = mapping(self.workflow["jobs"])
-        self.assertEqual(sorted(jobs), ["report", "review"])
-        for job in ("review", "report"):
+        self.assertEqual(sorted(jobs), ["report", "review", "second-report", "second-review"])
+        for job in jobs:
             self.assertRegex(job_source(self.text, job), r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
-        self.assertEqual(mapping(jobs["review"])["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "read"})
-        self.assertEqual(mapping(jobs["report"])["permissions"], {"pull-requests": "write", "statuses": "write", "actions": "write"})
+        for job in REVIEW_JOBS:
+            self.assertEqual(mapping(jobs[job])["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "read"})
+        for job in REPORT_JOBS.values():
+            self.assertEqual(mapping(jobs[job])["permissions"], {"pull-requests": "write", "statuses": "write", "actions": "write"})
+            self.assertNotIn("concurrency", mapping(jobs[job]))
         self.assertEqual(mapping(mapping(jobs["review"])["concurrency"]),
                          {"group": "agent-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}", "cancel-in-progress": "true"})
-        self.assertNotIn("concurrency", mapping(jobs["report"]))
+        second = mapping(mapping(jobs["second-review"])["concurrency"])
+        self.assertEqual(second["cancel-in-progress"], "true")
+        self.assertTrue(second["group"].startswith("second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-"))
+        self.assertIn("'label' || 'push'", second["group"])
+        self.assertNotEqual(second["group"][:13], "agent-review-")
 
     def test_the_pull_request_checkout_keeps_no_credentials_and_every_checkout_says_so(self) -> None:
-        checkouts = [step for step in steps_of(self.workflow, "review") if str(step.get("uses", "")).startswith("actions/checkout@")]
-        self.assertEqual(len(checkouts), 3)
-        for step in checkouts:
-            self.assertEqual(mapping(step["with"])["persist-credentials"], "false")
-        pr = [step for step in checkouts if mapping(step["with"]).get("path") == PR_CHECKOUT]
-        self.assertEqual(len(pr), 1)
-        self.assertEqual(mapping(pr[0]["with"])["ref"], "${{ github.event.pull_request.head.sha }}")
-        self.assertEqual(pr[0]["if"], "steps.who.outputs.review == 'true'")
-        trusted = [mapping(step["with"]) for step in checkouts if mapping(step["with"]).get("path") in ("trusted", ".fleet")]
-        self.assertEqual(len(trusted), 2)
-        for inputs in trusted:
-            self.assertIn(inputs["ref"], ("${{ github.event.pull_request.base.sha }}", "${{ inputs.fleet-ref || env.FLEET_REF }}"))
+        for job in REVIEW_JOBS:
+            checkouts = [step for step in steps_of(self.workflow, job) if str(step.get("uses", "")).startswith("actions/checkout@")]
+            self.assertEqual(len(checkouts), 3, job)
+            for step in checkouts:
+                self.assertEqual(mapping(step["with"])["persist-credentials"], "false")
+            pr = [step for step in checkouts if mapping(step["with"]).get("path") == PR_CHECKOUT]
+            self.assertEqual(len(pr), 1)
+            self.assertEqual(mapping(pr[0]["with"])["ref"], "${{ github.event.pull_request.head.sha }}")
+            self.assertEqual(pr[0]["if"], "steps.who.outputs.review == 'true'")
+            trusted = [mapping(step["with"]) for step in checkouts if mapping(step["with"]).get("path") in ("trusted", ".fleet")]
+            self.assertEqual(len(trusted), 2)
+            for inputs in trusted:
+                self.assertIn(inputs["ref"], ("${{ github.event.pull_request.base.sha }}", "${{ inputs.fleet-ref || env.FLEET_REF }}"))
+        self.assertEqual(self.text.count("actions/checkout@"), 6)
+        self.assertEqual(self.text.count("persist-credentials: false"), 6)
 
-    def test_the_secrets_appear_only_in_the_review_step_which_runs_nothing_from_the_pull_request(self) -> None:
-        with_secret = [chunk for chunk in step_sources(self.text, "review") if SECRET.search(chunk)]
-        self.assertEqual(len(with_secret), 1)
-        step = with_secret[0]
-        self.assertTrue(step.startswith("name: Review\n"), step[:40])
-        self.assertNotIn("uses:", step)
-        self.assertNotIn(PR_CHECKOUT, step)
-        self.assertNotIn("npm", step)
-        self.assertNotIn("node ", step)
-        for executable in re.findall(r"(\S+\.(?:sh|py))\b", step.split("run: |", 1)[1]):
-            self.assertTrue(executable.startswith("../.fleet/"), executable)
-        self.assertEqual(len(SECRET.findall(self.text)), 2)
-        self.assertEqual(len(re.findall(r"secrets\.ANTHROPIC_API_KEY", self.text)), 1)
-        self.assertEqual(len(re.findall(r"secrets\.CLAUDE_CODE_OAUTH_TOKEN", self.text)), 1)
+    def test_the_secrets_appear_only_in_the_review_steps_which_run_nothing_from_the_pull_request(self) -> None:
+        for job in REVIEW_JOBS:
+            with_secret = [chunk for chunk in step_sources(self.text, job) if SECRET.search(chunk)]
+            self.assertEqual(len(with_secret), 1, job)
+            step = with_secret[0]
+            self.assertTrue(step.startswith("name: Review\n"), step[:40])
+            self.assertNotIn("uses:", step)
+            self.assertNotIn(PR_CHECKOUT, step)
+            self.assertNotIn("npm", step)
+            self.assertNotIn("node ", step)
+            for executable in re.findall(r"(\S+\.(?:sh|py))\b", step.split("run: |", 1)[1]):
+                self.assertTrue(executable.startswith("../.fleet/"), executable)
+        self.assertEqual(len(SECRET.findall(self.text)), 4)
+        self.assertEqual(len(re.findall(r"secrets\.ANTHROPIC_API_KEY", self.text)), 2)
+        self.assertEqual(len(re.findall(r"secrets\.CLAUDE_CODE_OAUTH_TOKEN", self.text)), 2)
         env = mapping(next(s for s in steps_of(self.workflow, "review") if s.get("id") == "review")["env"])
         self.assertEqual(env["MODEL"], "sonnet")
         self.assertEqual(env["BUDGET"], "${{ inputs.budget-usd }}")
         self.assertEqual(env["MAX_TURNS"], "${{ inputs.max-turns }}")
 
+    def test_the_models_are_fixed_and_each_review_s_secrets_stay_in_its_own_job(self) -> None:
+        second = mapping(next(s for s in steps_of(self.workflow, "second-review") if s.get("id") == "review")["env"])
+        self.assertEqual(second["MODEL"], "claude-fable-5-1")
+        self.assertEqual(second["BUDGET"], "${{ inputs.second-review-budget-usd }}")
+        self.assertEqual(second["MAX_TURNS"], "${{ inputs.second-review-max-turns }}")
+        stub = mapping(next(s for s in steps_of(self.workflow, "second-review") if step_name(s).startswith("Review with the stub"))["env"])
+        self.assertEqual(stub["MODEL"], "claude-fable-5-1")
+        self.assertNotIn("claude-fable-5-1", job_source(self.text, "review"))
+        self.assertNotIn("MODEL: sonnet", job_source(self.text, "second-review"))
+        self.assertEqual(len(re.findall(r"^\s+MODEL: claude-fable-5-1$", self.text, re.MULTILINE)), 2)
+        self.assertEqual(len(re.findall(r"^\s+MODEL: sonnet$", self.text, re.MULTILINE)), 2)
+        self.assertNotIn("inputs.model", self.text)
+        for job in (*REPORT_JOBS.values(),):
+            self.assertIsNone(SECRET.search(job_source(self.text, job)), job)
+            self.assertNotIn("MODEL", job_source(self.text, job))
+
     def test_every_step_with_a_token_runs_before_the_pull_request_is_checked_out(self) -> None:
-        steps = steps_of(self.workflow, "review")
-        checkout = next(i for i, step in enumerate(steps) if mapping(step.get("with") or {}).get("path") == PR_CHECKOUT)
-        for i, step in enumerate(steps):
-            env = mapping(step.get("env") or {})
-            if "GH_TOKEN" in env:
-                self.assertLess(i, checkout, step_name(step))
+        for job in REVIEW_JOBS:
+            steps = steps_of(self.workflow, job)
+            checkout = next(i for i, step in enumerate(steps) if mapping(step.get("with") or {}).get("path") == PR_CHECKOUT)
+            for i, step in enumerate(steps):
+                env = mapping(step.get("env") or {})
+                if "GH_TOKEN" in env:
+                    self.assertLess(i, checkout, f"{job}: {step_name(step)}")
+                else:
+                    self.assertNotIn("github.token", json.dumps(step), f"{job}: {step_name(step)}")
 
     def test_nothing_from_the_pull_request_is_run_installed_or_imported(self) -> None:
-        for chunk in step_sources(self.text, "review"):
-            if "run: |" not in chunk:
-                continue
-            script = chunk.split("run: |", 1)[1]
-            for line in script.splitlines():
-                if "python3" in line:
-                    self.assertIn("python3 -I .fleet/fleet_tools/agent_review.py", line)
-            self.assertNotRegex(script, r"(^|\s)(cd|source|\.)\s+review/pr", "nothing runs in the pull request's checkout")
-            self.assertNotIn("review/pr/", script)
-        install = [chunk for chunk in step_sources(self.text, "review") if "npm ci" in chunk]
-        self.assertEqual(len(install), 1)
-        self.assertIn("$RUNNER_TEMP/claude-code", install[0])
-        self.assertIn(".fleet/.github/agent-review/package-lock.json", install[0])
+        for job in REVIEW_JOBS:
+            for chunk in step_sources(self.text, job):
+                if "run:" not in chunk:
+                    continue
+                script = chunk.split("run:", 1)[1]
+                for line in script.splitlines():
+                    if "python3" in line:
+                        self.assertIn("python3 -I .fleet/fleet_tools/agent_review.py", line)
+                self.assertNotRegex(script, r"(^|\s)(cd|source|\.)\s+review/pr", "nothing runs in the pull request's checkout")
+                self.assertNotIn("review/pr/", script)
+            install = [chunk for chunk in step_sources(self.text, job) if "npm ci" in chunk]
+            self.assertEqual(len(install), 1)
+            self.assertIn("$RUNNER_TEMP/claude-code", install[0])
+            self.assertIn(".fleet/.github/agent-review/package-lock.json", install[0])
 
-    def test_the_report_job_has_no_secret_and_no_checkout(self) -> None:
-        report = job_source(self.text, "report")
-        self.assertIsNone(SECRET.search(report))
-        self.assertNotIn("actions/checkout", report)
-        for step in steps_of(self.workflow, "report"):
-            self.assertNotIn("uses", step)
-        self.assertIn("gh api -X POST \"repos/$REPO/statuses/$SHA\"", report)
-        self.assertIn('-f context="Agent review"', report)
-        self.assertIn("success:skip)", report)
-        self.assertIn("DRY_RUN", report)
-        self.assertIn('if [ -n "$MERGE_GATE" ]', report)
+    def test_the_report_jobs_have_no_secret_and_no_checkout(self) -> None:
+        for review, job in REPORT_JOBS.items():
+            report = job_source(self.text, job)
+            self.assertIsNone(SECRET.search(report))
+            self.assertNotIn("actions/checkout", report)
+            for step in steps_of(self.workflow, job):
+                self.assertNotIn("uses", step)
+            self.assertIn("gh api -X POST \"repos/$REPO/statuses/$SHA\"", report)
+            self.assertIn("success:skip)", report)
+            self.assertIn("DRY_RUN", report)
+            self.assertIn('if [ -n "$MERGE_GATE" ]', report)
+            self.assertEqual(mapping(mapping(self.workflow["jobs"])[job])["needs"], review)
 
-    def test_label_events_dependabot_and_first_review_off_run_neither_job(self) -> None:
+    def test_each_report_posts_only_its_own_status_and_comment(self) -> None:
+        first, second = job_source(self.text, "report"), job_source(self.text, "second-report")
+        self.assertIn('-f context="Agent review"', first)
+        self.assertIn('startswith("<!-- agent-review -->")', first)
+        self.assertNotIn("Second review", first.split("name: Report", 1)[1])
+        self.assertNotIn("second-review", first.split("name: Report", 1)[1])
+        self.assertIn('-f context="Second review"', second)
+        self.assertIn('startswith("<!-- second-review -->")', second)
+        self.assertNotIn('"Agent review"', second)
+        self.assertNotIn("<!-- agent-review -->", second)
+        self.assertNotIn("needs.review.", second)
+        self.assertNotIn("needs.second-review.", first)
+        self.assertEqual(self.text.count('-f context="Agent review"'), 1)
+        self.assertEqual(self.text.count('-f context="Second review"'), 1)
+
+    def test_label_events_dependabot_and_first_review_off_run_neither_first_review_job(self) -> None:
         for job in ("review", "report"):
             found = re.search(r"^    if: >-\n((?:      .*\n)+)", job_source(self.text, job), re.MULTILINE)
             assert found, job
@@ -156,6 +215,57 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertIn("!contains(fromJSON('[\"labeled\", \"unlabeled\"]'), github.event.action)", condition)
             if job == "report":
                 self.assertIn("!cancelled() &&", condition)
+
+    def test_the_second_review_runs_on_label_events_but_not_for_dependabot_or_a_non_owner_s_unlabeled(self) -> None:
+        for job in ("second-review", "second-report"):
+            found = re.search(r"^    if: >-\n((?:      .*\n)+)", job_source(self.text, job), re.MULTILINE)
+            assert found, job
+            condition = found.group(1)
+            self.assertNotIn("first-review", condition)
+            self.assertNotIn("contains(fromJSON", condition)
+            self.assertIn("github.event.pull_request.user.login != 'dependabot[bot]' &&", condition)
+            self.assertIn("!(github.event.action == 'unlabeled' && github.event.sender.login != github.repository_owner)", condition)
+            if job == "second-report":
+                self.assertIn("!cancelled() &&", condition)
+
+    def test_the_second_review_s_decisions_come_from_data_in_the_environment(self) -> None:
+        who = next(s for s in steps_of(self.workflow, "second-review") if s.get("id") == "who")
+        env = mapping(who["env"])
+        self.assertEqual(env["SENDER"], "${{ github.event.sender.login }}")
+        self.assertEqual(env["OWNER"], "${{ github.repository_owner }}")
+        self.assertEqual(env["LABEL"], "${{ github.event.label.name }}")
+        self.assertEqual(env["LABELS"], "${{ toJSON(github.event.pull_request.labels.*.name) }}")
+        self.assertEqual(env["TRIGGER_LABELS"], "${{ inputs.second-review-labels }}")
+        self.assertEqual(env["RISKY_PATHS"], "${{ inputs.second-review-paths }}")
+        self.assertEqual(env["FAKE_EVENT"], "${{ inputs.fake-review != '' && inputs.fake-event || '' }}")
+        chunk = next(c for c in step_sources(self.text, "second-review") if c.startswith("name: Is this an agent"))
+        self.assertIn("agent_review.py second wanted \"$ACTION\"", chunk)
+        self.assertIn("invariants.md", chunk)
+        self.assertNotRegex(chunk.split("run: |", 1)[1], r"\$\{\{")
+        risky = next(s for s in steps_of(self.workflow, "second-review") if s.get("id") == "risky")
+        self.assertEqual(risky["run"], "python3 -I .fleet/fleet_tools/agent_review.py second risky review/files.txt review/reason.txt")
+        self.assertEqual(mapping(risky["env"])["FAKE_EVENT"], "${{ inputs.fake-review != '' && inputs.fake-event || '' }}")
+        verdict = next(c for c in step_sources(self.text, "second-review") if c.startswith("name: Verdict"))
+        self.assertIn("verdict=skip", verdict)
+        self.assertIn('[ "$RISKY" != true ]', verdict)
+        self.assertIn("No .github/agent-review/invariants.md", verdict)
+        self.assertIn("agent_review.py second report", verdict)
+        self.assertIsNone(SECRET.search(verdict))
+        plan = next(c for c in step_sources(self.text, "second-review") if c.startswith("name: Gather"))
+        self.assertIn("agent_review.py second plan", plan)
+        self.assertIn("first-review.md", plan)
+        for job in ("review",):
+            self.assertNotIn("agent_review.py second", job_source(self.text, job))
+
+    def test_the_second_reviewer_runs_only_on_a_risky_change_with_the_invariants(self) -> None:
+        steps = {step_name(step): step for step in steps_of(self.workflow, "second-review")}
+        real = "steps.plan.outputs.mode == 'review' && steps.risky.outputs.risky == 'true' && steps.who.outputs.invariants == 'true' && inputs.fake-review == ''"
+        for name in ("Review", "Install Claude Code"):
+            self.assertEqual(steps[name]["if"], real, name)
+        stub = steps["Review with the stub reviewer (self-test)"]
+        self.assertEqual(stub["if"], real.replace("== ''", "!= ''"))
+        self.assertEqual(mapping(stub["env"])["CLAUDE"], "${{ github.workspace }}/.fleet/tests/fakes/claude")
+        self.assertIsNone(SECRET.search(json.dumps(stub["env"])))
 
     def test_the_decisions_the_who_step_feeds_the_verdict(self) -> None:
         who = next(s for s in steps_of(self.workflow, "review") if s.get("id") == "who")
@@ -209,7 +319,8 @@ class SelfTestTest(unittest.TestCase):
         workflow = mapping(self_check.parse(SELF_TEST.read_text(encoding="utf-8")))
         jobs = mapping(workflow["jobs"])
         calls = {name: mapping(job) for name, job in jobs.items() if mapping(job).get("uses") == "./.github/workflows/agent-review.yml"}
-        self.assertEqual(sorted(calls), ["agent-review-blocking", "agent-review-malformed", "agent-review-pass"])
+        first = {name: job for name, job in calls.items() if name.startswith("agent-review-")}
+        self.assertEqual(sorted(first), ["agent-review-blocking", "agent-review-malformed", "agent-review-pass"])
         answers = []
         for job in calls.values():
             inputs = mapping(job["with"])
@@ -217,10 +328,50 @@ class SelfTestTest(unittest.TestCase):
             self.assertEqual(inputs["fleet-ref"], "${{ github.sha }}")
             self.assertEqual(inputs["merge-gate-workflow"], "")
             self.assertNotIn("secrets", job)
+            self.assertNotEqual(inputs["fake-review"], "")
+        for job in first.values():
+            inputs = mapping(job["with"])
+            self.assertNotIn("fake-event", inputs)
             answers.append(inputs["fake-review"])
         self.assertEqual(sorted(answers), ["blocking", "malformed", "pass"])
         verdicts = mapping(jobs["agent-review-verdicts"])
-        self.assertEqual(sorted(str(verdicts["needs"]).strip("[]").split(", ")), sorted(calls))
+        self.assertEqual(sorted(str(verdicts["needs"]).strip("[]").split(", ")), sorted(first))
+
+    def test_the_self_test_fakes_each_second_review_case_the_issue_lists(self) -> None:
+        workflow = mapping(self_check.parse(SELF_TEST.read_text(encoding="utf-8")))
+        jobs = mapping(workflow["jobs"])
+        second = {name: mapping(job) for name, job in jobs.items()
+                  if mapping(job).get("uses") == "./.github/workflows/agent-review.yml" and name.startswith("second-review-")}
+        self.assertEqual(sorted(second), ["second-review-github", "second-review-label", "second-review-not-risky", "second-review-path",
+                                          "second-review-unlabeled-by-another", "second-review-unlabeled-by-owner"])
+        events = {}
+        for name, job in second.items():
+            inputs = mapping(job["with"])
+            self.assertEqual(inputs["first-review"], "false")
+            self.assertNotIn("second-review-labels", inputs)
+            events[name] = {k: v for k, _, v in (token.partition("=") for token in inputs["fake-event"].split())}
+        self.assertEqual(events["second-review-label"]["labels"], "security,docs")
+        self.assertEqual(mapping(second["second-review-label"]["with"])["fake-review"], "blocking")
+        self.assertIn("app/photos/", events["second-review-path"]["files"])
+        self.assertIn("second-review-paths", mapping(second["second-review-path"]["with"]))
+        self.assertIn("        app/photos/**\n", SELF_TEST.read_text(encoding="utf-8"))
+        self.assertTrue(events["second-review-github"]["files"].startswith(".github/"))
+        self.assertNotIn("second-review-paths", mapping(second["second-review-github"]["with"]))
+        self.assertEqual(events["second-review-not-risky"]["labels"], "docs")
+        self.assertFalse(any(f.startswith((".github/", ".claude/")) for f in events["second-review-not-risky"]["files"].split(",")))
+        for name in ("second-review-unlabeled-by-another", "second-review-unlabeled-by-owner"):
+            self.assertEqual(events[name]["action"], "unlabeled")
+            self.assertEqual(events[name]["label"], "security")
+        self.assertEqual(events["second-review-unlabeled-by-another"]["sender"], "octocat")
+        self.assertIn("sender=${{ github.repository_owner }} ", mapping(second["second-review-unlabeled-by-owner"]["with"])["fake-event"])
+        self.assertEqual(len({mapping(job["with"])["fake-event"] for job in second.values()}), len(second))
+        verdicts = mapping(jobs["second-review-verdicts"])
+        self.assertEqual(sorted(str(verdicts["needs"]).strip("[]").split(", ")), sorted(second))
+        source = SELF_TEST.read_text(encoding="utf-8")
+        self.assertIn("outputs.second-verdict", source)
+        self.assertIn('[ "$LABEL" = blocking ]', source)
+        self.assertIn('"Not a risky pull request"', source)
+        self.assertIn('[ "$OTHER" = skip ]', source)
 
 
 class LockedClaudeCodeTest(unittest.TestCase):
