@@ -5,7 +5,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from fleet_tools import self_check
+from fleet_tools import (
+    coverage_floor,
+    next_version,
+    no_comments,
+    self_check,
+    test_timings,
+)
+from fleet_tools.checks import runner
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -27,6 +34,11 @@ def register(name: str, command: Command) -> None:
 
 
 register("self-check", Command(self_check.HELP, self_check.configure, self_check.run))
+register("checks", Command(runner.HELP, runner.configure, runner.run))
+register("no-comments", Command(no_comments.HELP, no_comments.configure, no_comments.run))
+register("coverage-floor", Command(coverage_floor.HELP, coverage_floor.configure, coverage_floor.run))
+register("next-version", Command(next_version.HELP, next_version.configure, next_version.run))
+register("test-timings", Command(test_timings.HELP, test_timings.configure, test_timings.run))
 
 
 def version() -> str:
