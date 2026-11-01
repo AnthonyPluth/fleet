@@ -1,0 +1,287 @@
+name: Security scans
+
+# The reusable security scans: static analysis, dependency, container, secret and workflow scans. Semgrep (the registry
+# packs plus the app's own rules in .semgrep/, after their example check), npm audit, Trivy over the files, Trivy over
+# the image, zizmor over the workflows and OpenSSF Scorecard. With `sarif-upload: true` (the default) the findings of
+# Semgrep, Trivy, zizmor and Scorecard go to the Security tab (code scanning), whose check runs the merge gate
+# requires; with `sarif-upload: false` (a private repository on a personal account has no code scanning) those scans
+# fail their job on findings instead. npm audit fails its job either way. CodeQL and Dependabot alerts come from
+# GitHub's own settings, not from here.
+#
+# The caller (docs/adopting.md has the snippet) keeps the triggers: pull_request and push to main, the weekly schedule
+# (new vulnerabilities are published for code that hasn't changed) and workflow_dispatch. A pull request, and a push to
+# main, runs only the scans its change can affect (the `changes` job, .github/scripts/security-changes.sh); a
+# scheduled or manual run scans everything. The scripts come from fleet at the pinned ref.
+on:
+  workflow_call:
+    inputs:
+      code-paths:
+        description: A regex of the paths whose change runs Semgrep ("^(waypoint|frontend/src|\.semgrep)/").
+        type: string
+        required: true
+      semgrep-paths:
+        description: What Semgrep scans, space-separated ("waypoint run.py frontend/src"); "." scans the repository.
+        type: string
+        default: "."
+      semgrep-examples:
+        description: The command that checks the app's own rules against their examples, run before Semgrep. Empty runs `python3 .semgrep/check_examples.py pipx run semgrep==<pinned>` when that file exists.
+        type: string
+        default: ""
+      web-dirs:
+        description: Directories with a package-lock.json to `npm audit`, one per line. A change to their package.json or package-lock.json runs it. Empty skips it.
+        type: string
+        default: ""
+      image-paths:
+        description: A regex of the paths whose change rebuilds and scans the image ("^(Dockerfile|\.dockerignore|pyproject\.toml|poetry\.lock)$"). Empty skips the image scan.
+        type: string
+        default: ""
+      dockerfile:
+        description: The Dockerfile to build the image from, for the image scan.
+        type: string
+        default: Dockerfile
+      sarif-upload:
+        description: Upload the findings to the Security tab (code scanning). false makes Semgrep, Trivy and zizmor fail the job on findings instead.
+        type: boolean
+        default: true
+      scorecard:
+        description: Run OpenSSF Scorecard on pushes and scheduled runs (public repositories only; it publishes its results).
+        type: boolean
+        default: true
+      runs-on:
+        description: The runner for every job but Scorecard's, as JSON ('"ubuntu-latest"', or a label array). Waypoint passes its vars.RUNS_ON expression.
+        type: string
+        default: '"ubuntu-latest"'
+      fleet-ref:
+        description: The fleet ref to fetch scripts from (the self-test passes its own commit).
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step (without it, only
+# the last command in a pipeline counts, and a failed gh or curl passes silently).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # What a pull request (or a push to main) changes, so the scans it can't affect are skipped (a skipped job counts as
+  # passed, for the merge gate too). A change to the workflows (.github/) runs every scan. Trivy's file scan always runs:
+  # a secret can be committed in any file.
+  changes:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read      # the pull request's list of changed files
+    outputs:
+      code: ${{ steps.what.outputs.code }}
+      web_deps: ${{ steps.what.outputs.web_deps }}
+      image: ${{ steps.what.outputs.image }}
+      workflows: ${{ steps.what.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Which scans the change can affect
+        id: what
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          CODE_PATHS: ${{ inputs.code-paths }}
+          WEB_DIRS: ${{ inputs.web-dirs }}
+          IMAGE_PATHS: ${{ inputs.image-paths }}
+        run: .fleet/.github/scripts/security-changes.sh
+
+  semgrep:
+    name: Semgrep
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      # The app's own rules (.semgrep/*.yml) go with the registry packs, after the check of their examples. Semgrep
+      # isn't in the apps' Poetry environments (it pins dependencies of its own), so it goes through pipx, pinned here;
+      # the apps' Makefiles pin the same version for `make semgrep`.
+      - name: Semgrep
+        env:
+          SEMGREP_PATHS: ${{ inputs.semgrep-paths }}
+          SEMGREP_EXAMPLES: ${{ inputs.semgrep-examples }}
+          SARIF_UPLOAD: ${{ inputs.sarif-upload }}
+          SEMGREP: pipx run semgrep==1.146.0
+        run: .fleet/.github/scripts/security-semgrep.sh
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+        if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('semgrep.sarif') != '' }}
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  web:
+    name: npm audit
+    needs: changes
+    if: needs.changes.outputs.web_deps == 'true'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      # npm audit reads the lockfile; nothing is installed. The runner's npm is enough for that.
+      - name: Audit the web apps' dependencies
+        env:
+          WEB_DIRS: ${{ inputs.web-dirs }}
+        run: |
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            echo "::group::npm audit in $dir"
+            (cd "$dir" && npm audit --omit=dev --audit-level=high)
+            echo "::endgroup::"
+          done <<< "$WEB_DIRS"
+
+  trivy:
+    name: Trivy (files)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan the repository (dependencies, secrets, Dockerfile and workflow settings)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          format: ${{ inputs.sarif-upload && 'sarif' || 'table' }}
+          output: ${{ inputs.sarif-upload && 'trivy-fs.sarif' || '' }}
+          exit-code: ${{ inputs.sarif-upload && '0' || '1' }}
+          severity: CRITICAL,HIGH
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+        if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('trivy-fs.sarif') != '' }}
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  image:
+    name: Trivy (image)
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
+      # Built from the layers the app's image builds on main leave in the build cache, so only what the change touches
+      # is built again. Read-only: nothing this build makes goes back into the cache.
+      - name: Build the image (not published)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          load: true
+          tags: app:scan
+          cache-from: type=gha
+      - name: Scan the image (OS packages and libraries)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          image-ref: app:scan
+          format: ${{ inputs.sarif-upload && 'sarif' || 'table' }}
+          output: ${{ inputs.sarif-upload && 'trivy-image.sarif' || '' }}
+          exit-code: ${{ inputs.sarif-upload && '0' || '1' }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+        if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('trivy-image.sarif') != '' }}
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+  workflows:
+    name: zizmor (GitHub Actions)
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      # zizmor at the version fleet's pyproject.toml pins (change both together). GH_TOKEN lets it run its online
+      # audits too (impostor commits, known-vulnerable actions). It exits non-zero on findings in either mode; with
+      # SARIF the upload still runs and the Security tab shows them.
+      - name: Audit the workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SARIF_UPLOAD: ${{ inputs.sarif-upload }}
+        run: |
+          if [ "$SARIF_UPLOAD" = true ]; then
+            pipx run zizmor==1.31.1 --format sarif . > zizmor.sarif
+          else
+            pipx run zizmor==1.31.1 .
+          fi
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+        if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('zizmor.sarif') != '' }}
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+  scorecard:
+    name: OpenSSF Scorecard
+    if: inputs.scorecard && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest   # hosted: Scorecard publishes its results only from GitHub's runners
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e   # v2.5.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+        if: ${{ inputs.sarif-upload }}
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard

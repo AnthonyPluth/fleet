@@ -1,0 +1,7 @@
+rules:
+  - id: planted-eval
+    languages: [python]
+    severity: ERROR
+    message: eval on untrusted input (the planted finding fleet's self-test expects Semgrep to fail on)
+    patterns:
+      - pattern: eval(...)

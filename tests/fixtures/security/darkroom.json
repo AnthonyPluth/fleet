@@ -1,0 +1,13 @@
+{
+  "inputs": {
+    "code-paths": "^(darkroom|frontend/src|\\.semgrep)/",
+    "web-dirs": "",
+    "image-paths": ""
+  },
+  "cases": [
+    {"name": "app code", "files": ["darkroom/ingest/scan.py"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "no web audit without web dirs", "files": ["frontend/package-lock.json"], "expect": {"code": false, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "no image scan without image paths", "files": ["Dockerfile", "poetry.lock"], "expect": {"code": false, "web_deps": false, "image": false, "workflows": false}},
+    {"name": "workflows run what exists", "files": [".github/workflows/ci.yml"], "expect": {"code": true, "web_deps": false, "image": false, "workflows": true}}
+  ]
+}
