@@ -270,3 +270,167 @@ Inputs, each with the default fleet's own gate uses:
 | `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the script from; the self-test passes its own commit |
 
 What each app passes today: Waypoint `required-workflows: Docker image, Security scans, CodeQL` and `required-statuses: ""` (its review is off); Runway the same workflows, `required-statuses: Agent review` and `ignored-workflows: Preview|Screenshot diff`. Both move to the default statuses when they adopt the reviews.
+
+## Verify (control smoke, verify flows)
+
+`.github/workflows/verify.yml` (`workflow_call`) runs one `make` target of the app in a real browser against its demo server: Waypoint's `make control-smoke`, Runway's `make verify`. It sets up Python with Poetry's virtualenv (cached by `poetry.lock`), Node with the app's packages (cached by `package-lock.json`), the Playwright browser and libfaketime, then runs the target. `contents: read` only, no secrets. The caller keeps the workflow name (the status the merge gate lists), the triggers with their path filters and the concurrency group; its job name is what the status shows.
+
+```yaml
+name: Control smoke
+
+on:
+  push:
+    branches: [main]
+    paths: [frontend/verify/**, waypoint/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
+  pull_request:
+    branches: [main]
+    paths: [frontend/verify/**, waypoint/verify.py, tools/control, poetry.lock, frontend/package-lock.json, .github/workflows/control-smoke.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: control-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  smoke:
+    name: Control smoke
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # vX.Y.Z
+    with:
+      make-target: control-smoke
+      timeout-minutes: 20
+      runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
+```
+
+Runway's "Verify flows" passes `make-target: verify` and `poetry-install-args: --only main`, and keeps its own paths.
+
+| Input | Default | What |
+| --- | --- | --- |
+| `make-target` | required | The `make` target to run |
+| `working-directory` | `.` | Where `make` and `poetry install` run (the self-test's fixture tree) |
+| `needs-faketime` | `true` | Install libfaketime first |
+| `timeout-minutes` | 15 | The job's limit |
+| `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
+| `python-version` | `3.14` | The Python to set up; `""` sets up none |
+| `poetry-version` | `2.5.1` | The Poetry to install |
+| `poetry-install-args` | none | Extra arguments for `poetry install` (`--only main`) |
+| `node-dir` | `frontend` | The npm project to `npm ci` in; `""` sets up no Node |
+| `node-version-file` | `.nvmrc` | Where the Node version is read from |
+| `browser` | `chromium` | The Playwright browser to install, with its system dependencies; `""` installs none |
+| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
+
+## Screenshot diff
+
+`.github/workflows/screenshot-diff.yml` (`workflow_call`) reports which pixels of the committed screenshots a pull request changed: a self-contained `report.html` and `summary.json` as artifacts, and one sticky comment (the link, a line of counts and a note) found again by its marker. It is informational, never a verdict: list it in the merge gate's `ignored-workflows`. The tool (`fleet screenshot-diff`, `fleet_tools/screenshot_diff.py`) is installed from fleet's checkout at the pinned ref with its Pillow extra and run with `python -I`, so the pull request's files can't change it; the images are the only pull request content it reads. It stays on `pull_request` (a fork's read-only token skips the comment and keeps the artifact). The caller runs it on every pull request, not only ones that touch the screenshots, so a push that reverts a change updates the comment.
+
+```yaml
+name: Screenshot diff
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: screenshot-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # vX.Y.Z
+    with:
+      dir: screenshots/
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `dir` | `screenshots/` | Where the committed screenshots live (`docs/src/assets/screenshots/` for Waypoint) |
+| `comment-marker` | `<!-- screenshot-diff -->` | The hidden first line the comment is found again by |
+| `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
+| `dry-run` | `false` | Print the comment to the log instead of posting it |
+| `fixture` | none | Two PNG directories to compare in a made-up repository (fleet's self-test only) |
+| `fleet-ref` | the workflow's `FLEET_REF` | Where to install the tool from (fleet's self-test only) |
+
+Locally: `python3 -m fleet_tools.cli screenshot-diff --base origin/main --head HEAD --dir screenshots/ --repo /path/to/app --dry-run`, with Pillow installed (`pip install "fleet[images]"` from a checkout of fleet).
+
+## Cancel runs on close
+
+`.github/workflows/cancel-on-close.yml` (`workflow_call`) stops a closed pull request's runs that are still going by joining their concurrency groups, one matrix job per group, with `cancel-in-progress`. The groups are built from the pull request's number, never from `github.ref` (on a merged pull request's closed event that is `main`'s). No permission is needed. The caller keeps the trigger.
+
+```yaml
+name: Cancel runs on close
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  cancel:
+    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # vX.Y.Z
+    with:
+      groups: '["docker-image-refs/pull/{0}/merge", "security-refs/pull/{0}/merge", "verify-{0}"]'
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `groups` | required | A JSON array of group patterns; `{0}` is the pull request's number, and a pattern without it is a prefix the number is appended to |
+| `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
+| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only) |
+
+## Tidy releases
+
+`.github/workflows/tidy-releases.yml` (`workflow_call`) takes back versions that shouldn't have been released: each one's GitHub release, its tag and its image in the GitHub Container Registry, after pointing floating image tags elsewhere if asked. It never deletes the newest version, nor an image still tagged `latest` or with a floating tag it wasn't asked to move. The caller keeps the `workflow_dispatch` inputs and the concurrency group it shares with its `docker.yml` on `main`, so it waits for a release in progress (check that no Docker image run is queued on `main` first, and don't push to `main` while it waits).
+
+```yaml
+name: Tidy releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "Versions to delete, separated by spaces (v1.0.2 v2.0.4): the release, its tag and its image"
+        required: true
+      retag:
+        description: "Floating image tags to point elsewhere first, as tag=version (2=2.3.21 1.0=1.0.1)"
+        required: false
+        default: ""
+      confirm:
+        description: 'Type "delete" to confirm'
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: docker-image-refs/heads/main
+  cancel-in-progress: false
+
+jobs:
+  tidy:
+    permissions:
+      contents: write
+      packages: write
+    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # vX.Y.Z
+    with:
+      image: waypoint
+      versions: ${{ inputs.versions }}
+      retag: ${{ inputs.retag }}
+      confirm: ${{ inputs.confirm }}
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `image` | required | The container image in the owner's registry (`waypoint`, `runway`) |
+| `versions`, `retag`, `confirm` | | The dispatch inputs, passed through; `confirm` must be `delete` |
+| `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
+| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only) |
+
+Runway's preview (`preview.yml`, a live copy of its own image behind a Cloudflare quick tunnel) stays in Runway: nothing for the others to reuse yet.

@@ -10,6 +10,7 @@ from fleet_tools import (
     coverage_floor,
     next_version,
     no_comments,
+    screenshot_diff,
     self_check,
     test_timings,
 )
@@ -41,6 +42,7 @@ register("coverage-floor", Command(coverage_floor.HELP, coverage_floor.configure
 register("next-version", Command(next_version.HELP, next_version.configure, next_version.run))
 register("test-timings", Command(test_timings.HELP, test_timings.configure, test_timings.run))
 register("agent-review", Command(agent_review.HELP, agent_review.configure, agent_review.run))
+register("screenshot-diff", Command(screenshot_diff.HELP, screenshot_diff.configure, screenshot_diff.run))
 
 
 def version() -> str:

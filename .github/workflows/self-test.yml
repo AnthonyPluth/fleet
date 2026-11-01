@@ -167,3 +167,42 @@ jobs:
           [ "$PASS" = pass ] || { echo "::error::The passing answer gave $PASS"; exit 1; }
           [ "$BLOCKING" = blocking ] || { echo "::error::The blocking answer gave $BLOCKING"; exit 1; }
           [ "$MALFORMED" = error ] || { echo "::error::The malformed answer gave $MALFORMED, not error"; exit 1; }
+
+  # The verify run on a fixture tree (tests/fixtures/verify/): Python with Poetry's virtualenv, Node with the packages
+  # and libfaketime are set up as for an app, no browser, and its `make smoke` checks each is there and writes a marker.
+  verify:
+    name: Verify (fixture)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      make-target: smoke
+      working-directory: tests/fixtures/verify
+      node-dir: tests/fixtures/verify/frontend
+      node-version-file: tests/fixtures/verify/.nvmrc
+      browser: ""
+      timeout-minutes: 10
+
+  # The screenshot diff over two fixture PNG sets (one changed, one added, one removed, one the same), committed to a
+  # made-up repository on the runner: it uploads the report and summary.json and, in dry run, prints the comment instead
+  # of posting it. The called job asks for `pull-requests: write`, so the caller grants it.
+  screenshot-diff:
+    name: Screenshot diff (fixture, dry run)
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/screenshot-diff.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      fixture: tests/fixtures/screenshot-diff/before tests/fixtures/screenshot-diff/after
+      dry-run: true
+
+  # Cancel-on-close joins two groups of its own (a pattern with the pull request's number, and a prefix), which nothing
+  # else uses: it checks the matrix and the group names, and cancels nothing.
+  cancel-on-close:
+    name: Cancel runs on close (groups of its own)
+    uses: ./.github/workflows/cancel-on-close.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      groups: '["self-test-cancel-{0}", "self-test-cancel-prefix-"]'
