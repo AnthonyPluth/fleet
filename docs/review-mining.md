@@ -77,7 +77,7 @@ Review findings that came back on more than one pull request of `owner/app` upda
 ```
 
 - **Row ids.** Every row has a stable hidden id, `<!-- row:<table>:<key> -->`, on its checkbox line: the table is `repeated`, `dismissed`, `open-at-merge` or `gaps`; for the first three the key is the kind's title as a slug (`failure-paths`), or `other:<slug of the normalized title>` for `other` findings, a slug being the whole normalized text when it is at most 60 characters, and otherwise its first 47 followed by `-` and the first 12 hex digits of the SHA-256 of the whole text (so two kinds or titles that differ only late never share an id; short ids are unchanged); for `gaps` it is the guide's whole file name (`screens` for `screens.md`, never cut short, so two guides are never merged) or `ungrouped`. The same kind or area gets the same id on every run, in every repository.
-- **The checkbox.** Each row ends with a task-list line, "becomes an Agent task", so the owner's tick is a click on the issue. Before rewriting, the run reads the open issue's row lines (`- [ ]`/`- [x]`, the id, and an optional trailing ` → #N`): a row whose id survives keeps its tick and its ` → #N`; a row that disappears loses both (the issue it pointed at stays). `FLEET-MINING-TASKS` (#23) opens an issue from a ticked row and writes the ` → #N` back. The tick of a row id is kept whichever table it is in.
+- **The checkbox.** Each row ends with a task-list line, "becomes an Agent task", so the owner's tick is a click on the issue. Before rewriting, the run reads the open issue's row lines (`- [ ]`/`- [x]`, the id, and an optional trailing ` → #N`): a row whose id survives keeps its tick and its ` → #N`; a row that disappears loses both (the issue it pointed at stays). The owner's tick opens an Agent task issue for the row and writes the ` → #N` back ([Ticked rows become Agent tasks](#ticked-rows-become-agent-tasks)). The tick of a row id is kept whichever table it is in.
 - **Defused.** Kinds, titles, checks, file names, dismissal reasons, verification cells and guide areas go through `agent_review.defuse` before rendering and are cut short: `@` can't mention anyone and `<!--` can't forge a hidden line; every other `<` is written `&lt;`, so no tag renders; newlines are flattened and `|` is escaped in table cells. The only HTML comments in the body are the first-line marker and the row ids fleet writes.
 - "Last seen" is the date of the newest review comment that carried the finding.
 
@@ -106,6 +106,49 @@ jobs:
 
 Locally, from a checkout of fleet with `gh` signed in: `python3 -E -s -m fleet_tools.cli review-mine --repo owner/app --days 90 --agents-md /path/to/app/AGENTS.md --app-root /path/to/app --dry-run`.
 
+## Ticked rows become Agent tasks
+
+`.github/workflows/mining-tasks.yml` (`workflow_call`) and `fleet mining-tasks` act on the owner's tick. The tick is the human review step; after it, opening the issue is mechanical, so the loop goes from finding to task without anyone retyping it.
+
+**When it runs.** The caller triggers it on `issues: [edited]`. Its one job, `tasks`, runs only when the edited issue has the label `review-mining`, was opened by `github-actions[bot]` and the edit's sender is the repository's owner (`github.event.sender.login == github.repository_owner`; in a repository owned by an organization that never holds, so nothing runs). `fleet mining-tasks` checks the same again from the event, and also that the action is `edited`, the issue isn't a pull request, its body starts with `<!-- review-mining -->` (the report, not a task issue opened from it) and `changes.body.from` is there. Anything else prints why and does nothing. The edits it makes itself use the workflow's token, which starts no workflow. Concurrency `mining-tasks-<issue>`, never cancelled: two quick ticks are two events, each acted on in turn.
+
+**What it opens.** It compares `changes.body.from` with `issue.body` and takes the rows (by their `row:` id) whose checkbox went from `[ ]` in the old body to `[x]` in the new, with no ` → #N` in either. A row that is new in the body, a row already linked, a re-tick of a linked row and an untick do nothing; at most 20 rows are acted on per edit. Outside a dry run it then reads the report again (`GET repos/<repo>/issues/<n>`) and drops a row that is gone or already linked there. For each remaining row it reads the row's cells from its table (the table rows and checkbox lines of a section pair up in order; a section where they don't is skipped and the row printed as skipped) and opens one issue, label `review-mining`, no assignee:
+
+| Table (row id) | Title | Scope | Model |
+| --- | --- | --- | --- |
+| Repeated findings (`repeated:`) | `Check for "<kind>"` | the Proposed check | Opus |
+| Often dismissed (`dismissed:`) | `Review guidance for "<kind>"` | the Proposal | Fable: it changes the reviewer's guidance |
+| Open at merge (`open-at-merge:`) | `Findings left open at merge: "<kind>"` | a check on the merge path, or of the kind, that stops such a finding staying open at merge | Opus |
+| Verification gaps (`gaps:`) | `Verification gap: <area>` | the Proposal | Opus |
+
+The body is in the agent-task shape: Context (each cell of the row as `- **Column**: value`, and a link to the report), Scope ("The row's proposal: …"), Out of scope, Acceptance criteria (`- [ ] The check, guidance or fake named in Scope exists and a test shows it catches the case.` and `- [ ] \`make check\` passes.`), Tests, Depends on ("Nothing."), Model, then a last line saying it was opened from a ticked row of the report and the owner edits it before an agent picks it up, and the hidden `<!-- mined-from row:<id> -->`. Starting an agent session on it and choosing its priority are left to the owner.
+
+**Links back.** It rewrites each acted-on row's checkbox line in the report (the current body, `\r\n` line endings kept) to end with ` → #N`, in one `PATCH`. If opening one issue fails, the others are still linked and the run fails. `fleet review-mine` keeps the tick and the ` → #N` on every row whose id survives its next rewrite; a row that disappears loses its link, and the issue stays.
+
+**Once per row.** Before opening, it lists the repository's `review-mining` issues, open and closed (`repos/<repo>/issues?state=all&labels=review-mining`, paginated), and collects the `<!-- mined-from row:<id> -->` lines of those opened by `github-actions[bot]` (a marker in anyone else's issue doesn't count). A row whose marker exists opens nothing and is linked to the oldest such issue instead, so running the same event twice opens no second issue.
+
+**Defused.** The title, every cell in the body and the rewritten row go through `agent_review.defuse` again, whatever the report's text was: `@` can't mention anyone, `<!--` can't forge a hidden line or a `mined-from` marker, every other `<` is written `&lt;`, newlines are flattened, and each cell is cut to 600 characters (the title to 200). The only HTML comments in a new issue are its `mined-from` marker; in the rewritten row, its `row:` id.
+
+The workflow has `issues: write` only and no secrets, checks out only fleet at the pinned ref into `.fleet/` (`fleet_tools`, `VERSION` and the event fixtures) and runs `python3 -E -s -m fleet_tools.cli mining-tasks --repo "$REPO" --event "$GITHUB_EVENT_PATH"` from there; event values reach it only through the event file and `env:`. Inputs: `dry-run` (print the issues and links instead of writing them), `fixture` (self-test only: an event payload in fleet's checkout read in place of the real one; implies `dry-run`) and `fleet-ref`. The caller:
+
+```yaml
+name: Mining tasks
+
+on:
+  issues:
+    types: [edited]
+
+permissions: {}
+
+jobs:
+  tasks:
+    permissions:
+      issues: write
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # vX.Y.Z
+```
+
+Locally, with `gh` signed in and an event payload saved to a file: `python3 -E -s -m fleet_tools.cli mining-tasks --event event.json --repo owner/app --dry-run`.
+
 ## Testing it
 
-`tests/test_review_mine.py` drives the command against the fake `gh` in `tests/fakes/security/` (recorded answers, logged writes): fixture comments give the expected table, kinds match AGENTS items case-insensitively and `other` titles group after normalizing, a findings line anywhere but line 3, a malformed or oversized record and another author's comment are ignored, a second run rewrites the open issue and keeps its ticks and links, rows keep their ids, and a dry run posts nothing. For the other tables: dismissed findings leave the repeats and fixed ones are counted, an owner's dismissal with a reason is the only one that counts, "Often dismissed" at 3 of 6 but not 3 of 7 or 2 of 2, reasons defused, cut and linked only to the repository's own comments, "Open at merge" only for merged pull requests, verification gaps only from pull requests merged in the window (an open one's record and files are never read), grouped by guide area or `ungrouped` at 2 pull requests, unparsable records counted and never posted, the count of pull requests without a record only when it isn't required, no table without the setting, and the same ids on a run with the data reversed. The self-test runs the workflow in dry run on fleet's own pull requests (fleet doesn't set `[tool.fleet.verification]`, so its report has no verification table).
+`tests/test_review_mine.py` drives the command against the fake `gh` in `tests/fakes/security/` (recorded answers, logged writes): fixture comments give the expected table, kinds match AGENTS items case-insensitively and `other` titles group after normalizing, a findings line anywhere but line 3, a malformed or oversized record and another author's comment are ignored, a second run rewrites the open issue and keeps its ticks and links, rows keep their ids, and a dry run posts nothing. For the other tables: dismissed findings leave the repeats and fixed ones are counted, an owner's dismissal with a reason is the only one that counts, "Often dismissed" at 3 of 6 but not 3 of 7 or 2 of 2, reasons defused, cut and linked only to the repository's own comments, "Open at merge" only for merged pull requests, verification gaps only from pull requests merged in the window (an open one's record and files are never read), grouped by guide area or `ungrouped` at 2 pull requests, unparsable records counted and never posted, the count of pull requests without a record only when it isn't required, no table without the setting, and the same ids on a run with the data reversed. The self-test runs the workflow in dry run on fleet's own pull requests (fleet doesn't set `[tool.fleet.verification]`, so its report has no verification table). `tests/test_mining_tasks.py` drives `fleet mining-tasks` against the same fake `gh` with event fixtures: the owner ticking one row opens one issue and links it, two rows ticked in one edit open two, each table's title, scope and model; a tick by anyone else, an edit of an issue not opened by the bot or without the label, and unticking or re-ticking a linked row do nothing; running the same event twice opens no second issue, a marker in an issue not opened by the bot doesn't count, a failed open still links the others; the new issue and the rewritten row are defused; and a dry run writes nothing. The self-test runs `mining-tasks.yml` in dry run on `tests/fixtures/events/mining-tasks-tick.json`.

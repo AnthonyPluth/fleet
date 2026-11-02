@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fleet_tools import agent_review as ar
-from fleet_tools import cli, review_outcomes, self_check
+from fleet_tools import cli, mining_tasks, review_outcomes, self_check
 from fleet_tools import review_mine as rm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -279,6 +279,23 @@ class RewriteTest(unittest.TestCase):
         gone = rm.render(rm.rows_of(rm.groups_of({(5, "agent-review"): ("2026-09-01T00:00:00Z", [finding("Layout")]), (6, "agent-review"): ("2026-09-01T00:00:00Z", [finding("Layout")])}, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2), previous=second)
         self.assertNotIn("failure-paths", gone)
         self.assertIn("→ #41", gone)
+
+    def test_the_links_mining_tasks_writes_survive_a_rewrite_and_go_with_a_row_that_disappears(self) -> None:
+        records = {(n, "agent-review"): ("2026-08-01T00:00:00Z", [finding("Failure paths"), finding("Layout")]) for n in (1, 2)}
+        first = rm.render(rm.rows_of(rm.groups_of(records, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2)).replace("\n", "\r\n")
+        ticked = first.replace("- [ ] <!-- row:repeated:failure-paths -->", "- [x] <!-- row:repeated:failure-paths -->")
+        ticked = ticked.replace("- [ ] <!-- row:repeated:layout -->", "- [x] <!-- row:repeated:layout -->")
+        previous = mining_tasks.linked(ticked, {"repeated:failure-paths": 81, "repeated:layout": 82})
+        self.assertEqual(rm.ticks_of(previous), {"repeated:failure-paths": (True, "81"), "repeated:layout": (True, "82")})
+        again = {(n, "agent-review"): ("2026-09-01T00:00:00Z", [finding("Layout"), finding("Undo and restore")]) for n in (3, 4)}
+        second = rm.render(rm.rows_of(rm.groups_of(again, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2), previous=previous)
+        self.assertIn("- [x] <!-- row:repeated:layout --> **Layout** becomes an Agent task → #82\n", second)
+        self.assertEqual(rm.ticks_of(second), {"repeated:layout": (True, "82"), "repeated:undo-and-restore": (False, "")})
+        self.assertNotIn("#81", second)
+        back = rm.render(rm.rows_of(rm.groups_of(records, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2), previous=second)
+        self.assertIn("- [ ] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task\n", back)
+        self.assertEqual(mining_tasks.newly_ticked(back, back.replace("- [ ] <!-- row:repeated:failure-paths -->", "- [x] <!-- row:repeated:failure-paths -->")),
+                         ["repeated:failure-paths"])
 
     def test_a_previous_body_can_t_forge_a_tick_outside_a_row_line(self) -> None:
         self.assertEqual(rm.ticks_of("text <!-- row:repeated:x --> [x]\n- [x] <!-- row:repeated:y --> k becomes an Agent task → #9 extra"),

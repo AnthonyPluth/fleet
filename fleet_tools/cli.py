@@ -9,6 +9,7 @@ from fleet_tools import (
     agent_review,
     coverage_floor,
     drift,
+    mining_tasks,
     next_version,
     no_comments,
     release,
@@ -55,6 +56,7 @@ register("agent-review", Command(agent_review.HELP, agent_review.configure, agen
 register("screenshot-diff", Command(screenshot_diff.HELP, screenshot_diff.configure, screenshot_diff.run))
 register("review-outcomes", Command(review_outcomes.HELP, review_outcomes.configure, review_outcomes.run))
 register("review-mine", Command(review_mine.HELP, review_mine.configure, review_mine.run))
+register("mining-tasks", Command(mining_tasks.HELP, mining_tasks.configure, mining_tasks.run))
 register("verification", Command(verification.HELP, verification.configure, verification.run))
 register("release", Command(release.HELP, release.configure, release.run))
 
