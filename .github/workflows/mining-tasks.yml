@@ -4,10 +4,10 @@ name: Mining tasks
 # (review-mining.yml) ends with a checkbox, "becomes an Agent task". The owner's tick is the human review step; after
 # it, opening the issue is mechanical. On an edit of the report's body, `fleet mining-tasks` reads the report as it is
 # now and takes every row that is ticked (`[x]`) and links no issue yet (a tick whose own run was dropped or failed is
-# picked up by the next one; a tick withdrawn before the run opens nothing), opens one issue per row in the agent-task shape (label `review-mining`, no assignee, a hidden
-# `<!-- mined-from row:<id> -->`) and writes ` → #N` at the end of the row's checkbox line. Before opening, it lists
-# the repository's `review-mining` issues (open and closed) and links a row whose marker one already carries instead
-# of opening a second. Every piece of the row is defused (no @mentions, no HTML comments, no tags), as the report is.
+# picked up by the next one; a tick withdrawn before the run opens nothing), opens one issue per row in the agent-task
+# shape (label `review-mining`, no assignee, a hidden `<!-- mined-from row:<id> -->`) and writes ` → #N` at the end
+# of the row's checkbox line. Before opening, it lists the repository's `review-mining` issues (open and closed) and
+# links a row whose marker one already carries instead of opening a second. Every piece of the row is defused (no @mentions, no HTML comments, no tags), as the report is.
 # `fleet_tools/mining_tasks.py` decides it all; docs/review-mining.md explains the rules.
 #
 # The caller triggers it on `issues: [edited]`. The job runs only for an issue labelled `review-mining`, opened by
