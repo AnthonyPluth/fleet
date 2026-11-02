@@ -259,8 +259,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"fleet verification: {error}", file=sys.stderr)
         return 2
     guides, errors = load(root, relative)
-    for error in errors:
-        print(f"fleet verification: {clean(str(error))}", file=sys.stderr)
+    for found_error in errors:
+        print(f"fleet verification: {clean(str(found_error))}", file=sys.stderr)
     if errors:
         return 1
     if args.action == "guides":

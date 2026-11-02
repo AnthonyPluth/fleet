@@ -7,7 +7,14 @@ from pathlib import Path
 from consumers import RUNWAY, WAYPOINT, copy, write
 
 from fleet_tools import cli, config
-from fleet_tools.verification_guides import GuideError, areas, directory, load, parse_guide
+from fleet_tools.verification_guides import (
+    Guide,
+    GuideError,
+    areas,
+    directory,
+    load,
+    parse_guide,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = "guides/area.md"
@@ -33,7 +40,7 @@ The settings pages.
 """
 
 
-def guide(text: str = VALID, name: str = "area"):
+def guide(text: str = VALID, name: str = "area") -> Guide:
     return parse_guide(text, SOURCE, name)
 
 
@@ -240,6 +247,33 @@ class Commands(unittest.TestCase):
         code, _, err = run("show", "--body-file", str(ROOT / "nowhere.md"))
         self.assertEqual(code, 1)
         self.assertIn("can't read the description", err)
+
+
+class Skills(unittest.TestCase):
+    def test_the_guide_skill_names_no_app_and_holds_the_rules(self) -> None:
+        text = (ROOT / "plugins" / "fleet" / "skills" / "verification-guide" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in ("name: verification-guide", "[tool.fleet.verification]", "## Paths", "## How to verify",
+                       "## Not verifiable yet", "`Nothing`", "run once in this session", "feature map", "git ls-files"):
+            self.assertIn(phrase, text)
+        for word in ("Waypoint", "Runway", "Darkroom", "AnthonyPluth", "http"):
+            self.assertNotIn(word, text)
+
+    def test_verify_change_says_how_it_uses_the_guides(self) -> None:
+        text = (ROOT / "plugins" / "fleet" / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in ("## Read the area guides first", "fleet verification areas", "`## How to verify`",
+                       "`## Not verifiable yet`", "says why in its How column", "fleet-verification-guide"):
+            self.assertIn(phrase, text)
+
+    def test_the_fixture_consumers_carry_it_vendored_and_the_docs_describe_it(self) -> None:
+        for consumer in ("consumer-runway", "consumer-waypoint"):
+            path = ROOT / "tests" / "fixtures" / consumer / ".claude" / "skills" / "fleet-verification-guide" / "SKILL.md"
+            self.assertIn("name: fleet-verification-guide", path.read_text(encoding="utf-8"))
+        text = (ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
+        for phrase in ('guides = "docs/verification"', "fleet verification guides [--json]", "fleet verification areas PATH...",
+                       "verification-guides", "`Nothing`"):
+            self.assertIn(phrase, text)
+        example = text.split("### Verification guides", 1)[1].split("```md\n", 1)[1].split("```", 1)[0]
+        self.assertEqual(guide(example).area, "Settings")
 
 
 if __name__ == "__main__":
