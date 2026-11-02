@@ -159,9 +159,9 @@ def directory(conf: config.Config) -> str | None:
         return None
     if isinstance(value, str) and value.strip() and "\\" not in value:
         path = PurePosixPath(value)
-        if not path.is_absolute() and ".." not in path.parts:
+        if not path.is_absolute() and ".." not in path.parts and path.as_posix() != ".":
             return path.as_posix()
-    raise config.ConfigError(f"[tool.fleet.{KEY}] guides must be a directory's path relative to the repository root")
+    raise config.ConfigError(f"[tool.fleet.{KEY}] guides must be a directory's path relative to the repository root, below it (not `.`, `..` or absolute)")
 
 
 def load(root: Path, relative: str) -> tuple[list[Guide], list[GuideError]]:

@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -342,10 +343,12 @@ class Guides(unittest.TestCase):
         problems, _, _ = guides_outcome(root)
         self.assertEqual(len(problems), 1)
         self.assertIn("doesn't exist inside the repository", problems[0])
-        pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('"docs/nowhere"', '"../elsewhere"'), encoding="utf-8")
-        code, _, err = run("--root", str(root))
-        self.assertEqual(code, 2)
-        self.assertIn("[tool.fleet.verification] guides", err)
+        for bad in ('"../elsewhere"', '"."'):
+            pyproject.write_text(re.sub(r'guides = "[^"]*"', f"guides = {bad}", pyproject.read_text(encoding="utf-8")), encoding="utf-8")
+            code, _, err = run("--root", str(root))
+            self.assertEqual(code, 2, bad)
+            self.assertIn("[tool.fleet.verification] guides", err)
+            self.assertIn("not `.`, `..` or absolute", err)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ def changed(context: Context) -> list[str]:
 
 
 def under(path: str, relative: str) -> bool:
-    return relative == "." or path == relative or path.startswith(relative.rstrip("/") + "/")
+    return path == relative or path.startswith(relative.rstrip("/") + "/")
 
 
 def stale(found: list[guides.Guide], files: list[str]) -> list[str]:

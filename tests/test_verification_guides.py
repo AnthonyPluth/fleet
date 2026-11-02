@@ -197,7 +197,7 @@ class Loading(unittest.TestCase):
         self.assertIn("doesn't exist", load(root, "out")[1][0].rule)
 
     def test_the_key(self) -> None:
-        for value in ('"/abs"', '"../up"', '"a\\\\b"', '""', "3", "[\"a\"]"):
+        for value in ('"."', '"./"', '"/abs"', '"../up"', '"a\\\\b"', '""', "3", "[\"a\"]"):
             with self.subTest(value=value):
                 root = copy(self, RUNWAY, repository=False)
                 pyproject = root / "pyproject.toml"
@@ -260,7 +260,7 @@ class Skills(unittest.TestCase):
 
     def test_verify_change_says_how_it_uses_the_guides(self) -> None:
         text = (ROOT / "plugins" / "fleet" / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
-        for phrase in ("## Read the area guides first", "fleet verification areas", "`## How to verify`",
+        for phrase in ("## Read the area guides first", "git diff -z --name-only --no-renames origin/main...HEAD | xargs -0 -r fleet verification areas", "`## How to verify`",
                        "`## Not verifiable yet`", "says why in its How column", "fleet-verification-guide"):
             self.assertIn(phrase, text)
 

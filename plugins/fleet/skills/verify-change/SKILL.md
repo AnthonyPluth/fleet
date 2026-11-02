@@ -27,7 +27,7 @@ A change with one dimension has one row. A refactor still has the behaviours it 
 
 Where `[tool.fleet.verification]` also sets `guides` (a directory of verification guides, one per area of the app), read the guides for the changed paths before verifying anything:
 
-1. `git diff --name-only --no-renames origin/main...HEAD | xargs fleet verification areas --json` names every area whose `## Paths` globs match a changed path (both names of a renamed file count), with each guide's steps and gaps, and lists the paths no guide covers.
+1. `git diff -z --name-only --no-renames origin/main...HEAD | xargs -0 -r fleet verification areas --json` (NUL-separated, so a path with spaces, quotes or backslashes stays one argument) names every area whose `## Paths` globs match a changed path (both names of a renamed file count), with each guide's steps and gaps, and lists the paths no guide covers.
 2. For each dimension in a named area, verify it the way the guide's `## How to verify` says: those are the commands, flows, fakes and tests the area is checked with.
 3. A dimension the guide lists under `## Not verifiable yet` is `not verified`, and its How gives the guide's reason and what would change it.
 4. A dimension you verified some other way than its guide says (a step the guide lacks, or one that didn't apply) says why in its How column, so a reviewer sees that the guide was read and why it was set aside.
