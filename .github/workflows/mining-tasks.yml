@@ -2,9 +2,9 @@ name: Mining tasks
 
 # Ticked report rows become Agent task issues (FLEET-MINING-TASKS). Each row of the "Repeated review findings" report
 # (review-mining.yml) ends with a checkbox, "becomes an Agent task". The owner's tick is the human review step; after
-# it, opening the issue is mechanical. On an edit of the report, `fleet mining-tasks` compares the body before and
-# after the edit (`changes.body.from` with `issue.body`), finds the rows whose checkbox went from `[ ]` to `[x]` and
-# that link no issue yet, opens one issue per row in the agent-task shape (label `review-mining`, no assignee, a hidden
+# it, opening the issue is mechanical. On an edit of the report's body, `fleet mining-tasks` reads the report as it is
+# now and takes every row that is ticked (`[x]`) and links no issue yet (a tick whose own run was dropped or failed is
+# picked up by the next one; a tick withdrawn before the run opens nothing), opens one issue per row in the agent-task shape (label `review-mining`, no assignee, a hidden
 # `<!-- mined-from row:<id> -->`) and writes ` → #N` at the end of the row's checkbox line. Before opening, it lists
 # the repository's `review-mining` issues (open and closed) and links a row whose marker one already carries instead
 # of opening a second. Every piece of the row is defused (no @mentions, no HTML comments, no tags), as the report is.
@@ -52,7 +52,9 @@ jobs:
       )
     runs-on: ubuntu-latest   # hosted: holds the write token for the issues; a few API reads and writes
     timeout-minutes: 10
-    # One run per report at a time, none cancelled: two quick ticks are two events, and each must be acted on.
+    # One run per report at a time, none cancelled. A third quick edit drops the waiting run, which loses nothing: each
+    # run acts on the report as it is then. review-mining.yml's job writes the same body in no shared group (an edit
+    # must not drop the scheduled report); both re-read before writing and the mined-from markers restore a lost link.
     concurrency:
       group: mining-tasks-${{ github.event.issue.number || format('fixture-{0}', github.run_id) }}
       cancel-in-progress: false

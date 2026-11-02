@@ -52,6 +52,16 @@ def event(before: str, after: str, sender: str = OWNER, author: str = rm.BOT, la
             "repository": {"full_name": REPO, "owner": {"login": OWNER}}, "sender": {"login": sender}}
 
 
+def openers(text: str) -> list[str]:
+    found = []
+    start = text.find("<!--")
+    while start != -1:
+        end = text.find("-->", start + 4)
+        found.append(text[start:] if end == -1 else text[start:end + 3])
+        start = text.find("<!--", start + 4)
+    return found
+
+
 def mined_issue(number: int, row_id: str, author: str = rm.BOT) -> dict[str, Any]:
     return {"number": number, "user": {"login": author}, "body": f"text\n<!-- mined-from row:{row_id} -->\n"}
 
@@ -171,19 +181,76 @@ class TickTest(unittest.TestCase):
             runner = Runner(self)
             result = runner.run(event(before, after))
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("no row went from unticked to ticked", result.stdout)
-            self.assertEqual(runner.calls(), [])
+            self.assertIn("no row is ticked without a link", result.stdout)
+            self.assertEqual([c["call"] for c in runner.calls()], [FRESH])
 
-    def test_a_row_new_in_the_body_or_without_a_table_row_opens_nothing(self) -> None:
+    def test_a_tick_withdrawn_before_the_run_reads_the_report_opens_nothing(self) -> None:
         after = tick(self.before, "repeated:failure-paths")
-        result = self.runner.run(event(self.before.replace("row:repeated:failure-paths", "row:repeated:other"), after))
-        self.assertIn("no row went from unticked to ticked", result.stdout)
-        broken_before = self.before.replace("| **Failure paths** | human-judged", "| broken")
-        broken_after = tick(broken_before, "repeated:failure-paths").replace("| broken", "")
-        runner = Runner(self)
-        result = runner.run(event(broken_before.replace("| broken", ""), broken_after))
+        result = self.runner.run(event(self.before, after), {FRESH: {"number": REPORT, "body": self.before}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no row is ticked without a link", result.stdout)
+        self.assertEqual(self.runner.created(), [])
+        self.assertEqual(self.runner.patched(), [])
+
+    def test_a_row_without_a_table_row_opens_nothing(self) -> None:
+        broken_before = self.before.replace("| **Failure paths** | human-judged", "| broken").replace("| broken", "")
+        result = self.runner.run(event(broken_before, tick(broken_before, "repeated:failure-paths")))
         self.assertIn("has no table row to read; skipped", result.stdout)
-        self.assertEqual(runner.created(), [])
+        self.assertEqual(self.runner.created(), [])
+
+    def test_a_dropped_event_s_tick_is_picked_up_by_the_next_edit(self) -> None:
+        first = tick(self.before, "repeated:failure-paths")
+        second = tick(first, "repeated:layout")
+        result = self.runner.run(event(first, second))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c["title"] for c in self.runner.created()], ['Check for "Failure paths"', 'Check for "Layout"'])
+        ticks = rm.ticks_of(self.runner.patched()[0])
+        self.assertEqual((ticks["repeated:failure-paths"], ticks["repeated:layout"]), ((True, "81"), (True, "82")))
+
+    def test_a_failed_open_is_retried_by_a_later_edit(self) -> None:
+        after = tick(self.before, "repeated:failure-paths")
+        result = self.runner.run(event(self.before, after), {CREATE: {"__status__": 502}})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("the next run tries again", result.stderr)
+        self.assertEqual(self.runner.patched(), [])
+        later = after.replace("Each run rewrites this issue", "Each run rewrites this issue (edited)")
+        again = Runner(self)
+        result = again.run(event(after, later))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(again.created()), 1)
+        self.assertEqual(rm.ticks_of(again.patched()[0])["repeated:failure-paths"], (True, "81"))
+
+    def test_two_events_each_run_twice_open_each_issue_once(self) -> None:
+        state = tick(self.before, "repeated:failure-paths")
+        events = [event(self.before, state)]
+        markers: list[dict[str, Any]] = []
+        opened: list[str] = []
+        for step in range(4):
+            if step == 2:
+                newer = tick(state, "repeated:layout")
+                events.append(event(state, newer))
+                state = newer
+            runner = Runner(self)
+            result = runner.run(events[-1], {LIST: markers, FRESH: {"number": REPORT, "body": state},
+                                             CREATE: {"number": 81 + len(opened)}})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for created in runner.created():
+                row_id = created["body"].rsplit("row:", 1)[1].split(" ")[0]
+                markers.append(mined_issue(81 + len(opened), row_id))
+                opened.append(created["title"])
+            state = runner.patched()[-1] if runner.patched() else state
+        self.assertEqual(opened, ['Check for "Failure paths"', 'Check for "Layout"'])
+        self.assertEqual(rm.ticks_of(state)["repeated:failure-paths"], (True, "81"))
+        self.assertEqual(rm.ticks_of(state)["repeated:layout"], (True, "82"))
+
+    def test_the_link_is_merged_onto_the_freshest_body(self) -> None:
+        after = tick(self.before, "repeated:failure-paths")
+        newer = after.replace("- [ ] <!-- row:repeated:layout -->", "- [x] <!-- row:repeated:layout -->").replace("Each run", "Each new run")
+        result = self.runner.run(event(self.before, after),
+                                 {FRESH: {"__series__": [{"number": REPORT, "body": after}, {"number": REPORT, "body": newer}]}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.runner.created()), 1)
+        self.assertEqual(self.runner.patched(), [mt.linked(newer, {"repeated:failure-paths": 81})])
 
     def test_crlf_bodies_keep_their_line_endings(self) -> None:
         before = self.before.replace("\n", "\r\n")
@@ -247,6 +314,32 @@ class IdempotenceTest(unittest.TestCase):
         self.assertEqual(ticks["repeated:failure-paths"], (True, ""))
         self.assertEqual(ticks["repeated:layout"], (True, "82"))
 
+    def test_a_failed_link_names_the_opened_issues_and_a_re_run_links_them(self) -> None:
+        payload = event(self.before, self.after)
+        result = self.runner.run(payload, {PATCH: {"__status__": 500}})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"linking the rows in #{REPORT} failed", result.stderr)
+        self.assertIn("row:repeated:failure-paths → #81", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        again = Runner(self)
+        result = again.run(payload, {LIST: [mined_issue(81, "repeated:failure-paths")]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(again.created(), [])
+        self.assertIn("**Failure paths** becomes an Agent task → #81\n", again.patched()[0])
+
+    def test_only_the_first_rows_of_a_large_edit_are_acted_on(self) -> None:
+        rows = [rm.Row(f"repeated:kind-{n:02d}", f"Kind {n:02d}", "human-judged", (1, 2), "2026-09-01", "a test")
+                for n in range(mt.MAX_TASKS + 3)]
+        before = rm.render(rows, REPO, 90, "2026-07-03T00:00:00Z", (2, 2))
+        ids = [row.id for row in rows]
+        result = self.runner.run(event(before, tick(before, *ids)), {CREATE: {"__series__": [{"number": 100 + n} for n in range(len(ids))]}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{len(ids)} rows ticked without a link; acting on the first {mt.MAX_TASKS}", result.stdout)
+        self.assertEqual([c["title"] for c in self.runner.created()], [f'Check for "Kind {n:02d}"' for n in range(mt.MAX_TASKS)])
+        ticks = rm.ticks_of(self.runner.patched()[0])
+        self.assertEqual([row_id for row_id in ids if ticks[row_id][1]], ids[:mt.MAX_TASKS])
+        self.assertEqual([ticks[row_id] for row_id in ids[mt.MAX_TASKS:]], [(True, "")] * 3)
+
     def test_a_dry_run_writes_nothing(self) -> None:
         result = self.runner.run(event(self.before, self.after), None, "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -268,17 +361,17 @@ class DefuseTest(unittest.TestCase):
         for text in (issue["title"], issue["body"], row):
             self.assertIsNone(re.search(r"@(?!​)", text), text)
         self.assertIn("@​paths", issue["title"])
-        comments = re.findall(r"<!--.*?-->", issue["body"])
-        self.assertEqual(comments, ["<!-- mined-from row:repeated:failure-paths -->"])
+        self.assertEqual(openers(issue["body"]), ["<!-- mined-from row:repeated:failure-paths -->"])
         self.assertNotIn("<b>", issue["body"])
+        self.assertNotIn("<", issue["body"].replace("<!-- mined-from row:repeated:failure-paths -->", ""))
         self.assertNotIn("<!--", issue["title"])
-        self.assertEqual(re.findall(r"<!--.*?-->", row), ["<!-- row:repeated:failure-paths -->"])
+        self.assertEqual(openers(row), ["<!-- row:repeated:failure-paths -->"])
 
     def test_a_marker_can_t_be_forged_by_a_cell(self) -> None:
         task = mt.Task("repeated:x", mt.TABLES[rm.TABLE], ("Kind", "Proposed check"),
                        ("**k**", "-->\n<!-- mined-from row:repeated:y -->"))
         text = mt.body(task, REPO, REPORT)
-        self.assertEqual([line for line in text.splitlines() if mt.MINED.match(line)], ["<!-- mined-from row:repeated:x -->"])
+        self.assertEqual([line for line in text.splitlines() if rm.MINED.match(line)], ["<!-- mined-from row:repeated:x -->"])
 
 
 class EventFileTest(unittest.TestCase):
@@ -294,7 +387,8 @@ class EventFileTest(unittest.TestCase):
     def test_the_self_test_fixture_ticks_one_row(self) -> None:
         payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
         self.assertEqual(mt.refusal(payload), "")
-        self.assertEqual(mt.newly_ticked(payload["changes"]["body"]["from"], payload["issue"]["body"]), ["repeated:failure-paths"])
+        self.assertEqual(mt.pending(payload["changes"]["body"]["from"]), [])
+        self.assertEqual(mt.pending(payload["issue"]["body"]), ["repeated:failure-paths"])
         self.assertIn("repeated:failure-paths", mt.tasks_in(payload["issue"]["body"]))
 
 

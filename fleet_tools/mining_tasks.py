@@ -15,7 +15,6 @@ HELP = ('open one Agent task issue per row the owner ticked in the "Repeated rev
 
 Json = dict[str, Any]
 
-MINED = re.compile(r"^<!-- mined-from row:(?P<id>[a-z0-9:-]+) -->$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_IN_ROW = re.compile(r"^\s*\*\*(?P<label>.*)\*\*\s*$")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
@@ -114,13 +113,6 @@ def tasks_in(body: str) -> dict[str, Task]:
     return found
 
 
-def newly_ticked(before: str, after: str) -> list[str]:
-    old = rm.ticks_of(before)
-    new = rm.ticks_of(after)
-    return [row_id for row_id, (ticked, link) in new.items()
-            if ticked and not link and row_id in old and not old[row_id][0] and not old[row_id][1]]
-
-
 def title(task: Task) -> str:
     return task.table.title.format(plain(task.label(), MAX_TITLE - 40))
 
@@ -180,24 +172,6 @@ def linked(text: str, links: dict[str, int]) -> str:
     return "\n".join(out)
 
 
-def mined(repo: str) -> dict[str, int]:
-    found = rm.gh("--paginate", f"repos/{repo}/issues?state=all&labels={rm.LABEL}&per_page={rm.PER_PAGE}")
-    markers: dict[str, int] = {}
-    for issue in found if isinstance(found, list) else []:
-        if not isinstance(issue, dict) or "pull_request" in issue or not isinstance(issue.get("number"), int):
-            continue
-        user = issue.get("user")
-        if not isinstance(user, dict) or user.get("login") != rm.BOT:
-            continue
-        text = issue.get("body")
-        for line in text.splitlines() if isinstance(text, str) else []:
-            marker = MINED.match(line.strip())
-            if marker:
-                row_id = marker.group("id")
-                markers[row_id] = min(markers.get(row_id, issue["number"]), issue["number"])
-    return markers
-
-
 def login(node: object) -> str:
     return str(node.get("login") or "") if isinstance(node, dict) else ""
 
@@ -229,28 +203,34 @@ def refusal(event: Json) -> str:
     return ""
 
 
+def pending(text: str) -> list[str]:
+    return [row_id for row_id, (ticked, link) in rm.ticks_of(text).items() if ticked and not link]
+
+
+def report_body(repo: str, report: int) -> str:
+    fresh = rm.gh(f"repos/{repo}/issues/{report}")
+    return str(fresh.get("body") or "") if isinstance(fresh, dict) else ""
+
+
 def act(event: Json, repo: str, dry_run: bool) -> int:
     reason = refusal(event)
     if reason:
         print(f"mining-tasks: nothing to do: {reason}")
         return 0
-    issue = event["issue"]
-    report: int = issue["number"]
-    current: str = issue["body"]
-    ticked = newly_ticked(event["changes"]["body"]["from"], current)
+    report: int = event["issue"]["number"]
+    current: str = event["issue"]["body"] if dry_run else report_body(repo, report)
+    if not current.startswith(rm.MARKER):
+        print("mining-tasks: nothing to do: the issue isn't the report any more")
+        return 0
+    ticked = pending(current)
     if not ticked:
-        print("mining-tasks: nothing to do: no row went from unticked to ticked")
+        print("mining-tasks: nothing to do: no row is ticked without a link")
         return 0
     if len(ticked) > MAX_TASKS:
-        print(f"mining-tasks: {len(ticked)} rows ticked in one edit; acting on the first {MAX_TASKS}")
+        print(f"mining-tasks: {len(ticked)} rows ticked without a link; acting on the first {MAX_TASKS}")
         ticked = ticked[:MAX_TASKS]
-    if not dry_run:
-        fresh = rm.gh(f"repos/{repo}/issues/{report}")
-        current = str(fresh.get("body") or "") if isinstance(fresh, dict) else ""
-        still = rm.ticks_of(current)
-        ticked = [row_id for row_id in ticked if row_id in still and not still[row_id][1]]
-    tasks = tasks_in(issue["body"])
-    existing = mined(repo)
+    tasks = tasks_in(current)
+    existing = rm.mined(repo)
     links: dict[str, int] = {}
     planned: list[str] = []
     failed = 0
@@ -271,22 +251,32 @@ def act(event: Json, repo: str, dry_run: bool) -> int:
         try:
             created = rm.gh("-X", "POST", f"repos/{repo}/issues", "--input", "-", stdin=json.dumps(payload))
         except subprocess.CalledProcessError as error:
-            print(f"mining-tasks: opening the issue for row:{row_id} failed ({error.returncode}): {error.stderr.strip()[:300]}",
-                  file=sys.stderr)
+            print(f"mining-tasks: opening the issue for row:{row_id} failed ({error.returncode}): {error.stderr.strip()[:300]}; "
+                  "the row stays ticked without a link, and the next run tries again", file=sys.stderr)
             failed += 1
             continue
         links[row_id] = int(created["number"])
         print(f"mining-tasks: opened #{links[row_id]} for row:{row_id}")
-    rewritten = linked(current, links)
     if dry_run:
+        rewritten = linked(current, links)
         changed = [line for line in rewritten.splitlines() if line not in current.splitlines()]
         changed += [f"row:{row_id} → #<the new issue>" for row_id in planned]
         print("mining-tasks: (dry run) would link:" + "".join(f"\n{line}" for line in changed) if changed else
               "mining-tasks: (dry run) nothing to link")
         return 0
-    if rewritten != current:
-        rm.gh("-X", "PATCH", f"repos/{repo}/issues/{report}", "--input", "-", stdin=json.dumps({"body": rewritten}))
-        print(f"mining-tasks: linked {len(links)} row(s) in #{report}")
+    if links:
+        opened = ", ".join(f"row:{row_id} → #{number}" for row_id, number in links.items())
+        try:
+            latest = report_body(repo, report)
+            rewritten = linked(latest, links)
+            if rewritten != latest:
+                rm.gh("-X", "PATCH", f"repos/{repo}/issues/{report}", "--input", "-", stdin=json.dumps({"body": rewritten}))
+        except subprocess.CalledProcessError as error:
+            print(f"mining-tasks: linking the rows in #{report} failed ({error.returncode}): {error.stderr.strip()[:300]}; "
+                  f"the issues are there ({opened}), and the next run links them through their mined-from markers",
+                  file=sys.stderr)
+            return 1
+        print(f"mining-tasks: linked in #{report}: {opened}")
     return 1 if failed else 0
 
 
