@@ -204,7 +204,7 @@ def verification_of(run: Run, pulls: list[rm.Pull], guides: list[verification_gu
                 counts[dimension.status] += 1
         try:
             paths = rm.changed_files(run.repo, each.number)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, rm.FilesCapped):
             unread_files += 1
             continue
         _, missed = verification_guides.areas(guides, paths)
@@ -212,8 +212,8 @@ def verification_of(run: Run, pulls: list[rm.Pull], guides: list[verification_gu
             pulls_uncovered += 1
             uncovered.update(missed)
     if unread_files:
-        run.missing.append(f"verification: the changed files of {unread_files} merged pull request(s) couldn't be listed; "
-                           "their paths aren't counted")
+        run.missing.append(f"verification: the changed files of {unread_files} merged pull request(s) couldn't be listed in full "
+                           f"(GitHub returns at most {rm.MAX_FILES} files per pull request); their paths aren't counted")
     return {"configured": True, "guides": len(guides), "merged": len(pulls), "with_record": counts["with_record"],
             "without_record": counts["without_record"], "unparsed": counts["unparsed"], "verified": counts["verified"],
             "not_verified": counts["not verified"], "mean_not_verified": share(counts["not verified"], counts["with_record"]),

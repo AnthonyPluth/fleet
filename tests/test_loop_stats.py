@@ -392,7 +392,22 @@ class EdgeTest(unittest.TestCase):
         self.assertEqual(value["verification"]["unread_files"], 1)
         missing = "\n".join(value["missing"])
         self.assertIn("the comments of 1 merged pull request(s) couldn't be read in full", missing)
-        self.assertIn("the changed files of 1 merged pull request(s) couldn't be listed", missing)
+        self.assertIn("the changed files of 1 merged pull request(s) couldn't be listed in full", missing)
+
+    def test_a_file_list_at_github_s_cap_is_unread_not_complete(self) -> None:
+        data = fixture()
+        data[files_of(2)] = [{"filename": f"lib/{i:04}.py"} for i in range(rm.MAX_FILES)]
+        self.stats.run(data, "--app-root", str(RUNWAY))
+        value = self.stats.stats()
+        self.assertEqual(value["verification"]["unread_files"], 1)
+        self.assertNotIn("lib/0000.py", value["verification"]["uncovered_samples"])
+        self.assertIn("the changed files of 1 merged pull request(s) couldn't be listed in full", "\n".join(value["missing"]))
+
+    def test_a_file_list_under_the_cap_is_read(self) -> None:
+        data = fixture()
+        data[files_of(2)] = [{"filename": f"lib/{i:04}.py"} for i in range(rm.MAX_FILES - 1)]
+        self.stats.run(data, "--app-root", str(RUNWAY))
+        self.assertEqual(self.stats.stats()["verification"]["unread_files"], 0)
 
     def test_uncovered_samples_are_capped_and_counted_in_full(self) -> None:
         data = fixture()

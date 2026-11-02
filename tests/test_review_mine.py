@@ -707,13 +707,22 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn(f"GET repos/{REPO}/pulls/24/files?per_page=100", called)
         self.assertNotIn(f"GET repos/{REPO}/pulls/22/files?per_page=100", called)
 
+    def test_a_file_list_at_github_s_cap_skips_that_pull_request_and_is_counted(self) -> None:
+        data = self.gap_answers()
+        data[f"GET repos/{REPO}/pulls/21/files?per_page=100"] = [{"filename": f"lib/{i:04}.py"} for i in range(rm.MAX_FILES)]
+        result = self.miner.run(data, "--app-root", str(RUNWAY), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = result.stdout
+        self.assertIn("1 merged pull request(s) whose changed files couldn't be read in full were skipped.", body)
+        self.assertNotIn("row:gaps:screens", body)
+
     def test_a_failing_files_call_skips_that_pull_request_and_is_counted(self) -> None:
         data = self.gap_answers()
         data[f"GET repos/{REPO}/pulls/21/files?per_page=100"] = {"__status__": 502}
         result = self.miner.run(data, "--app-root", str(RUNWAY), "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         body = result.stdout
-        self.assertIn("1 merged pull request(s) whose changed files couldn't be read were skipped.", body)
+        self.assertIn("1 merged pull request(s) whose changed files couldn't be read in full were skipped.", body)
         self.assertNotIn("row:gaps:screens", body)
         self.assertNotIn("Chart colours", body)
         self.assertNotIn("502", body)

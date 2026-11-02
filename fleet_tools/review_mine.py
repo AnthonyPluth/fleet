@@ -567,10 +567,16 @@ def verification_settings(root: Path | None) -> tuple[bool, list[verification_gu
     return required, guides
 
 
+class FilesCapped(Exception):
+    pass
+
+
 def changed_files(repo: str, number: int) -> list[str]:
     listed_files = gh("--paginate", f"repos/{repo}/pulls/{number}/files?per_page={PER_PAGE}")
+    if isinstance(listed_files, list) and len(listed_files) >= MAX_FILES:
+        raise FilesCapped(f"pull request #{number} lists {MAX_FILES} files, the most GitHub returns")
     paths: list[str] = []
-    for item in listed_files[:MAX_FILES] if isinstance(listed_files, list) else []:
+    for item in listed_files if isinstance(listed_files, list) else []:
         if not isinstance(item, dict):
             continue
         for name in ("filename", "previous_filename"):
@@ -606,7 +612,7 @@ def verification_gaps(repo: str, pulls: list[Pull], required: bool, guides: list
             continue
         try:
             paths = changed_files(repo, each.number)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FilesCapped):
             gaps.unread_files += 1
             continue
         for key, label in gap_areas(guides, paths):
@@ -685,7 +691,7 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
     if gaps.unparsed:
         notes.append(f"{gaps.unparsed} verification record(s) that don't parse were skipped.")
     if gaps.unread_files:
-        notes.append(f"{gaps.unread_files} merged pull request(s) whose changed files couldn't be read were skipped.")
+        notes.append(f"{gaps.unread_files} merged pull request(s) whose changed files couldn't be read in full were skipped.")
     return lines + (["", " ".join(notes)] if notes else [])
 
 
