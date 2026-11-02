@@ -456,15 +456,25 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn("#1](", body.split("### Open at merge", 1)[1])
 
     def test_a_pull_request_reviewed_before_the_window_and_merged_in_it_is_open_at_merge(self) -> None:
-        old = {**outcomes_comment(5, [outcome("Failure paths", "Swallows the error")]),
-               "created_at": "2026-05-01T00:00:00Z", "updated_at": "2026-05-01T00:00:00Z"}
-        data = answers([pull(5, merged="2026-09-30T00:00:00Z")], [])
-        data[history(5)] = [old]
+        def old(number: int, entries: list[dict[str, Any]]) -> dict[str, Any]:
+            return {**outcomes_comment(number, entries), "created_at": "2026-05-01T00:00:00Z", "updated_at": "2026-05-01T00:00:00Z"}
+
+        def old_dismissal(number: int, title: str) -> dict[str, Any]:
+            return {**dismissal(number, "Layout", title, "not a finding on this page"), "created_at": "2026-05-02T00:00:00Z",
+                    "updated_at": "2026-05-02T00:00:00Z"}
+
+        data = answers([pull(5, merged="2026-09-30T00:00:00Z"), pull(6, merged="2026-09-30T00:00:00Z")], [])
+        for number in (5, 6):
+            entries = [outcome("Failure paths", f"Swallows the error {number}")] + [outcome("Layout", f"d{number}{i}") for i in range(2)]
+            data[history(number)] = [old(number, entries), *(old_dismissal(number, f"d{number}{i}") for i in range(2))]
         result = self.miner.run(data)
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.miner.body()
-        self.assertIn(f"| **Failure paths** | 1 | [#5](https://github.com/{REPO}/pull/5) |", body)
+        self.assertIn(f"| **Failure paths** | 2 | [#5](https://github.com/{REPO}/pull/5), [#6](https://github.com/{REPO}/pull/6) |", body)
         self.assertIn("Nothing came back on two or more pull requests in the window.", body)
+        self.assertIn("No kind was mostly dismissed in the window.", body)
+        self.assertNotIn("row:repeated:", body)
+        self.assertNotIn("row:dismissed:", body)
 
     def test_an_owner_comment_edited_after_the_merge_leaves_the_pull_request_out_of_open_at_merge(self) -> None:
         merged = "2026-09-01T12:00:00Z"

@@ -742,7 +742,7 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     comments = comments_since(repo, since)
     records = newest_records(comments, set(numbers))
     per_pull, unread = histories(repo, {n for n, _ in records} | set(merged))
-    outcomes = outcomes_from(repo, per_pull)
+    outcomes = {key: entries for key, entries in outcomes_from(repo, per_pull).items() if key in records}
     snapshot, edited = at_merge(per_pull, merged)
     merge_time = outcomes_from(repo, snapshot)
     rows = rows_of(groups_of(records, items, outcomes))
