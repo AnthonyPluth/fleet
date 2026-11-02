@@ -58,8 +58,9 @@ def status(context: str, state: str = "success") -> Json:
     return {"context": context, "state": state}
 
 
-def thread(body: str | None, resolved: bool = False) -> Json:
-    return {"isResolved": resolved, "comments": {"nodes": [] if body is None else [{"body": body}]}}
+def thread(body: str | None, resolved: bool = False, author: str | None = "chatgpt-codex-connector") -> Json:
+    node: Json = {"body": body, "author": None if author is None else {"login": author}}
+    return {"isResolved": resolved, "comments": {"nodes": [] if body is None else [node]}}
 
 
 def commit(author: str = DEPENDABOT, verified: bool = True) -> Json:
@@ -201,6 +202,19 @@ class ThreadsTest(unittest.TestCase):
         result = gate.run(BLOCKING_THREAD_BADGES="")
         self.assertEqual(result.posted, [("success", "Every check passed")])
         self.assertEqual(result.reads_of("graphql"), 0)
+
+    def test_only_the_configured_authors_count(self) -> None:
+        gate = Gate(self)
+        gate.threads([thread(P1, author="octocat"), thread(P1, author=None), thread(P2, author="chatgpt-codex-connector[bot]")])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+        self.assertEqual(gate.run(BLOCKING_THREAD_AUTHORS="octocat|hubot").posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+        self.assertEqual(gate.run(BLOCKING_THREAD_AUTHORS="").posted, [("failure", "Failed: 3 open P1|P2 review comments")])
+
+    def test_an_author_setting_that_is_not_a_plain_alternation_is_refused(self) -> None:
+        result = Gate(self).run(BLOCKING_THREAD_AUTHORS='x") | . | ("')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("BLOCKING_THREAD_AUTHORS must be", result.stdout)
+        self.assertEqual(result.posted, [])
 
     def test_a_badge_setting_that_is_not_a_plain_alternation_is_refused(self) -> None:
         result = Gate(self).run(BLOCKING_THREAD_BADGES="P1)|.*(")
@@ -564,7 +578,7 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(inputs, dict)
         self.assertEqual(sorted(inputs), sorted([
             "sha", "pr", "required-workflows", "ignored-workflows", "required-statuses", "ignored-apps", "poll-seconds",
-            "poll-attempts", "blocking-thread-badges", "automerge-dependabot", "after-merge-workflows", "dry-run", "fleet-ref",
+            "poll-attempts", "blocking-thread-badges", "blocking-thread-authors", "automerge-dependabot", "after-merge-workflows", "dry-run", "fleet-ref",
         ]))
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)

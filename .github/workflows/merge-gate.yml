@@ -53,6 +53,10 @@ on:
         description: Badges on a review thread's first comment that fail the gate while the thread is open, as a regex alternation (Codex marks its findings "P1 Badge", "P2 Badge"). Empty turns the check off. The caller's merge-gate-threads workflow runs the gate again when a thread is resolved.
         type: string
         default: P1|P2
+      blocking-thread-authors:
+        description: Logins whose review comment counts toward blocking-thread-badges, as a regex alternation without the "[bot]" suffix (Codex's is chatgpt-codex-connector), so a stranger pasting a badge can't hold the gate. Empty lets any author's badge count.
+        type: string
+        default: chatgpt-codex-connector
       automerge-dependabot:
         description: Merge Dependabot's pull requests once the gate passes (never one that bumps a fleet reference).
         type: boolean
@@ -113,6 +117,7 @@ jobs:
           POLL_SECONDS: ${{ inputs.poll-seconds }}
           POLL_ATTEMPTS: ${{ inputs.poll-attempts }}
           BLOCKING_THREAD_BADGES: ${{ inputs.blocking-thread-badges }}
+          BLOCKING_THREAD_AUTHORS: ${{ inputs.blocking-thread-authors }}
           AUTOMERGE_DEPENDABOT: ${{ inputs.automerge-dependabot }}
           AFTER_MERGE_WORKFLOWS: ${{ inputs.after-merge-workflows }}
           DRY_RUN: ${{ inputs.dry-run }}

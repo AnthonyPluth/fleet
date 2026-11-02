@@ -33,6 +33,8 @@
 #   POLL_SECONDS, POLL_ATTEMPTS   how long to wait for CodeQL             (default: 30, 20)
 #   BLOCKING_THREAD_BADGES badges on a review thread's first comment that block the merge while the thread is open,
 #                        as a regex alternation; empty turns the check off (default: P1|P2)
+#   BLOCKING_THREAD_AUTHORS logins whose first comment counts, as a regex alternation without a "[bot]" suffix; empty
+#                        lets any author's badge count (default: chatgpt-codex-connector)
 #   AUTOMERGE_DEPENDABOT merge Dependabot's pull requests once the gate passes (default: true)
 #   AFTER_MERGE_WORKFLOWS workflow files to start on main after such a merge, space-separated
 #                        (default: docker.yml security.yml)
@@ -51,8 +53,12 @@ POLL_SECONDS=${POLL_SECONDS:-30}
 POLL_ATTEMPTS=${POLL_ATTEMPTS:-20}
 BLOCKING_THREAD_BADGES=${BLOCKING_THREAD_BADGES-P1|P2}
 [[ "$BLOCKING_THREAD_BADGES" =~ ^[A-Za-z0-9|]*$ ]] || { echo "::error::BLOCKING_THREAD_BADGES must be letters, digits and | only."; exit 1; }
+BLOCKING_THREAD_AUTHORS=${BLOCKING_THREAD_AUTHORS-chatgpt-codex-connector}
+[[ "$BLOCKING_THREAD_AUTHORS" =~ ^[A-Za-z0-9|-]*$ ]] || { echo "::error::BLOCKING_THREAD_AUTHORS must be letters, digits, - and | only."; exit 1; }
 OPEN_BADGED_THREADS='.data.repository.pullRequest.reviewThreads.nodes[]
-  | select(.isResolved | not) | select((.comments.nodes[0].body // "") | test("!\\[('"$BLOCKING_THREAD_BADGES"') Badge\\]")) | "open"'
+  | select(.isResolved | not)
+  | select(("'"$BLOCKING_THREAD_AUTHORS"'" == "") or ((.comments.nodes[0].author.login // "" | sub("\\[bot\\]$"; "")) | test("^('"$BLOCKING_THREAD_AUTHORS"')$")))
+  | select((.comments.nodes[0].body // "") | test("!\\[('"$BLOCKING_THREAD_BADGES"') Badge\\]")) | "open"'
 AUTOMERGE_DEPENDABOT=${AUTOMERGE_DEPENDABOT:-true}
 AFTER_MERGE_WORKFLOWS=${AFTER_MERGE_WORKFLOWS-docker.yml security.yml}
 FLEET_REFERENCE='AnthonyPluth/fleet/'
@@ -150,7 +156,7 @@ evaluate() {
           repository(owner: $owner, name: $name) { pullRequest(number: $number) {
             reviewThreads(first: 100, after: $endCursor) {
               pageInfo { hasNextPage endCursor }
-              nodes { isResolved comments(first: 1) { nodes { body } } } } } } }' \
+              nodes { isResolved comments(first: 1) { nodes { body author { login } } } } } } } }' \
         --jq "$OPEN_BADGED_THREADS" | wc -l); then
       [ "$blocking" -eq 0 ] || failing+=("$blocking open $BLOCKING_THREAD_BADGES review comment$([ "$blocking" -eq 1 ] || echo s)")
     else
