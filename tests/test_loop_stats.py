@@ -568,6 +568,18 @@ class HiddenLineTest(unittest.TestCase):
                 self.assertIsNone(summary, broken)
                 self.assertIn(why, reason)
 
+    def test_a_stats_file_for_another_repository_isn_t_used(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "s.json"
+            whole = {"schema": 1, "repo": "owner/other", "generated": NOW, "since": SINCE, "days": 30, "default_branch": None, "missing": [],
+                     "reviews": None, "verification": None, "report": None, "harness": None, "fleet": None}
+            path.write_text(json.dumps(whole), encoding="utf-8")
+            summary, reason = loop_health.read(path, REPO)
+            self.assertIsNone(summary)
+            self.assertIn("owner/other", reason)
+            self.assertIn(REPO, reason)
+            self.assertIsNotNone(loop_health.read(path, "owner/other")[0])
+
     def test_a_stats_file_that_isn_t_schema_1_isn_t_used(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "s.json"

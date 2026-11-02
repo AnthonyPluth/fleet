@@ -847,6 +847,15 @@ class LoopHealthTest(unittest.TestCase):
         self.result = result
         return self.miner.body()
 
+    def test_stats_for_another_repository_aren_t_used(self) -> None:
+        body = self.run_with({**loop_stats(), "repo": "owner/other"})
+        self.assertIn("owner/other", self.result.stderr)
+        self.assertNotIn(loop_health.PREFIX, body)
+
+    def test_now_with_an_offset_is_converted_to_utc(self) -> None:
+        now = rm.parse_now("2026-10-01T00:00:00-04:00")
+        self.assertEqual(rm.window(now, 0), "2026-10-01T04:00:00Z")
+
     def test_the_section_and_the_hidden_line_lead_the_report(self) -> None:
         body = self.run_with(loop_stats())
         lines = body.splitlines()

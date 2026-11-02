@@ -173,7 +173,7 @@ def previous(body: str, marker: str) -> Json | None:
     return decode(lines[1])
 
 
-def read(path: Path) -> tuple[Json | None, str]:
+def read(path: Path, repo: str | None = None) -> tuple[Json | None, str]:
     try:
         if path.stat().st_size > MAX_STATS:
             return None, f"the file is over {MAX_STATS:,} bytes"
@@ -187,6 +187,8 @@ def read(path: Path) -> tuple[Json | None, str]:
     problem = shape_problem(stats, SHAPE, "the file", top=True)
     if problem:
         return None, f"it isn't whole: {problem}"
+    if repo is not None and stats.get("repo") != repo:
+        return None, f"it is for {str(stats.get('repo'))[:80]!r}, not {repo}"
     summary = headline(stats)
     if summary is None:
         return None, "a headline number is out of range"

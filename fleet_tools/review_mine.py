@@ -769,13 +769,13 @@ def parse_now(text: str | None) -> datetime:
     if not text:
         return datetime.now(UTC)
     parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def loop_section(stats: Path | None, previous: str) -> tuple[list[str] | None, str]:
+def loop_section(stats: Path | None, previous: str, repo: str) -> tuple[list[str] | None, str]:
     if stats is None:
         return None, ""
-    current, why = loop_health.read(stats)
+    current, why = loop_health.read(stats, repo)
     earlier = loop_health.previous(previous, MARKER)
     if current is None:
         print(f"review-mine: the loop stats in {stats} aren't used: {why}", file=sys.stderr)
@@ -814,7 +814,7 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     markers = mined(repo)
     existing = report_issue(repo)
     previous = str(existing.get("body") or "") if existing else ""
-    health, hidden = loop_section(stats, previous)
+    health, hidden = loop_section(stats, previous, repo)
     body = render(rows, repo, days, since, (len(numbers), len({n for n, _ in records})), previous, os.environ.get("RUN_URL", ""), signals,
                   markers, health, hidden)
     rows_count = len(rows) + signals.count()
