@@ -133,6 +133,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | --- | --- | --- |
 | `generated` | none | Paths left out of `diff.patch` (still listed for the reviewer), one per line. An entry wins over the rule that fixtures, demo and sample data are always read (Runway lists `tests/fixtures/forecast_golden.json`) |
 | `first-review` | `true` | `false` runs no review and posts no status or comment (a consumer that keeps the first review off) |
+| `verification` | `false` | `true` gives the reviews the description's [verification record](#verification-records) as `verification.md`, to judge against the change: every changed behaviour a dimension, every `verified` row's evidence real, every gap explained ([agent-review.md](agent-review.md#the-verification-record)). An app that sets `[tool.fleet.verification]` passes it |
 | `budget-usd` | `3` | The most a review may spend, in US dollars as Claude Code estimates it |
 | `max-turns` | `60` | The most round trips to the model a review may take |
 | `second-review-labels` | `safety-critical,security` | Labels that make a pull request risky, comma-separated |
@@ -142,7 +143,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | `second-review-max-turns` | `120` | The most round trips to the model the second review may take |
 | `merge-gate-workflow` | `merge-gate.yml` | The caller's merge gate workflow file to start once the status is set; empty starts none |
 | `dry-run` | `false` | Self-test only: the report jobs print the comment and the status instead of posting them |
-| `fake-review` | none | Self-test only: the answer fleet's stub reviewer gives in place of Claude Code (`pass`, `advisory`, `blocking`, `malformed`) |
+| `fake-review` | none | Self-test only: the answer fleet's stub reviewer gives in place of Claude Code (`pass`, `advisory`, `blocking`, `verification`, `malformed`) |
 | `fake-event` | none | Self-test only, with `fake-review`: the event the second review decides on (`action=… sender=… label=… labels=a,b files=x,y`) |
 | `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the prompt, scripts and tools from (fleet's self-test only) |
 

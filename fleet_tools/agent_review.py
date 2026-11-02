@@ -9,6 +9,7 @@ import sys
 import unicodedata
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import Any, NamedTuple
 
 HELP = "the independent reviews' decisions (detect, wanted, previous, plan, risky, report), for agent-review.yml"
@@ -28,7 +29,7 @@ class Review(NamedTuple):
 
     @property
     def state(self) -> re.Pattern[str]:
-        return re.compile(rf"^<!-- {self.key}-state sha=([0-9a-f]{{40}}) verdict=(pass|blocking) -->$")
+        return re.compile(rf"^<!-- {self.key}-state sha=([0-9a-f]{{40}}) verdict=(pass|blocking)(?: record=([0-9a-f]{{16}}))? -->$")
 
     @property
     def findings(self) -> re.Pattern[str]:
@@ -70,6 +71,12 @@ NOT_RISKY = "Not a risky pull request"
 DEFAULT_TRIGGER_LABELS = "safety-critical,security"
 ALWAYS_RISKY = (".github/**", ".claude/**")
 EVENT_KEYS = ("action", "sender", "label", "labels", "files")
+VERIFICATION_FILE = "verification.md"
+VERIFICATION_PROMPT = "verification-review.md"
+VERIFICATION_CHANGED = "verification-changed.md"
+RECORD_HASH = re.compile(r"^[0-9a-f]{16}$")
+UNPARSED = ("NOTE: this record doesn't parse ({error}). Its format is `fleet checks`' job; judge what it covers from the text as "
+            "it stands.\n\n")
 
 LOCKFILES = ("poetry.lock", "uv.lock", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml")
 IMAGES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".heic", ".bmp", ".tif", ".tiff")
@@ -82,8 +89,10 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
                                                   ($FAKE_EVENT, self-test only): wanted=true|false, reason=...,
                                                   reviewed=true|false and pending=true|false for $GITHUB_OUTPUT
   agent_review.py previous COMMENTS.jsonl OUT.md  the last review's commit and verdict, its text to OUT.md
-  agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff);
-                                                  mode, description, incremental, touched (base64, one file per line)
+  agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff; with
+                                                  $VERIFICATION=true, $BODY's verification record to verification.md,
+                                                  reread when its hash differs from $PREV_RECORD); mode, description,
+                                                  incremental, touched (base64, one file per line), record (the hash)
   agent_review.py risky FILES.txt [REASON.txt]    $LABELS (JSON), $TRIGGER_LABELS, $RISKY_PATHS and the changed files:
                                                   risky=true|false and reason=... for $GITHUB_OUTPUT (and REASON.txt)
   agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment
@@ -236,6 +245,18 @@ def previous(bodies: list[str], review: Review = FIRST) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def previous_record(bodies: list[str], review: Review = FIRST) -> str:
+    for body in bodies:
+        if not body.startswith(review.marker):
+            continue
+        lines = body.splitlines()
+        for index in range(1, min(len(lines), HIDDEN_LINES)):
+            if state := review.state.match(lines[index]):
+                return state.group(3) or ""
+        return ""
+    return ""
+
+
 def without_outcomes(lines: list[str]) -> list[str]:
     try:
         start = lines.index(OUTCOMES_HEADING)
@@ -344,6 +365,47 @@ def only_main_merged(repo: str, main: str, prev: str, head: str) -> bool:
     return own_change(repo, main, prev) == own_change(repo, main, head)
 
 
+def record_parser() -> ModuleType:
+    try:
+        from fleet_tools import verification
+    except ModuleNotFoundError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from fleet_tools import verification
+    return verification
+
+
+def verification_record(body: str) -> tuple[str, str] | None:
+    verification = record_parser()
+    text = body.replace("\r\n", "\n")
+    lines = text.split("\n")
+    begins = [index for index, line in enumerate(lines) if line.strip() == verification.BEGIN]
+    if not begins:
+        return None
+    note = ""
+    try:
+        verification.parse(text)
+    except verification.ParseError as error:
+        note = UNPARSED.format(error=error)
+    try:
+        begin, end = verification.block(lines)
+        kept = lines[begin - 1:end]
+    except verification.ParseError:
+        kept = lines[begins[0]:]
+    record = "\n".join(kept).rstrip("\n")
+    if len(record) > verification.MAX_BODY:
+        record = record[:verification.MAX_BODY] + "\n(cut: the record is over the size limit)"
+    return record + "\n", note
+
+
+def record_hash(record: str) -> str:
+    return hashlib.sha256(record.encode()).hexdigest()[:16]
+
+
+def append_prompt(out: Path, trusted: str, name: str) -> None:
+    with open(out / "prompt.md", "a", encoding="utf-8") as f:
+        f.write("\n" + Path(trusted, name).read_text(encoding="utf-8"))
+
+
 def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     repo, out, main, head = env["REPO_DIR"], Path(env["OUT_DIR"]), env["MAIN"], env["HEAD"]
     generated = generated_from(env.get("GENERATED", ""))
@@ -352,10 +414,16 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     (out / "omitted.txt").write_text("".join(p + "\n" for p in omitted))
     (out / "files.txt").write_text(git(repo, "diff", "--name-status", f"{main}...{head}"))
     (out / "commits.txt").write_text(git(repo, "log", "--format=commit %H%n%B", f"{main}..{head}"))
+    record = ""
+    found = verification_record(env.get("BODY", "")) if env.get("VERIFICATION") == "true" else None
+    if found:
+        text, note = found
+        (out / VERIFICATION_FILE).write_text(note + text, encoding="utf-8")
+        record = record_hash(text)
+        append_prompt(out, env["TRUSTED"], VERIFICATION_PROMPT)
     if review.extra_prompt:
-        with open(out / "prompt.md", "a", encoding="utf-8") as f:
-            f.write("\n" + Path(env["TRUSTED"], review.extra_prompt).read_text())
-    result = {"mode": "review", "description": "", "incremental": "false", "touched": ""}
+        append_prompt(out, env["TRUSTED"], review.extra_prompt)
+    result = {"mode": "review", "description": "", "incremental": "false", "touched": "", "record": record}
     prev = env.get("PREV_SHA", "")
     try:
         if env.get("PREV_VERDICT") == "pass" and env.get("PREV_STATE") == "success" \
@@ -373,8 +441,9 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
             touched = git(repo, "diff", "--name-only", prev, head, "--", *[f":(literal){p}" for p in own]) if own else ""
             (out / "since-last-review.patch").write_text(since)
             (out / "previous-review.md").write_text(body)
-            with open(out / "prompt.md", "a", encoding="utf-8") as f:
-                f.write("\n" + Path(env["TRUSTED"], "incremental.md").read_text())
+            append_prompt(out, env["TRUSTED"], "incremental.md")
+            if record and record != env.get("PREV_RECORD", ""):
+                append_prompt(out, env["TRUSTED"], VERIFICATION_CHANGED)
             result["incremental"] = "true"
             result["touched"] = base64.b64encode(touched.encode()).decode()
     except Exception as e:
@@ -424,12 +493,14 @@ def defuse(text: object, limit: int = 4000) -> str:
     return s if len(s) <= limit else s[:limit] + " …"
 
 
-def render(findings: list[Json], summary: str, run_url: str, sha: str = "", review: Review = FIRST, reason: str = "") -> str:
+def render(findings: list[Json], summary: str, run_url: str, sha: str = "", review: Review = FIRST, reason: str = "",
+           record: str = "") -> str:
     blocking = [f for f in findings if f["severity"] == "blocking"]
     advisory = [f for f in findings if f["severity"] == "advisory"]
     lines = [review.marker]
     if SHA.match(sha):
-        lines.append(f"<!-- {review.key}-state sha={sha} verdict={'blocking' if blocking else 'pass'} -->")
+        state = f"<!-- {review.key}-state sha={sha} verdict={'blocking' if blocking else 'pass'}"
+        lines.append(state + (f" record={record}" if RECORD_HASH.match(record) else "") + " -->")
     lines.append(findings_line(findings, review))
     lines += [f"## {review.title}", ""]
     if blocking:
@@ -495,7 +566,7 @@ def report(path: str, review: Review = FIRST) -> dict[str, str]:
     if answer is None or findings is None:
         return {**error, "description": "The reviewer's answer wasn't in the expected form; see the run"}
     comment = render(findings, str(answer.get("summary") or ""), run_url, os.environ.get("REVIEWED_SHA", ""), review,
-                     os.environ.get("RISKY_REASON", "") if review is not FIRST else "")
+                     os.environ.get("RISKY_REASON", "") if review is not FIRST else "", os.environ.get("RECORD_HASH", ""))
     raw = json.dumps(output)
     if any(key and key in raw for key in (os.environ.get(name, "") for name in SECRETS)):
         return {**error, "description": LIMITS[WITHHELD]}
@@ -543,7 +614,8 @@ def main(argv: list[str]) -> int:
         sha, verdict, text = previous(bodies, review)
         if sha:
             Path(argv[2]).write_text(text, encoding="utf-8")
-            print(sha, verdict)
+            record = previous_record(bodies, review)
+            print(sha, verdict, *([record] if record else []))
         return 0
     if argv == ["plan"]:
         values = plan(dict(os.environ), review)
