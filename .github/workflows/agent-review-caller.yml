@@ -31,6 +31,7 @@ jobs:
         .github/workflows/checks.yml
         .github/workflows/deep-scan-due.yml
         .github/workflows/merge-gate.yml
+        .github/workflows/merge-gate-threads.yml
         .github/workflows/review-mining.yml
         .github/workflows/screenshot-diff.yml
         .github/workflows/security.yml

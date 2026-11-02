@@ -58,6 +58,10 @@ def status(context: str, state: str = "success") -> Json:
     return {"context": context, "state": state}
 
 
+def thread(body: str | None, resolved: bool = False) -> Json:
+    return {"isResolved": resolved, "comments": {"nodes": [] if body is None else [{"body": body}]}}
+
+
 def commit(author: str = DEPENDABOT, verified: bool = True) -> Json:
     return {"sha": "c" * 40, "author": {"login": author}, "commit": {"verification": {"verified": verified}}}
 
@@ -104,6 +108,7 @@ class Gate:
         self.runs([run("Security scans"), codeql_run()])
         self.checks([check("github-code-scanning", "CodeQL"), check("codecov", "codecov/patch", conclusion="failure")])
         self.statuses([status("Agent review"), status("Second review")])
+        self.threads([])
 
     def record(self, name: str, answer: object) -> None:
         (self.answers / f"{name}.json").write_text(json.dumps(answer), encoding="utf-8")
@@ -123,6 +128,9 @@ class Gate:
 
     def statuses(self, statuses: list[Json]) -> None:
         self.record("commits__SHA__statuses", statuses)
+
+    def threads(self, threads: list[Json]) -> None:
+        self.record("graphql", {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}})
 
     def commits(self, commits: list[Json]) -> None:
         self.record("pulls__N__commits", commits)
@@ -162,6 +170,58 @@ class Gate:
             check=False,
         )
         return Result(completed, self.log)
+
+
+P1 = "**<sub><sub>![P1 Badge](https://example.test/P1)</sub></sub> Add a check**"
+P2 = "![P2 Badge](https://example.test/P2) Rename it"
+P3 = "![P3 Badge](https://example.test/P3) A nit"
+
+
+class ThreadsTest(unittest.TestCase):
+    def test_an_open_p1_or_p2_thread_fails_the_gate(self) -> None:
+        gate = Gate(self)
+        gate.threads([thread(P1), thread(P2)])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: 2 open P1|P2 review comments")])
+
+    def test_one_open_thread_is_singular(self) -> None:
+        gate = Gate(self)
+        gate.threads([thread(P2)])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+
+    def test_resolved_lower_priority_plain_and_empty_threads_do_not_count(self) -> None:
+        gate = Gate(self)
+        gate.threads([thread(P1, resolved=True), thread(P3), thread("a person mentioning P1"), thread(None)])
+        self.assertEqual(gate.run().posted, [("success", "Every check passed")])
+
+    def test_the_badges_can_be_changed_and_empty_turns_the_check_off(self) -> None:
+        gate = Gate(self)
+        gate.threads([thread(P3)])
+        self.assertEqual(gate.run(BLOCKING_THREAD_BADGES="P1|P2|P3").posted, [("failure", "Failed: 1 open P1|P2|P3 review comment")])
+        gate.threads([thread(P1)])
+        result = gate.run(BLOCKING_THREAD_BADGES="")
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertEqual(result.reads_of("graphql"), 0)
+
+    def test_a_badge_setting_that_is_not_a_plain_alternation_is_refused(self) -> None:
+        result = Gate(self).run(BLOCKING_THREAD_BADGES="P1)|.*(")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("BLOCKING_THREAD_BADGES must be", result.stdout)
+        self.assertEqual(result.posted, [])
+
+    def test_a_query_that_fails_leaves_the_gate_pending(self) -> None:
+        gate = Gate(self)
+        (gate.answers / "graphql.json").unlink()
+        result = gate.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("pending", "Waiting for: review threads (couldn't be read)")])
+
+    def test_a_dependabot_pull_request_is_checked_too(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        gate.threads([thread(P1)])
+        result = gate.run()
+        self.assertEqual(result.posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+        self.assertFalse(result.merged)
 
 
 class DecisionTest(unittest.TestCase):
@@ -504,7 +564,7 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(inputs, dict)
         self.assertEqual(sorted(inputs), sorted([
             "sha", "pr", "required-workflows", "ignored-workflows", "required-statuses", "ignored-apps", "poll-seconds",
-            "poll-attempts", "automerge-dependabot", "after-merge-workflows", "dry-run", "fleet-ref",
+            "poll-attempts", "blocking-thread-badges", "automerge-dependabot", "after-merge-workflows", "dry-run", "fleet-ref",
         ]))
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)
@@ -522,9 +582,35 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(env, dict)
         for variable in [
             "REQUIRED_WORKFLOWS", "IGNORED_WORKFLOWS", "REQUIRED_STATUSES", "IGNORED_APPS", "POLL_SECONDS", "POLL_ATTEMPTS",
-            "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
+            "BLOCKING_THREAD_BADGES", "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
         ]:
             self.assertIn(variable, env)
+
+    def test_the_threads_workflow_only_starts_the_callers_gate(self) -> None:
+        workflow = self_check.parse((cli.ROOT / ".github" / "workflows" / "merge-gate-threads.yml").read_text(encoding="utf-8"))
+        assert isinstance(workflow, dict)
+        trigger = workflow["on"]
+        assert isinstance(trigger, dict)
+        call = trigger["workflow_call"]
+        assert isinstance(call, dict)
+        inputs = call["inputs"]
+        assert isinstance(inputs, dict)
+        self.assertEqual(sorted(inputs), ["dry-run", "fleet-ref", "merge-gate-workflow", "pr"])
+        self.assertEqual(workflow["permissions"], "{}")
+        jobs = workflow["jobs"]
+        assert isinstance(jobs, dict)
+        decide = jobs["decide"]
+        assert isinstance(decide, dict)
+        self.assertEqual(decide["permissions"], {"actions": "write"})
+        steps = decide["steps"]
+        assert isinstance(steps, list)
+        self.assertEqual(len(steps), 1)
+        step = steps[0]
+        assert isinstance(step, dict)
+        self.assertNotIn("uses", step)
+        text = (cli.ROOT / ".github" / "workflows" / "merge-gate-threads.yml").read_text(encoding="utf-8")
+        self.assertIn('gh workflow run "$WORKFLOW" --repo "$REPO" --ref main -f pr="$PR"', text)
+        self.assertNotIn("actions/checkout", text)
 
 
 if __name__ == "__main__":

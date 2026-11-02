@@ -1,0 +1,64 @@
+name: Merge gate threads
+
+# The reusable half of the merge gate's review-thread check: resolving or reopening a review thread, or a new review or
+# review comment (a reviewer's P1 can land after every other check went green), starts no workflow the merge gate
+# listens to, so the caller asks for the gate to decide the pull request again. This workflow starts the caller's own
+# merge gate workflow (a workflow_dispatch with a `pr` input, which docs/adopting.md's snippet has) on main; it checks out
+# nothing and runs nothing of the pull request's or of fleet's.
+#
+# The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them:
+# pull_request_review_thread (resolved, unresolved), pull_request_review (submitted) and pull_request_review_comment
+# (created). A pull request from a fork gets a read-only token there, so the caller skips it; the gate of such a pull
+# request looks again on the next push or check, or by hand.
+on:
+  workflow_call:
+    inputs:
+      pr:
+        description: The pull request number (github.event.pull_request.number).
+        type: string
+        required: true
+      merge-gate-workflow:
+        description: The caller's merge gate workflow file, started on main with the pull request number.
+        type: string
+        default: merge-gate.yml
+      dry-run:
+        description: Print the workflow start instead of doing it.
+        type: boolean
+        default: false
+      fleet-ref:
+        description: The fleet ref (the self-test passes its own commit). Nothing of fleet's runs here; kept for the convention every reusable workflow follows.
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  decide:
+    name: Ask the merge gate to decide again
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write   # start the caller's merge gate workflow
+    steps:
+      - name: Start the merge gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+          WORKFLOW: ${{ inputs.merge-gate-workflow }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a pull request number."; exit 1; }
+          if [ "$DRY_RUN" = true ]; then
+            echo "(dry run) gh workflow run $WORKFLOW --repo $REPO --ref main -f pr=$PR"
+          else
+            gh workflow run "$WORKFLOW" --repo "$REPO" --ref main -f pr="$PR"
+          fi

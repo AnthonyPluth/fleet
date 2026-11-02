@@ -14,6 +14,8 @@
 #     pull request with a blocking finding and passes on anyone else's; "Second review" is the second one, on risky
 #     pull requests. Each must be on the head commit itself: when a review copies a passing verdict forward (a push
 #     that only merged main in), it sets the status on the new head, and a head without one waits.
+#   - no review thread whose first comment has a blocking badge (P1 or P2 by default) is still open: resolving the thread
+#     clears it, and the caller's merge-gate-threads workflow runs the gate again when that happens.
 # Anything still running makes it "pending". Workflows and apps that aren't about whether the change is sound are left
 # out (IGNORED_*). When it passes on one of Dependabot's pull requests, it merges it (see the end).
 #
@@ -29,6 +31,8 @@
 #   REQUIRED_STATUSES    commit statuses that must be set, one per line    (default: Agent review, Second review)
 #   IGNORED_APPS         apps whose check runs don't count, as a regex alternation (default: codecov|github-actions)
 #   POLL_SECONDS, POLL_ATTEMPTS   how long to wait for CodeQL             (default: 30, 20)
+#   BLOCKING_THREAD_BADGES badges on a review thread's first comment that block the merge while the thread is open,
+#                        as a regex alternation; empty turns the check off (default: P1|P2)
 #   AUTOMERGE_DEPENDABOT merge Dependabot's pull requests once the gate passes (default: true)
 #   AFTER_MERGE_WORKFLOWS workflow files to start on main after such a merge, space-separated
 #                        (default: docker.yml security.yml)
@@ -45,6 +49,10 @@ OK_CONCLUSIONS='^(success|skipped|neutral)$'
 POLLED='^CodeQL( \(not started\))?$'
 POLL_SECONDS=${POLL_SECONDS:-30}
 POLL_ATTEMPTS=${POLL_ATTEMPTS:-20}
+BLOCKING_THREAD_BADGES=${BLOCKING_THREAD_BADGES-P1|P2}
+[[ "$BLOCKING_THREAD_BADGES" =~ ^[A-Za-z0-9|]*$ ]] || { echo "::error::BLOCKING_THREAD_BADGES must be letters, digits and | only."; exit 1; }
+OPEN_BADGED_THREADS='.data.repository.pullRequest.reviewThreads.nodes[]
+  | select(.isResolved | not) | select((.comments.nodes[0].body // "") | test("!\\[('"$BLOCKING_THREAD_BADGES"') Badge\\]")) | "open"'
 AUTOMERGE_DEPENDABOT=${AUTOMERGE_DEPENDABOT:-true}
 AFTER_MERGE_WORKFLOWS=${AFTER_MERGE_WORKFLOWS-docker.yml security.yml}
 FLEET_REFERENCE='AnthonyPluth/fleet/'
@@ -131,6 +139,24 @@ evaluate() {
       *) failing+=("$context ($result)") ;;
     esac
   done <<< "$newest"
+
+  # 4. Open review threads whose first comment carries a blocking badge (Codex's "![P1 Badge](…)"): a reviewer's blocking
+  # finding stays open until someone resolves its thread. An outdated thread (its line changed) counts until it is
+  # resolved too, since a push doesn't say the finding was dealt with. A query that fails leaves the gate pending, not a
+  # script that dies without posting a status.
+  if [ -n "$BLOCKING_THREAD_BADGES" ]; then
+    if blocking=$(gh api graphql --paginate -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F number="$number" -f query='
+        query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+          repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+            reviewThreads(first: 100, after: $endCursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { isResolved comments(first: 1) { nodes { body } } } } } } }' \
+        --jq "$OPEN_BADGED_THREADS" | wc -l); then
+      [ "$blocking" -eq 0 ] || failing+=("$blocking open $BLOCKING_THREAD_BADGES review comment$([ "$blocking" -eq 1 ] || echo s)")
+    else
+      pending+=("review threads (couldn't be read)")
+    fi
+  fi
 
   if [ ${#failing[@]} -gt 0 ]; then
     state=failure; description="Failed: $(list "${failing[@]}")"

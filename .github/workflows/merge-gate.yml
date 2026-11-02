@@ -49,6 +49,10 @@ on:
         description: How many times to look again for CodeQL before staying pending.
         type: number
         default: 20
+      blocking-thread-badges:
+        description: Badges on a review thread's first comment that fail the gate while the thread is open, as a regex alternation (Codex marks its findings "P1 Badge", "P2 Badge"). Empty turns the check off. The caller's merge-gate-threads workflow runs the gate again when a thread is resolved.
+        type: string
+        default: P1|P2
       automerge-dependabot:
         description: Merge Dependabot's pull requests once the gate passes (never one that bumps a fleet reference).
         type: boolean
@@ -83,7 +87,7 @@ jobs:
     timeout-minutes: 15   # waiting for CodeQL takes up to 10 at the default poll settings (merge-gate.sh)
     permissions:
       contents: write          # merge Dependabot's pull requests
-      pull-requests: write     # merge them, and read their commits and files
+      pull-requests: write     # merge them, read their commits and files, and read the review threads
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
@@ -108,6 +112,7 @@ jobs:
           IGNORED_APPS: ${{ inputs.ignored-apps }}
           POLL_SECONDS: ${{ inputs.poll-seconds }}
           POLL_ATTEMPTS: ${{ inputs.poll-attempts }}
+          BLOCKING_THREAD_BADGES: ${{ inputs.blocking-thread-badges }}
           AUTOMERGE_DEPENDABOT: ${{ inputs.automerge-dependabot }}
           AFTER_MERGE_WORKFLOWS: ${{ inputs.after-merge-workflows }}
           DRY_RUN: ${{ inputs.dry-run }}
