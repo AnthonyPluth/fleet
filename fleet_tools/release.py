@@ -25,7 +25,6 @@ UNRELEASED = "## [Unreleased]"
 PLACEHOLDER = "vX.Y.Z"
 VERSION_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-HEADING = re.compile(r"^## .*$", re.MULTILINE)
 RELEASED = re.compile(r"## \[(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\] - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 SNIPPET_VERSION = re.compile(r"(?P<head>uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*|\"AnthonyPluth/fleet\",[ \t]*\"ref\":[ \t]*\""
@@ -86,10 +85,25 @@ def parse_version(text: str) -> tuple[int, int, int]:
 
 
 def sections(text: str) -> list[Section]:
-    found = list(HEADING.finditer(text))
-    return [Section(match.group(0).rstrip(), match.start(), match.end(),
-                    found[index + 1].start() if index + 1 < len(found) else len(text))
-            for index, match in enumerate(found)]
+    headings: list[tuple[str, int, int]] = []
+    fence = ""
+    fence_line = 0
+    offset = 0
+    for number, line in enumerate(text.splitlines(keepends=True), start=1):
+        content = line.rstrip("\r\n")
+        opener = FENCE.match(content)
+        if fence:
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence) and not content[opener.end():].strip():
+                fence = ""
+        elif opener:
+            fence, fence_line = opener.group(1), number
+        elif content.startswith("## "):
+            headings.append((content.rstrip(), offset, offset + len(content)))
+        offset += len(line)
+    if fence:
+        raise ReleaseError(f"{CHANGELOG.as_posix()}:{fence_line}: a code fence that is never closed")
+    return [Section(heading, start, body_start, headings[index + 1][1] if index + 1 < len(headings) else len(text))
+            for index, (heading, start, body_start) in enumerate(headings)]
 
 
 def released_heading(section: Section) -> re.Match[str] | None:
@@ -98,7 +112,10 @@ def released_heading(section: Section) -> re.Match[str] | None:
 
 def changelog_errors(text: str, version: str) -> list[str]:
     name = CHANGELOG.as_posix()
-    found = sections(text)
+    try:
+        found = sections(text)
+    except ReleaseError as error:
+        return [str(error)]
     if not found or found[0].heading != UNRELEASED:
         return [f"{name}: the first section must be `{UNRELEASED}`"]
     if sum(1 for section in found if section.heading == UNRELEASED) > 1:

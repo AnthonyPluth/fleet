@@ -12,7 +12,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from fleet_tools import agents_md, cli, release, self_check
+from fleet_tools import agents_md, cli, release, self_check, sync_workflow
 
 ROOT = cli.ROOT
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -276,6 +276,26 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(self_check.check(self.root), [])
         self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), f"{NEXT}\n")
 
+    def test_an_unreleased_entry_with_a_fenced_heading_prepares(self) -> None:
+        example = "- An entry with an example:\n\n  ```md\n## Example\n  ```\n"
+        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", f"## [Unreleased]\n\n{example}")
+        self.assertEqual(self_check.check(self.root), [])
+        code, _, err = self.prepare()
+        self.assertEqual(code, 0, err)
+        notes = release.notes((self.root / "CHANGELOG.md").read_text(encoding="utf-8"), NEXT)
+        self.assertTrue(notes.startswith(example), notes[:200])
+        self.assertIn("\n## Example\n", notes)
+        self.assertGreater(len(notes), len(example))
+
+    def test_an_unterminated_fence_fails_self_check_and_prepare(self) -> None:
+        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n- Broken:\n\n```sh\n")
+        errors = self_check.check(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertRegex(errors[0], r"^CHANGELOG\.md:\d+: a code fence that is never closed$")
+        code, _, err = self.prepare()
+        self.assertEqual(code, 1)
+        self.assertIn("never closed", err)
+
     def test_the_release_after_that_moves_every_stamp_again(self) -> None:
         self.assertEqual(self.prepare()[0], 0)
         edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- A fix.\n")
@@ -379,6 +399,24 @@ class NotesTest(unittest.TestCase):
     def test_notes_print_the_section(self) -> None:
         self.assertEqual(release.notes(self.CHANGELOG, "1.1.0"), "### Added\n\n- New.\n")
         self.assertEqual(release.notes(self.CHANGELOG, "1.0.0"), "- First.\n")
+
+    def test_a_fenced_heading_is_part_of_the_section(self) -> None:
+        changelog = ("# C\n\n## [Unreleased]\n\n## [1.1.0] - 2026-12-01\n\n- An example:\n\n```md\n## Example\n```\n\n"
+                     "~~~~sh\n## [9.9.9] - 2026-01-01\n~~~\n~~~~\n\n- After.\n\n## [1.0.0] - 2026-11-02\n\n- First.\n")
+        self.assertEqual(release.notes(changelog, "1.1.0"),
+                         "- An example:\n\n```md\n## Example\n```\n\n~~~~sh\n## [9.9.9] - 2026-01-01\n~~~\n~~~~\n\n- After.\n")
+        self.assertEqual(release.changelog_errors(changelog, "1.1.0"), [])
+        self.assertEqual([section.heading for section in release.sections(changelog)],
+                         ["## [Unreleased]", "## [1.1.0] - 2026-12-01", "## [1.0.0] - 2026-11-02"])
+        between = sync_workflow.changelog_between(changelog, "v1.0.0", "v1.1.0")
+        self.assertTrue(between.startswith("## [1.1.0] - 2026-12-01\n"))
+        self.assertTrue(between.endswith("~~~\n~~~~\n\n- After.\n"))
+
+    def test_an_unterminated_fence_is_an_error(self) -> None:
+        changelog = "# C\n\n## [Unreleased]\n\n- An example:\n\n```md\n## Example\n"
+        self.assertEqual(release.changelog_errors(changelog, "0.1.0"), ["CHANGELOG.md:7: a code fence that is never closed"])
+        with self.assertRaisesRegex(release.ReleaseError, "CHANGELOG.md:7: a code fence that is never closed"):
+            release.notes(changelog, "0.1.0")
 
     def test_notes_for_a_missing_or_empty_section_fail(self) -> None:
         with self.assertRaisesRegex(release.ReleaseError, "no `## \\[2.0.0\\]"):
