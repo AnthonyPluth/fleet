@@ -79,7 +79,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(mapping(outputs["verdict"])["value"], "${{ jobs.review.outputs.verdict }}")
         self.assertEqual(mapping(outputs["record"])["value"], "${{ jobs.review.outputs.record }}")
         self.assertEqual(mapping(mapping(mapping(self.workflow["jobs"])["review"])["outputs"])["record"], "${{ steps.plan.outputs.record }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
 
@@ -523,6 +523,11 @@ class FleetsOwnSecondReviewScopeTest(unittest.TestCase):
         for path in reusable:
             relative = path.relative_to(cli.ROOT).as_posix()
             self.assertTrue(any(ar.matches(relative, pattern) for pattern in listed), relative)
+
+    def test_the_release_workflow_is_covered(self) -> None:
+        listed = always_risky_in_caller()
+        self.assertIn(".github/workflows/release.yml", listed)
+        self.assertTrue(any(ar.matches(".github/workflows/release.yml", pattern) for pattern in listed))
 
     def test_the_exempt_workflows_are_fleets_own_ci_only(self) -> None:
         listed = always_risky_in_caller()

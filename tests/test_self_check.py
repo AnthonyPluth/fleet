@@ -5,9 +5,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fleet_tools import cli, self_check
+from fleet_tools import agents_md, cli, self_check
 
 WORKFLOW_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "workflows"
+
+
+def stamps(root: Path, version: str) -> None:
+    released = "" if version.startswith("0.") else f"## [{version}] - 2026-11-02\n\n- A change.\n"
+    (root / "CHANGELOG.md").write_text(f"# Changelog\n\n## [Unreleased]\n\n{released}", encoding="utf-8")
+    (root / "pyproject.toml").write_text(f'[project]\nname = "fleet"\nversion = "{version}"\n', encoding="utf-8")
+    plugin = root / "plugins" / "fleet" / ".claude-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.json").write_text(f'{{"name": "fleet", "version": "{version}"}}\n', encoding="utf-8")
+    (root / "AGENTS.md").write_text(agents_md.sync("# Agent guide\n", agents_md.sections(), f"v{version}")[0], encoding="utf-8")
+    (root / "docs").mkdir()
+    (root / "docs" / "adopting.md").write_text(f"# Adopting fleet\n\n```sh\ntools/fleet sync --to v{version}\n```\n", encoding="utf-8")
 
 
 class Repo:
@@ -18,6 +30,7 @@ class Repo:
         self.workflows = self.root / ".github" / "workflows"
         self.workflows.mkdir(parents=True)
         (self.root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+        stamps(self.root, version)
         self.add("self-test-ok.yml", "self-test.yml")
 
     def add(self, fixture: str, name: str | None = None) -> None:

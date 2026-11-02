@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from fleet_tools import agents_md, config, drift
+from fleet_tools import agents_md, config, drift, release
 
 HELP = ("plan the consumer's content sync from its workflow pins, for sync.yml: nothing when the pins and .fleet/version "
         "agree, a `chore: fleet content vX.Y.Z` pull request when the pins are newer in the same major, a migration issue "
@@ -81,12 +81,19 @@ def plan(root: Path) -> Plan:
 def changelog_between(text: str, after: str, upto: str) -> str:
     low, high = agents_md.version_key(after), agents_md.version_key(upto)
     sections = []
-    for found in RELEASE_HEADING.finditer(text):
+    try:
+        spans = [(section.start, section.end) for section in release.sections(text)]
+    except release.ReleaseError:
+        starts = [found.start() for found in ANY_HEADING.finditer(text)]
+        spans = [(start, starts[index + 1] if index + 1 < len(starts) else len(text)) for index, start in enumerate(starts)]
+    for start, end in spans:
+        found = RELEASE_HEADING.match(text, start)
+        if found is None:
+            continue
         version = agents_md.version_key("v" + found.group("version"))
         if not low < version <= high:
             continue
-        following = ANY_HEADING.search(text, found.end())
-        sections.append(text[found.start():following.start() if following else len(text)].rstrip() + "\n")
+        sections.append(text[start:end].rstrip() + "\n")
     if not sections:
         return f"The CHANGELOG at {upto} has no entry between {after} and {upto}.\n"
     return "\n".join(sections)

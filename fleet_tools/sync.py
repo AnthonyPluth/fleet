@@ -9,11 +9,11 @@ HELP = ("sync fleet's content into the consumer at this fleet's version: AGENTS.
         "fleet-*, .claude/agents/fleet-reviewer.md, .claude/hooks/fleet-session-start.sh, tools/fleet) and .fleet/version")
 
 
-def sync(root: Path, version: str) -> list[str]:
+def sync(root: Path, version: str, fleet: Path | None = None) -> list[str]:
     path = root / agents_md.AGENTS
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    synced, changes = agents_md.sync(text, agents_md.sections(), version)
-    vendored = vendor.sync(root, version)
+    synced, changes = agents_md.sync(text, agents_md.sections(fleet), version)
+    vendored = vendor.sync(root, version, None if fleet is None else vendor.render(vendor.working_tree(fleet), version))
     if synced != text:
         path.write_text(synced, encoding="utf-8")
     report = [f"{agents_md.AGENTS}: {change}" for change in changes] + vendored

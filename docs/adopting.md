@@ -1,6 +1,43 @@
 # Adopting fleet
 
-How an app calls fleet's reusable workflows, configures `[tool.fleet]` in its `pyproject.toml` and syncs fleet's content. Filled in as the pieces land; complete with the v1.0.0 release (`FLEET-RELEASE`).
+How an app calls fleet's reusable workflows, configures `[tool.fleet]` in its `pyproject.toml` and syncs fleet's content. The steps below take an app from nothing to every piece; the sections after them hold each piece's caller and inputs.
+
+The snippets name the release as `vX.Y.Z` until fleet's first release, and each release stamps them with its own version (`fleet release prepare`, [release.md](release.md)); `fleet self-check` fails when a snippet's version and `VERSION` disagree. `<commit>` is the full SHA the tag points at (`git ls-remote https://github.com/AnthonyPluth/fleet vX.Y.Z`); Dependabot moves it from then on. What a version number promises is in [release.md](release.md#what-a-version-number-promises).
+
+## Adopting, step by step
+
+1. **Pick a release** and pin every fleet workflow at its commit, with the tag in the comment (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<commit>   # vX.Y.Z`). All the pins move together: `sync.yml` fails when they disagree.
+2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
+3. **Set `[tool.fleet]`** in `pyproject.toml` ([`[tool.fleet]`](#toolfleet)), key by key: a check runs only where its key is set. Add `[tool.fleet.verification]` (with `guides` once the app has [verification guides](#verification-guides)) when the pull requests carry a [verification record](#verification-records).
+4. **Sync fleet's content** once by hand: `.fleet/version` names the release, the shim `tools/fleet` runs fleet at that version, and the first `tools/fleet sync` writes the `AGENTS.md` blocks and the vendored `.claude/` files. Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
+
+   ```sh
+   mkdir -p .fleet tools
+   echo vX.Y.Z > .fleet/version
+   curl -fsSL -o tools/fleet https://raw.githubusercontent.com/AnthonyPluth/fleet/vX.Y.Z/shim/fleet
+   chmod +x tools/fleet
+   tools/fleet sync --to vX.Y.Z
+   tools/fleet drift
+   git add .fleet/version tools/fleet AGENTS.md .claude/
+   ```
+
+5. **Point `.claude/settings.json`** at the vendored hook and declare fleet's marketplace at the same tag ([Claude Code plugin](#claude-code-plugin)), and add `.claude/hooks/fleet.conf`. Add `.github/agent-review/context.md` (and `invariants.md` with `second-review-paths`) for the reviews.
+6. **Create the labels** the workflows use: `safety-critical` and `security` (they make a pull request risky for the second review; `security` also marks the deep-scan issue), `manual` (the deep-scan issue) and `review-mining` (the "Repeated review findings" issue). An issue opened with a label that doesn't exist fails.
+7. **Add the secrets and variables**: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (the reviews), the variable `FLEET_BOT_APP_ID` and the secret `FLEET_BOT_PRIVATE_KEY` (the content sync's App), and optionally the variables `RUNS_ON`, `AGENT_REVIEW_BUDGET_USD` and `AGENT_REVIEW_MAX_TURNS`.
+8. **Protect `main` with a ruleset** (Settings, Rules, Rulesets, a branch ruleset targeting the default branch): require a pull request before merging, block force pushes and deletions, and require one status check, **Merge gate**, and nothing else. The gate already waits for every workflow, check run and status the pull request started, and for the required ones; requiring them again in the ruleset would keep a pull request whose path filters skip a workflow from ever merging. Don't allow bypass for bots: Dependabot's merges go through the gate.
+9. **Let Dependabot bump the pins**, in one group so every fleet workflow moves at once, a few days after a release:
+
+   ```yaml
+   - package-ecosystem: github-actions
+     directory: /
+     schedule: { interval: weekly, day: monday }
+     cooldown: { default-days: 3 }
+     groups:
+       fleet:
+         patterns: ["AnthonyPluth/fleet/*"]
+   ```
+
+   Dependabot takes one entry per ecosystem and directory: an app that already has a `github-actions` entry for `/` adds the `fleet` group to it, first in its `groups` (a dependency joins the first group whose patterns match), and keeps the shorter cooldown for it or sets it for the whole entry. The merge gate passes a fleet bump but leaves it for the owner to merge; merging it starts `sync.yml`, which opens the content's pull request.
 
 ## Security scans
 
@@ -138,7 +175,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | `max-turns` | `60` | The most round trips to the model a review may take |
 | `second-review-labels` | `safety-critical,security` | Labels that make a pull request risky, comma-separated |
 | `second-review-paths` | none | Changed paths that make a pull request risky, one glob per line (`**` spans directories); `.github/**` and `.claude/**` always count. Setting it requires `.github/agent-review/invariants.md` |
-| `second-review-always` | `.github/**` and `.claude/**` | Changed paths that always make a pull request risky, one glob per line. A caller that wants the second review on fewer paths lists them; fleet's own caller lists every reusable workflow, the scripts and agent-review files, CODEOWNERS, `.claude/**`, `plugins/**` and `shim/**` (a test keeps new reusable workflows in the list) |
+| `second-review-always` | `.github/**` and `.claude/**` | Changed paths that always make a pull request risky, one glob per line. A caller that wants the second review on fewer paths lists them; fleet's own caller lists every reusable workflow, `release.yml`, the scripts and agent-review files, CODEOWNERS, `.claude/**`, `plugins/**` and `shim/**` (a test keeps new reusable workflows in the list) |
 | `second-review-budget-usd` | `10` | The most the second review may spend, in US dollars |
 | `second-review-max-turns` | `120` | The most round trips to the model the second review may take |
 | `merge-gate-workflow` | `merge-gate.yml` | The caller's merge gate workflow file to start once the status is set; empty starts none |
@@ -230,6 +267,10 @@ fix = "make verify-skill"
 [tool.fleet.no-comments]
 paths = ["waypoint", "tests", "tools", "frontend/src"]
 
+[tool.fleet.verification]
+required = false
+guides = "docs/verification"
+
 [tool.fleet.coverage]
 overall = 85
 modules = { "waypoint/domain/" = 90, "waypoint/providers/" = 90, "waypoint/server/api/" = 90 }
@@ -250,7 +291,7 @@ modules = { "waypoint/domain/" = 90, "waypoint/providers/" = 90, "waypoint/serve
 | `feature-maps` | skills | Python files that define `OUT` (the map's path), `generate()` (its text and any problems) and `check(committed, generated)` (the problems). |
 | `extra-checks` | the app's own | `module:NAME`, a list of callables in the app's tree (`tools/app_checks.py`, or a package's `__init__.py`). Each takes the check context (`.root`, `.config`, `.commits`) and returns a list of problem strings, reported like fleet's own. A missing module or name, a failed import or a check that raises is a problem, never a silent pass. |
 | `[tool.fleet.no-comments]` | `fleet no-comments` | `paths`: what to read (default: every tracked file); `skip`: substrings of paths to leave out (default `.semgrep/examples/`, `node_modules/`). |
-| `[tool.fleet.verification]` | verification (`--pr-event`) | `required` (default `false`): a missing or malformed record in the pull request's description is a problem on a ready pull request, else a warning; `exempt-authors` (default `["dependabot[bot]", "fleet-bot[bot]"]`): pull requests by these authors are skipped. The table's presence turns the check on ([Verification records](#verification-records)). |
+| `[tool.fleet.verification]` | verification (`--pr-event`) | `required` (default `false`): a missing or malformed record in the pull request's description is a problem on a ready pull request, else a warning; `exempt-authors` (default `["dependabot[bot]", "fleet-bot[bot]"]`): pull requests by these authors are skipped. The table's presence turns the check on ([Verification records](#verification-records)). `guides` (no default): the directory of [verification guides](#verification-guides), relative to the repository root and below it, which turns on the `verification-guides` check. |
 | `[tool.fleet.coverage]` | `fleet coverage-floor` | `overall`: the floor for the whole report; `modules`: path prefix to floor, for each module with statements (the longest matching prefix wins). |
 
 The workflow conventions check runs wherever `.github/workflows/` or `.github/actions/` exists: bash as each workflow's default shell, every action pinned by its commit SHA with its version in a comment, `gh api ... per_page=` with `--paginate`, no `runner`, `steps`, `job` or `env` expression in a workflow's or job's `env:`, and every `runs-on:` either fleet's `vars.RUNS_ON` line (`fleet_tools/checks/workflows.py`) or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`.

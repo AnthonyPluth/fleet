@@ -349,7 +349,7 @@ class SyncWorkflow(unittest.TestCase):
         self.assertEqual(list(secrets), ["FLEET_BOT_PRIVATE_KEY"])
         self.assertEqual(mapping(secrets["FLEET_BOT_PRIVATE_KEY"])["required"], "false")
         self.assertEqual(sorted(call["outputs"]), ["action", "body", "changed", "title"])
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
         self.assertEqual(self.workflow["permissions"], "{}")
 
     def test_the_job_holds_the_least_permissions_and_runs_hosted(self) -> None:
@@ -562,7 +562,7 @@ class ChecksWorkflow(unittest.TestCase):
         job = mapping(mapping(self.workflow["jobs"])["checks"])
         self.assertEqual(job["permissions"], {"contents": "read"})
         self.assertEqual(job["runs-on"], "${{ fromJSON(inputs.runs-on) }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
         self.assertEqual(self.workflow["permissions"], "{}")
 
     def test_the_consumer_is_checked_out_into_app_with_history_before_fleet_at_the_pinned_ref(self) -> None:

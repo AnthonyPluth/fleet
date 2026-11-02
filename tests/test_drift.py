@@ -192,6 +192,7 @@ class OtherVersions(unittest.TestCase):
         path = root / "AGENTS.md"
         path.write_text(agents_md.sync(path.read_text(encoding="utf-8"), old, "v0.0.5")[0], encoding="utf-8")
         write(root, ".fleet/version", "v0.0.5\n")
+        pin(root, "v0.0.5")
         return root
 
     def test_blocks_at_an_older_tag_are_read_from_fleets_history(self) -> None:
