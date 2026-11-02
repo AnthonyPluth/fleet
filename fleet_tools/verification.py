@@ -21,6 +21,7 @@ MAX_BODY = 65536
 MAX_ROWS = 100
 MAX_CELL = 1000
 SEPARATOR_CELL = re.compile(r":?-+:?")
+CONTAINER = re.compile(r"(?:>|(?:[-*+]|[0-9]{1,9}[.)])[ \t])")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
 
 
@@ -182,6 +183,8 @@ def parse(body: str) -> list[Dimension]:
     for number, line in table:
         if line[:1] in " \t":
             raise ParseError(number, f"{AMBIGUOUS}: a table row that doesn't start at the first column")
+        if CONTAINER.match(line):
+            raise ParseError(number, f"{AMBIGUOUS}: a table row that starts with a blockquote or list marker")
     if not table:
         raise ParseError(begin, f"the verification block has no table; its header is `{HEADER}`")
     number, header = table[0]

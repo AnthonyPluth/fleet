@@ -199,6 +199,15 @@ class Parsing(unittest.TestCase):
         self.check_rejects(record(ROW, "a \\| verified | h | e"), 9, "3 cells, not 4")
         self.assertEqual(len(parse(record(ROW, "a note with an escaped \\| in it is prose"))), 1)
 
+    def test_a_row_with_a_blockquote_or_list_marker_is_an_error(self) -> None:
+        for prefix in ("> ", ">", "- ", "* ", "+ ", "1. ", "12) ", "1.\t"):
+            with self.subTest(prefix=prefix):
+                self.check_rejects(record(GAP, prefix + "Live sync | verified | a test | its name"), 9, "blockquote or list marker")
+                self.check_rejects(record(GAP, prefix + ROW), 9, "blockquote or list marker")
+                self.check_rejects(record(prefix + HEADER, header=HEADER), 8, "blockquote or list marker")
+        self.assertEqual(parse(record("--- | not verified | why | -"))[0].dimension, "---")
+        self.assertEqual(parse(record("1.2 | verified | how | evidence"))[0].dimension, "1.2")
+
     def test_an_escaped_pipe_is_a_literal_pipe_in_a_cell(self) -> None:
         found = parse(record("| a \\| b | verified | `x \\| y` | out \\| put |"))
         self.assertEqual((found[0].dimension, found[0].how, found[0].evidence), ("a | b", "`x | y`", "out | put"))
