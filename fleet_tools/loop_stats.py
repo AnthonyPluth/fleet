@@ -243,7 +243,7 @@ def report_of(run: Run) -> Json:
         if not any(rm.MINED.match(line.strip()) for line in text.splitlines()):
             continue
         opened += 1
-        if str(each.get("created_at") or "") >= run.since:
+        if run.since <= str(each.get("created_at") or "") <= run.until:
             in_window += 1
         closed_at = each.get("closed_at")
         if each.get("state") == "closed" and isinstance(closed_at, str) and run.since <= closed_at <= run.until:

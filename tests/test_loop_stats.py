@@ -421,6 +421,15 @@ class EdgeTest(unittest.TestCase):
         self.assertIsNone(verification["guides"])
         self.assertIsNone(verification["uncovered_paths"])
 
+    def test_a_task_opened_after_the_window_isn_t_counted_in_it(self) -> None:
+        data = fixture()
+        data[MINED].append({"number": 86, "user": {"login": rm.BOT}, "body": "<!-- mined-from row:repeated:later -->",
+                            "state": "open", "created_at": "2026-10-02T00:00:00Z", "closed_at": None})
+        self.stats.run(data, "--app-root", str(RUNWAY))
+        report = self.stats.stats()["report"]
+        self.assertEqual(report["tasks_opened"], 4)
+        self.assertEqual(report["tasks_opened_in_window"], 1)
+
     def test_the_baseline_commit_is_taken_strictly_before_the_window(self) -> None:
         self.stats.run(fixture(), "--app-root", str(RUNWAY))
         calls = [json.loads(line)["call"] for line in self.stats.log.read_text(encoding="utf-8").splitlines() if line]
