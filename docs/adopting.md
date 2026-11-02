@@ -314,10 +314,45 @@ Inputs, each with the default fleet's own gate uses:
 | `required-statuses` | `Agent review`, `Second review` | Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests. An empty string requires none |
 | `ignored-apps` | `codecov\|github-actions` | Apps whose check runs don't count (Codecov's are informational; Actions' runs are counted as workflows) |
 | `poll-seconds`, `poll-attempts` | 30, 20 | How long to look again for CodeQL, whose finishing starts no workflow |
+| `blocking-thread-badges` | `P1\|P2` | Badges on a review thread's first comment that fail the gate while the thread is open (Codex marks its findings `P1 Badge`, `P2 Badge`), as a regex alternation of letters and digits. An empty string turns the check off. An outdated thread counts until it is resolved. If the review threads can't be read, the gate stays pending |
+| `blocking-thread-authors` | `chatgpt-codex-connector` | Whose first comment counts toward `blocking-thread-badges`, as a regex alternation of letters, digits and `-` (a bot's login without `[bot]`). Anyone else's badge text is ignored; an empty string lets any author's count |
 | `automerge-dependabot` | `true` | Merge Dependabot's pull requests once the gate passes (every commit Dependabot's own and verified, same repository, not a draft, no fleet reference changed) |
 | `after-merge-workflows` | `docker.yml security.yml` | Workflow files to start on `main` after such a merge, space-separated; a merge made with the token starts none by itself |
 | `dry-run` | `false` | Print the status posts, the merge and the workflow starts instead of doing them |
 | `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the script from; the self-test passes its own commit |
+
+### Open review threads
+
+A review thread whose first comment is by one of the `blocking-thread-authors` (Codex, by default) and carries one of the `blocking-thread-badges` fails the gate until someone resolves it. Resolving a thread, reopening one, or a new review or review comment starts no workflow the gate listens to, so the caller adds a second small workflow, `merge-gate-threads.yml` (`workflow_call`; inputs `pr`, `merge-gate-workflow` (default `merge-gate.yml`), `dry-run`, `fleet-ref`; `actions: write` only), which starts the caller's own merge gate workflow on `main` with the pull request's number. It checks out nothing and runs nothing of the pull request's. The caller keeps the triggers, and skips a pull request from a fork, whose token is read-only there (that pull request's gate looks again on its next push or check, or by hand):
+
+```yaml
+name: Merge gate threads
+
+on:
+  pull_request_review_thread:
+    types: [resolved, unresolved]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+concurrency:
+  group: merge-gate-threads-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  decide:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: write   # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # vX.Y.Z
+    with:
+      pr: ${{ github.event.pull_request.number }}
+```
+
+Upgrading changes behaviour: an app that adopts this version, or whose pin moves to it, fails its gate on an open P1 or P2 thread. Pass `blocking-thread-badges: ""` to keep the old behaviour.
 
 What each app passes today: Waypoint `required-workflows: Docker image, Security scans, CodeQL` and `required-statuses: ""` (its review is off); Runway the same workflows, `required-statuses: Agent review` and `ignored-workflows: Preview|Screenshot diff`. Both move to the default statuses when they adopt the reviews.
 
@@ -463,7 +498,7 @@ The record sits under a `## Verification` heading, between two marker lines, eac
 <!-- /fleet-verification -->
 ```
 
-The rules (`fleet_tools/verification.py`, which later tools reuse): the header is exactly `| Dimension | Status | How | Evidence |` and there is at least one row; Status is exactly `verified` or `not verified`; a `verified` row has a non-empty How (the command, flow, test or manual step) and Evidence (a test name, a flow name, a screenshot path, a command's output summary); a `not verified` row's How says why it couldn't be verified and what would make it verifiable; `-` and `—` count as empty; `\|` is a literal pipe in a cell; between the markers, every line with an unescaped `|` is a table row (the leading pipe may be left off), so prose there escapes its pipes as `\|` or stays out; other lines between the markers, and everything outside them, are ignored; exactly one block per description, and markers inside fenced code blocks don't count; `\r\n` endings parse as `\n`. A description over 65,536 characters, a block over 100 rows or a cell over 1,000 characters is a parse error, never a silent cut. A description with a multiline HTML comment (one that doesn't open and close on the same line) or a tab on a line with a code fence is rejected as ambiguous rather than guessed at: the parser doesn't emulate Markdown there. The description is untrusted: the parser is text processing only (nothing in a cell is run, fetched, followed or expanded), `fleet verification show` defuses mentions and HTML comments in its text output, and the check's messages name the line and the rule and never quote the description, escaped for workflow commands.
+The rules (`fleet_tools/verification.py`, which later tools reuse): the header is exactly `| Dimension | Status | How | Evidence |` and there is at least one row; Status is exactly `verified` or `not verified`; a `verified` row has a non-empty How (the command, flow, test or manual step) and Evidence (a test name, a flow name, a screenshot path, a command's output summary); a `not verified` row's How says why it couldn't be verified and what would make it verifiable; `-` and `—` count as empty; `\|` is a literal pipe in a cell; the markers start at the first column, and every table row (the header, the separator and each body row) starts with `|` at the first column; between the markers every line with an unescaped `|` is a row, so a line holding an unescaped `|` that doesn't start with `|` (indented, after a blockquote, list or heading marker or an HTML tag, or a row without its leading pipe) is rejected as ambiguous, and prose there escapes its pipes as `\|` or stays out; other lines between the markers, and everything outside them, are ignored; exactly one block per description; `\r\n` endings parse as `\n`. The only code fence the parser knows is a plain top-level one (three or more backticks or tildes at the start of a line, an info string allowed on the opener, the closer the same character at least as long with nothing else on its line), and the markers inside one don't count; anything fancier is rejected as ambiguous rather than guessed at (the parser doesn't emulate Markdown): a fence line that is indented, in a list item or blockquote or carries other text, a marker that is indented or prefixed, a row that doesn't start with `|`, a tab on a fence line, or an HTML comment that doesn't open and close on one line. This strictness is intentional and reaches the whole description, not only the record: a fenced example inside a list item or blockquote in the Testing section is rejected too, so write fences at the first column and outside lists; with `required = false` a rejection is only a warning. A description over 65,536 characters, a block over 100 rows or a cell over 1,000 characters is a parse error, never a silent cut. The description is untrusted: the parser is text processing only (nothing in a cell is run, fetched, followed or expanded), `fleet verification show` defuses mentions and HTML comments in its text output, and the check's messages name the line and the rule and never quote the description, escaped for workflow commands.
 
 The check (`verification`) runs only where the table is set and only when `fleet checks` is given `--pr-event PATH`, which `checks.yml` passes on pull request events (`$GITHUB_EVENT_PATH`); on a push to `main` or a local run without it, it's silent. It reads `pull_request.body`, `pull_request.user.login` and `pull_request.draft` from the payload, skips an author in `exempt-authors`, and otherwise requires exactly one block that parses. With `required = false`, or on a draft pull request, each failure is a warning (`::warning::` on Actions, exit 0); with `required = true` on a ready pull request it's a problem like any other. Add `edited` and `ready_for_review` to the caller's `pull_request` types ([Checks](#checks)) so a fixed description re-runs it, and so a draft marked ready is checked as a ready pull request (with `required = true`, the warning becomes a problem there).
 

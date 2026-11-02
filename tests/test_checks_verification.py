@@ -214,14 +214,20 @@ class Forgery(unittest.TestCase):
     def test_escaping_for_workflow_commands(self) -> None:
         self.assertEqual(check.escape("a%b\r\nc"), "a%25b%0D%0Ac")
 
-    def test_a_forged_marker_or_command_in_a_cell_is_data_to_show(self) -> None:
+    def test_a_forged_command_in_a_cell_is_data_and_a_forged_marker_is_rejected(self) -> None:
         root = copy(self, RUNWAY, repository=False)
-        body = (f"<!-- fleet-verification -->\n| Dimension | Status | How | Evidence |\n| --- | --- | --- | --- |\n"
-                f"| {self.FORGED.replace(chr(10), ' ')} | verified | `::error::x` | `%0A` |\n<!-- /fleet-verification -->\n")
+        body = ("<!-- fleet-verification -->\n| Dimension | Status | How | Evidence |\n| --- | --- | --- | --- |\n"
+                "| ::error::forged %0A @someone | verified | `::error::x` | `%0A` |\n<!-- /fleet-verification -->\n")
         path = write(root, "pr.json", json.dumps({"pull_request": {"body": body, "draft": False, "user": {"login": "octocat"}}}))
         code, out, err = run("--root", str(root), "--pr-event", str(path), actions=True)
         self.assertEqual((code, err), (0, ""))
         self.assertIn("a verification record in the description", out)
+        body = body.replace("@someone", self.FORGED.replace(chr(10), " "))
+        path = write(root, "pr.json", json.dumps({"pull_request": {"body": body, "draft": False, "user": {"login": "octocat"}}}))
+        code, out, err = run("--root", str(root), "--pr-event", str(path), actions=True)
+        self.assertEqual(code, 0)
+        self.assertTrue(err.startswith("::warning::the pull request's description, line 4: ambiguous"), err)
+        self.assertNotIn("forged", err)
 
 
 if __name__ == "__main__":
