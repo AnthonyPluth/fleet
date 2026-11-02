@@ -22,6 +22,7 @@ RUNWAY = ROOT / "tests" / "fixtures" / "consumer-runway"
 REPO = "example/app"
 NOW = "2026-10-01T00:00:00Z"
 SINCE = "2026-09-01T00:00:00Z"
+BEFORE = "2026-08-31T23:59:59Z"
 PULLS = f"GET repos/{REPO}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=1"
 OPEN = f"GET repos/{REPO}/issues?state=open&labels=review-mining&per_page=100"
 MINED = f"GET repos/{REPO}/issues?state=all&labels=review-mining&per_page=100"
@@ -128,7 +129,7 @@ def fixture() -> dict[str, Any]:
         commits("docs/verification"): [{"sha": A}],
         detail(C): {"files": [{"filename": ".claude/skills/release-notes/SKILL.md"}]},
         detail(D): {"files": [{"filename": ".claude/skills/fleet-verify-change/SKILL.md"}, {"filename": "AGENTS.md"}]},
-        newest(SINCE): [dated(E, "2026-08-30T00:00:00Z")],
+        newest(BEFORE): [dated(E, "2026-08-30T00:00:00Z")],
         newest(NOW): [dated(F, "2026-09-30T00:00:00Z")],
         contents("AGENTS.md", E): blob(START_AGENTS),
         contents("AGENTS.md", F): blob(END_AGENTS),
@@ -347,7 +348,7 @@ class EdgeTest(unittest.TestCase):
 
     def test_no_commit_before_the_window_leaves_the_checked_count_unknown(self) -> None:
         data = fixture()
-        data[newest(SINCE)] = []
+        data[newest(BEFORE)] = []
         self.stats.run(data)
         value = self.stats.stats()
         self.assertIsNone(value["harness"]["checked_in_window"])
@@ -419,6 +420,13 @@ class EdgeTest(unittest.TestCase):
             verification = self.stats.stats()["verification"]
         self.assertIsNone(verification["guides"])
         self.assertIsNone(verification["uncovered_paths"])
+
+    def test_the_baseline_commit_is_taken_strictly_before_the_window(self) -> None:
+        self.stats.run(fixture(), "--app-root", str(RUNWAY))
+        calls = [json.loads(line)["call"] for line in self.stats.log.read_text(encoding="utf-8").splitlines() if line]
+        baseline = [call for call in calls if "/commits?" in call and "per_page=1" in call and "&path=" not in call and "until=" in call]
+        self.assertIn(f"GET repos/{REPO}/commits?sha=main&until={BEFORE}&per_page=1", baseline)
+        self.assertNotIn(f"GET repos/{REPO}/commits?sha=main&until={SINCE}&per_page=1", baseline)
 
     def test_a_file_list_at_github_s_cap_is_unread_not_complete(self) -> None:
         data = fixture()

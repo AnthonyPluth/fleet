@@ -7,7 +7,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -300,6 +300,14 @@ def app_skill_commits(run: Run, branch: str) -> list[str]:
     return [sha for sha in candidates if touches_app_skill(run, sha)]
 
 
+def second_before(stamp: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        raise Unreadable("the window's start isn't ISO 8601") from None
+    return (parsed.astimezone(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def newest(run: Run, branch: str, until: str, path: str = "") -> Json | None:
     where = f"&path={quote(path, safe='/')}" if path else ""
     listed = rm.gh(f"repos/{run.repo}/commits?sha={quote(branch, safe='')}{where}&until={until}&per_page=1")
@@ -370,7 +378,7 @@ def harness(run: Run, branch: str, guides_dir: str | None, guide_files: list[str
     checked: int | None = None
     titles: list[str] = []
     try:
-        base, head = newest(run, branch, run.since), newest(run, branch, run.until)
+        base, head = newest(run, branch, second_before(run.since)), newest(run, branch, run.until)
         if base is None or head is None:
             run.missing.append(f"harness: no commit on {branch} before the window to compare {AGENTS} with")
         else:
