@@ -158,6 +158,9 @@ def shown(kind: str, value: object) -> str:
 
 
 def section(current: Json | None, earlier: Json | None, why: str = "") -> list[str]:
+    other = earlier if earlier is not None and current is not None and earlier["days"] != current["days"] else None
+    if other is not None:
+        earlier = None
     days = (current or earlier or {}).get("days", "?")
     lines = ["### Loop health", "",
              f"Whether review, verification and this report are improving the harness, from fleet's `loop-stats` over the "
@@ -177,6 +180,9 @@ def section(current: Json | None, earlier: Json | None, why: str = "") -> list[s
         lines.append(f"| {measure.label} | " + " | ".join(cells) + " |")
     if current is None:
         lines += ["", f"This run's numbers couldn't be read ({defuse(why, 200).replace('<', '&lt;')}); the last run's are kept."]
+    elif other is not None:
+        lines += ["", f"The last run ({other['date']}) covered {other['days']} days, not {days}, so it isn't compared: the next run "
+                      "with the same window shows these beside its own."]
     elif earlier is None:
         lines += ["", "No earlier numbers in this issue: the next run shows these beside its own."]
     return lines

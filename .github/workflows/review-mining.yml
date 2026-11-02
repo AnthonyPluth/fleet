@@ -102,8 +102,9 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # The loop's numbers: Markdown to the job summary, JSON for the artifact and the report. A part it can't read is
-      # null in the JSON and listed under "Not read", never zero; it fails only when it can't write its files.
+      # The loop's numbers: Markdown to the job summary (the report's own summary leaves its Loop health section out, so
+      # it shows once), JSON for the artifact and the report. A part it can't read is null in the JSON and listed under
+      # "Not read", never zero; it fails only when it can't write its files, and then the job still ends red.
       - name: Measure the loop
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,7 +127,11 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+      # Whatever happened to the two steps above: review-mine copes with a missing or unreadable stats file (it warns and
+      # keeps last run's numbers), so a failed measurement or upload never stops the report; that step's failure still
+      # fails the job.
       - name: Rewrite the report
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

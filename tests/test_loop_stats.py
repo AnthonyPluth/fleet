@@ -440,6 +440,18 @@ class HiddenLineTest(unittest.TestCase):
         self.assertIsNone(loop_health.previous(f"other\n{line}", rm.MARKER))
         self.assertIsNone(loop_health.previous(rm.MARKER, rm.MARKER))
 
+    def test_last_run_is_compared_only_over_the_same_window(self) -> None:
+        current = self.summary()
+        same = "\n".join(loop_health.section(current, {**current, "date": "2026-09-01"}))
+        self.assertIn("| Measure | Last run (2026-09-01) | This run (2026-10-01) |", same)
+        other = "\n".join(loop_health.section(current, {**current, "date": "2026-09-01", "days": 7}))
+        self.assertIn("| Measure | This run (2026-10-01) |", other)
+        self.assertNotIn("Last run (", other)
+        self.assertIn("covered 7 days, not 30, so it isn't compared", other)
+        alone = "\n".join(loop_health.section(None, {**current, "days": 7}, "missing"))
+        self.assertIn("| Measure | Last run (2026-10-01) |", alone)
+        self.assertIn("over the last 7 days", alone)
+
     def test_a_malformed_line_is_ignored(self) -> None:
         def line(value: object) -> str:
             return f"<!-- loop-stats {base64.b64encode(json.dumps(value).encode()).decode()} -->"

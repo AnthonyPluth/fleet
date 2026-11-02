@@ -807,8 +807,8 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("<!-- row:open-at-merge:layout -->", result.stdout)
 
 
-def loop_stats(merged: int = 3, resolved: float | None = 0.4, when: str = NOW) -> dict[str, Any]:
-    return {"schema": 1, "generated": when, "days": 30, "reviews": {"merged": merged, "with_agent_review": 2, "with_second_review": 1,
+def loop_stats(merged: int = 3, resolved: float | None = 0.4, when: str = NOW, days: int = 30) -> dict[str, Any]:
+    return {"schema": 1, "generated": when, "days": days, "reviews": {"merged": merged, "with_agent_review": 2, "with_second_review": 1,
             "findings": {"raised": 5, "resolved_share": resolved, "dismissed_share": 0.2, "open_at_merge_share": None}},
             "verification": {"configured": False}, "report": {"rows": 2, "ticked": 1, "tasks_opened": 1, "tasks_closed_in_window": 0},
             "harness": {"commits": {"total": 4}, "checked_in_window": 1}}
@@ -850,9 +850,11 @@ class LoopHealthTest(unittest.TestCase):
         self.assertIn("No earlier numbers in this issue", body)
         self.assertEqual(body.count("<!--"), 1 + 1 + body.count("<!-- row:"))
         summary_text = self.miner.summary.read_text(encoding="utf-8")
-        self.assertIn("### Loop health", summary_text)
+        self.assertNotIn("Loop health", summary_text)
+        self.assertNotIn("| Merged pull requests |", summary_text)
         self.assertNotIn("<!-- loop-stats", summary_text)
         self.assertNotIn(rm.MARKER, summary_text)
+        self.assertTrue(summary_text.startswith("Review findings that came back"))
         self.assertEqual(set(mining_tasks.tasks_in(body)), {"repeated:layout"})
 
     def test_last_run_s_numbers_round_trip_through_the_hidden_line(self) -> None:
@@ -865,6 +867,20 @@ class LoopHealthTest(unittest.TestCase):
         summary = loop_health.decode(second.splitlines()[1])
         assert summary is not None
         self.assertEqual(summary["values"]["merged"], 3)
+
+    def test_a_last_run_over_another_window_isn_t_compared(self) -> None:
+        first = self.run_with(loop_stats(merged=2, when="2026-09-01T00:00:00Z", days=90))
+        second = self.run_with(loop_stats(), previous=first)
+        self.assertIn("| Measure | This run (2026-10-01) |", second)
+        self.assertNotIn("Last run (", second)
+        self.assertIn("| Merged pull requests | 3 |", second)
+        self.assertIn("over the last 30 days", second)
+        self.assertIn("The last run (2026-09-01) covered 90 days, not 30, so it isn't compared", second)
+        summary = loop_health.decode(second.splitlines()[1])
+        assert summary is not None
+        self.assertEqual(summary["days"], 30)
+        third = self.run_with(loop_stats(merged=4), previous=second)
+        self.assertIn("| Merged pull requests | 3 | 4 |", third)
 
     def test_a_malformed_or_oversized_previous_line_is_ignored(self) -> None:
         good = loop_health.encode({"schema": 1, "date": "2026-09-01", "days": 30, "values": {"merged": 2}})
@@ -905,7 +921,7 @@ class LoopHealthTest(unittest.TestCase):
         self.assertIn("### Loop health", result.stdout)
         self.assertIn("<!-- loop-stats ", result.stdout)
         self.assertEqual(self.miner.writes(), [])
-        self.assertIn("### Loop health", self.miner.summary.read_text(encoding="utf-8"))
+        self.assertNotIn("Loop health", self.miner.summary.read_text(encoding="utf-8"))
 
 
 def mapping(node: object) -> dict[str, Any]:
@@ -955,6 +971,12 @@ class WorkflowTest(unittest.TestCase):
         names = [mapping(s).get("name") or mapping(s).get("uses") for s in steps]
         self.assertLess(names.index("Measure the loop"), names.index(upload[0]["uses"]))
         self.assertLess(names.index(upload[0]["uses"]), names.index("Rewrite the report"))
+        rewrite = mapping(next(s for s in steps if mapping(s).get("name") == "Rewrite the report"))
+        self.assertEqual(rewrite["if"], "${{ !cancelled() }}")
+        for step in map(mapping, steps):
+            self.assertNotIn("continue-on-error", step)
+            if step is not rewrite:
+                self.assertNotIn("if", step)
         measure, script = self.text.split("run: |")[1:3]
         self.assertIn("python3 -E -s -m fleet_tools.cli loop-stats", measure)
         self.assertIn('--json "$OUT/loop-stats.json" --markdown "$OUT/loop-stats.md"', measure)

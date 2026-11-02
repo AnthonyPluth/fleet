@@ -777,10 +777,12 @@ def loop_section(stats: Path | None, previous: str) -> tuple[list[str] | None, s
     return loop_health.section(current, earlier, why), loop_health.encode(kept) if kept else ""
 
 
-def summary_text(body: str) -> str:
+def summary_text(body: str, health: list[str] | None = None) -> str:
     lines = body.split("\n")[1:]
     if lines and lines[0].startswith(loop_health.PREFIX):
         lines = lines[1:]
+    if health and lines[:len(health)] == health:
+        lines = lines[len(health) + 1:]
     return "\n".join(lines)
 
 
@@ -814,7 +816,7 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
           f"{len(merged)} merged, {rows_count} row(s)")
     if summary is not None:
         with open(summary, "a", encoding="utf-8") as f:
-            f.write(summary_text(body) + "\n")
+            f.write(summary_text(body, health) + "\n")
     if dry_run:
         what = f"rewrite #{existing['number']}" if existing else ("open" if rows_count else "open nothing")
         print(f"review-mine: (dry run) would {what}:\n\n{body}")
