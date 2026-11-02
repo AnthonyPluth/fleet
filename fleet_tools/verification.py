@@ -23,9 +23,6 @@ MAX_BODY = 65536
 MAX_ROWS = 100
 MAX_CELL = 1000
 SEPARATOR_CELL = re.compile(r":?-+:?")
-CONTAINER_PUNCTUATION = " \t>-*+0123456789.)"
-MAX_CONTAINERS = 32
-LIST_MARKER = re.compile(r"(?:[-*+]|[0-9]{1,9}[.)])[ \t]")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
 
 
@@ -44,71 +41,28 @@ class Dimension:
     evidence: str
 
 
-@dataclass(frozen=True)
-class Fence:
-    marks: str
-    rest: str
-    depth: int
-    listed: bool
-    indent: int
-    content: int
-    ambiguous: bool = False
-
-    def closes(self, opener: "Fence") -> bool:
-        if self.ambiguous or opener.ambiguous:
-            return False
-        return (self.marks[0] == opener.marks[0] and len(self.marks) >= len(opener.marks) and not self.rest.strip()
-                and self.depth == opener.depth and not self.listed and opener.content <= self.indent <= opener.content + 3)
+AMBIGUOUS = "ambiguous (indent, container or fence form)"
 
 
-def fence_run(line: str, at: int) -> tuple[str, str] | None:
-    if at >= len(line) or line[at] not in "`~":
+def fence_of(line: str) -> tuple[str, str] | None:
+    if not line or line[0] not in "`~":
         return None
-    end = at
-    while end < len(line) and line[end] == line[at]:
+    end = 0
+    while end < len(line) and line[end] == line[0]:
         end += 1
-    if end - at < 3:
-        return None
-    return line[at:end], line[end:]
+    return (line[:end], line[end:]) if end >= 3 else None
 
 
-def fence_of(line: str) -> Fence | None:
-    at = depth = start = containers = 0
-    listed = False
-    while containers <= MAX_CONTAINERS:
-        while at < len(line) and line[at] in " \t":
-            at += 1
-        if at < len(line) and line[at] == ">":
-            at += 1
-            depth += 1
-            start = at
-            containers += 1
-            continue
-        marker = LIST_MARKER.match(line, at)
-        if marker:
-            at = marker.end()
-            listed = True
-            containers += 1
-            continue
-        break
-    indent = at - start
-    found = fence_run(line, at) if containers <= MAX_CONTAINERS else None
-    if found:
-        return Fence(found[0], found[1], depth, listed, indent, at - start if listed else 0)
-    stripped = line.lstrip(CONTAINER_PUNCTUATION)
-    found = fence_run(line, len(line) - len(stripped))
-    if found and len(stripped) < len(line):
-        return Fence(found[0], found[1], depth, listed, indent, 0, ambiguous=True)
-    return None
+def closes(found: tuple[str, str], opener: tuple[str, str]) -> bool:
+    return found[0][0] == opener[0][0] and len(found[0]) >= len(opener[0]) and not found[1].strip()
 
 
-def prefixed_marker(line: str) -> bool:
-    stripped = line.lstrip(CONTAINER_PUNCTUATION).strip()
-    return stripped in (BEGIN, END) and line.strip() != stripped
+def has_fence_run(line: str) -> bool:
+    return "```" in line or "~~~" in line
 
 
 def is_row(line: str) -> bool:
-    return line.lstrip().startswith("|") or CELL_SPLIT.search(line) is not None
+    return CELL_SPLIT.search(line) is not None
 
 
 def is_separator(line: str) -> bool:
@@ -116,52 +70,57 @@ def is_separator(line: str) -> bool:
     return bool(found) and all(SEPARATOR_CELL.fullmatch(cell) for cell in found)
 
 
-def has_fence_run(line: str) -> bool:
-    return "```" in line or "~~~" in line
-
-
 def reject_ambiguity(index: int, line: str) -> None:
     if "\t" in line and has_fence_run(line):
         raise ParseError(index, "ambiguous indentation: a tab on a line with a code fence; indent with spaces")
-    rest = line
-    while "<!--" in rest:
-        start = rest.index("<!--")
-        stop = rest.find("-->", start + 4)
-        if stop < 0:
+    at = 0
+    while True:
+        opened, closed = line.find("<!--", at), line.find("-->", at)
+        if opened < 0 and closed < 0:
+            return
+        if closed >= 0 and (opened < 0 or closed < opened):
+            raise ParseError(index, "multiline HTML comment: a comment closes here without opening on its line; the only comments "
+                                    "the record allows span one line each")
+        closed = line.find("-->", opened + 4)
+        if closed < 0:
             raise ParseError(index, "multiline HTML comment: a comment opened here doesn't close on its line; the only comments "
                                     "the record allows span one line each")
-        rest = rest[:start] + rest[stop + 3:]
-    if "-->" in rest:
-        raise ParseError(index, "multiline HTML comment: a comment closes here without opening on its line; the only comments "
-                                "the record allows span one line each")
+        at = closed + 3
 
 
 def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
     begins: list[int] = []
     ends: list[int] = []
-    fence: Fence | None = None
-    opened = 0
     for index, line in enumerate(lines, start=1):
         reject_ambiguity(index, line)
+    fence: tuple[str, str] | None = None
+    opened = 0
     for index, line in enumerate(lines, start=1):
         found = fence_of(line)
+        if found is None and has_fence_run(line):
+            raise ParseError(index, f"{AMBIGUOUS}: a line holds a run of three or more backticks or tildes that isn't a plain "
+                                    "top-level code fence; such a run can appear only as a fence at the first column, outside "
+                                    "lists and blockquotes, the closing one with nothing else on its line; elsewhere write it out "
+                                    "in words, such as three backticks")
         if found:
+            if found[0][0] == "`" and "`" in found[1]:
+                raise ParseError(index, f"{AMBIGUOUS}: a backtick fence whose info string holds a backtick isn't a fence on "
+                                        "GitHub; drop the backtick or use a tilde fence")
             if fence is None:
                 fence, opened = found, index
-            elif found.closes(fence):
+            elif closes(found, fence):
                 fence = None
             continue
         if fence:
             continue
-        if line.strip() == BEGIN:
+        if line == BEGIN:
             begins.append(index)
-        elif line.strip() == END:
+        elif line == END:
             ends.append(index)
-        elif prefixed_marker(line):
-            raise ParseError(index, "a marker line inside a list item or blockquote; the markers stand alone at the top level")
+        elif BEGIN in line or END in line:
+            raise ParseError(index, f"{AMBIGUOUS}: a marker that isn't alone at the start of its line")
     if fence is not None:
-        raise ParseError(opened, "a code fence opened here is never closed (a closing fence sits in the same list item or "
-                                 "blockquote as the opening one), so the record can't be told from example text")
+        raise ParseError(opened, "a code fence opened here is never closed, so the record can't be told from example text")
     return begins, ends
 
 
@@ -183,7 +142,7 @@ def block(lines: list[str]) -> tuple[int, int]:
 
 
 def cells(line: str) -> list[str]:
-    text = line.strip()
+    text = line.rstrip()
     if text.startswith("|"):
         text = text[1:]
     if text.endswith("|") and not text.endswith("\\|"):
@@ -227,10 +186,15 @@ def parse(body: str) -> list[Dimension]:
     lines = body.replace("\r\n", "\n").split("\n")
     begin, end = block(lines)
     table = [(number, lines[number - 1]) for number in range(begin + 1, end) if is_row(lines[number - 1])]
+    for number, line in table:
+        if not line.startswith("|"):
+            raise ParseError(number, f"{AMBIGUOUS}: table rows must start with |; a line between the markers that holds an "
+                                     "unescaped | is a row, so write it from the first column with its leading pipe, or escape "
+                                     "its pipes as \\|")
     if not table:
         raise ParseError(begin, f"the verification block has no table; its header is `{HEADER}`")
     number, header = table[0]
-    if header.strip() != HEADER:
+    if header.rstrip() != HEADER:
         raise ParseError(number, f"the table's header isn't exactly `{HEADER}`")
     rows = table[1:]
     if rows and is_separator(rows[0][1]):

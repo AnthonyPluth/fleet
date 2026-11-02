@@ -66,8 +66,9 @@ The rules the parser holds:
 - Status is exactly `verified` or `not verified`;
 - a `verified` row has a non-empty How (the command, flow, test or manual step) and non-empty Evidence (a test name, a flow name, a screenshot path, a command's output summary); `-` and `—` count as empty;
 - a `not verified` row's How says why it couldn't be verified and what would make it verifiable;
-- a pipe inside a cell is written `\|`; between the markers, every line with an unescaped `|` is read as a row (the leading pipe may be left off), so a note there escapes its pipes or stays outside;
-- one block per description; lines between the markers without a pipe are ignored.
+- the markers start at the first column, and every row (the header, the separator and each dimension) starts with `|` at the first column: a row without its leading pipe, or one after a `>`, list or heading marker or an HTML tag, is rejected as ambiguous; a pipe inside a cell is written `\|`; between the markers, every line with an unescaped `|` is read as a row, so a note there escapes its pipes or stays outside;
+- one block per description; lines between the markers without a pipe are ignored;
+- the only code fence the parser knows is a plain top-level one (backticks or tildes at the start of the line); an indented, listed or quoted fence, an indented or prefixed marker or row, a tab on a fence line or a multiline HTML comment is rejected as ambiguous. That rule reaches the whole description, not only the record: write every fence at the first column and outside lists, anywhere in the description, command output in "Testing" included; with `required = false` a rejection is only a warning.
 
 Every gap goes in as `not verified` with its reason, never left out: a reviewer who sees the gap can judge it, and one who doesn't can't. Keep "Testing" for what was run. `fleet verification show --pr N` prints the block as the tools read it.
 
