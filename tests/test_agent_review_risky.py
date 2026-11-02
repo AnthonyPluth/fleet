@@ -392,7 +392,7 @@ class Prompts(unittest.TestCase):
         self.assertGreaterEqual(len(items), 5)
         for item in items:
             self.assertIn("Held by", item)
-        self.assertIn("claude-fable-5-1", text)
+        self.assertIn("claude-opus-5-5", text)
 
 
 if __name__ == "__main__":
