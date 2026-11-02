@@ -16,6 +16,7 @@ from fleet_tools.agent_review import (
     FIRST,
     MAX_COMMENT,
     MAX_FINDINGS_LINE,
+    NO_BLOCK,
     SECOND,
     SEVERITIES,
     Review,
@@ -110,6 +111,7 @@ class Pull:
     number: int
     merged: bool
     body: str
+    merged_at: str = ""
 
 
 @dataclass
@@ -406,7 +408,7 @@ def pull_comments(repo: str, number: int) -> list[Json] | None:
     return None
 
 
-def outcomes_of(repo: str, numbers: set[int]) -> tuple[dict[tuple[int, str], list[Json]], int]:
+def histories(repo: str, numbers: set[int]) -> tuple[dict[int, list[Json]], int]:
     per_pull: dict[int, list[Json]] = {}
     unread = 0
     for number in sorted(numbers):
@@ -415,7 +417,12 @@ def outcomes_of(repo: str, numbers: set[int]) -> tuple[dict[tuple[int, str], lis
             unread += 1
         else:
             per_pull[number] = history
-    return outcomes_from(repo, per_pull), unread
+    return per_pull, unread
+
+
+def at_merge(per_pull: dict[int, list[Json]], merged_at: dict[int, str]) -> dict[int, list[Json]]:
+    return {number: [c for c in comments if str(c.get("created_at") or "~") <= merged_at[number]]
+            for number, comments in per_pull.items() if merged_at.get(number)}
 
 
 def outcomes_from(repo: str, per_pull: dict[int, list[Json]]) -> dict[tuple[int, str], list[Json]]:
@@ -524,13 +531,14 @@ def verification_gaps(repo: str, pulls: list[Pull], required: bool, guides: list
     for each in pulls:
         if not each.merged:
             continue
-        if verification.BEGIN not in each.body:
-            gaps.without_record += 1
-            continue
         try:
+            verification.block(each.body.replace("\r\n", "\n").split("\n"))
             dimensions = verification.parse(each.body)
-        except verification.ParseError:
-            gaps.unparsed += 1
+        except verification.ParseError as error:
+            if error.rule.startswith(NO_BLOCK):
+                gaps.without_record += 1
+            else:
+                gaps.unparsed += 1
             continue
         unverified = [d for d in dimensions if d.status == "not verified"]
         if not unverified:
@@ -658,8 +666,9 @@ def pulls_since(repo: str, since: str) -> list[Pull]:
             if isinstance(pull, dict) and isinstance(pull.get("number"), int) and str(pull.get("updated_at") or "") >= since:
                 merged_at = pull.get("merged_at")
                 body = pull.get("body")
-                found.setdefault(pull["number"], Pull(pull["number"], isinstance(merged_at, str) and merged_at >= since,
-                                                      body if isinstance(body, str) else ""))
+                in_window = isinstance(merged_at, str) and merged_at >= since
+                found.setdefault(pull["number"], Pull(pull["number"], in_window, body if isinstance(body, str) else "",
+                                                      str(merged_at) if in_window else ""))
         last = batch[-1]
         if len(batch) < PER_PAGE or not isinstance(last, dict) or str(last.get("updated_at") or "") < since:
             break
@@ -695,12 +704,14 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     items = read_mistakes(agents_md)
     pulls = pulls_since(repo, since)
     numbers = [each.number for each in pulls]
-    merged = {each.number for each in pulls if each.merged}
+    merged = {each.number: each.merged_at for each in pulls if each.merged}
     comments = comments_since(repo, since)
     records = newest_records(comments, set(numbers))
-    outcomes, unread = outcomes_of(repo, {n for n, _ in records})
+    per_pull, unread = histories(repo, {n for n, _ in records})
+    outcomes = outcomes_from(repo, per_pull)
+    merge_time = outcomes_from(repo, at_merge(per_pull, merged))
     rows = rows_of(groups_of(records, items, outcomes))
-    signals = Signals(often_dismissed(repo, tallies(outcomes, items)), open_at_merge(repo, open_tallies(outcomes, items, merged)),
+    signals = Signals(often_dismissed(repo, tallies(outcomes, items)), open_at_merge(repo, open_tallies(merge_time, items, set(merged))),
                       unread_outcomes=unread)
     settings = verification_settings(app_root)
     if settings is not None:

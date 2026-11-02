@@ -426,6 +426,20 @@ class SignalsTest(unittest.TestCase):
         self.assertIn(f"| **Failure paths** | 1 | [#1](https://github.com/{REPO}/pull/1) |", body)
         self.assertNotIn("open-at-merge:layout", body)
 
+    def test_a_finding_dismissed_after_the_merge_was_still_open_at_merge(self) -> None:
+        comments = [outcomes_comment(n, [outcome("Layout", f"t{n}")]) for n in (1, 2, 3)]
+        comments += [dismissal(n, "Layout", f"t{n}", "dismissed once it had merged") for n in (1, 2, 3)]
+        pulls = [pull(n, merged="2026-09-01T12:00:00Z") for n in (1, 2, 3)]
+        result = self.miner.run(answers(pulls, comments))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertIn(f"| **Layout** | 3 | [#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2), [#3](https://github.com/{REPO}/pull/3) |", body)
+        self.assertIn("| **Layout** | 3 | 0 | 3 |", body)
+        self.assertNotIn("row:repeated:layout", body)
+        late = [{**c, "created_at": "2026-09-03T00:00:00Z"} if c["user"]["login"] == rm.BOT else c for c in comments]
+        self.miner.run(answers(pulls, late))
+        self.assertNotIn("row:open-at-merge:layout", self.miner.body())
+
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
@@ -565,6 +579,15 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn("Chart colours", body)
         self.assertNotIn("502", body)
 
+    def test_a_marker_only_inside_a_fenced_example_is_no_record(self) -> None:
+        data = self.gap_answers()
+        fenced = "Example:\n\n```md\n<!-- fleet-verification -->\n| Dimension | Status | How | Evidence |\n<!-- /fleet-verification -->\n```\n"
+        data[PULLS][2]["body"] = fenced
+        result = self.miner.run(data, "--app-root", str(RUNWAY), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("1 merged pull request(s) without a verification record (it isn't required).", result.stdout)
+        self.assertIn("1 verification record(s) that don't parse were skipped.", result.stdout)
+
     def test_ungrouped_gaps_need_two_merged_pull_requests_too(self) -> None:
         data = self.gap_answers()
         data[f"GET repos/{REPO}/pulls/20/files?per_page=100"] = files("elsewhere.txt")
@@ -604,7 +627,8 @@ class SignalsTest(unittest.TestCase):
         self.miner.run(answers(list(reversed(pulls)), list(reversed(comments))))
         second = self.miner.body()
         self.assertEqual(ids(first), ids(second))
-        self.assertEqual(ids(first), ["dismissed:layout", "open-at-merge:other:unused-import", "repeated:other:unused-import"])
+        self.assertEqual(ids(first), ["dismissed:layout", "open-at-merge:layout", "open-at-merge:other:unused-import",
+                                      "repeated:other:unused-import"])
         ticked = first.replace("- [ ] <!-- row:dismissed:layout -->", "- [x] <!-- row:dismissed:layout -->")
         rows = rm.rows_of(rm.groups_of({}, {}))
         again = rm.render(rows, REPO, 90, SINCE, (3, 3), ticked, signals=rm.Signals([rm.Signal("dismissed:layout", "Layout", ("3", "0", "3", "r", rm.GUIDANCE))]))
