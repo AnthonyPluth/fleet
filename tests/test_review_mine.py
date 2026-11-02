@@ -669,6 +669,33 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("1 merged pull request(s) without a verification record (it isn't required).", result.stdout)
         self.assertIn("1 verification record(s) that don't parse were skipped.", result.stdout)
 
+    def test_guides_whose_names_share_a_long_prefix_are_separate_areas(self) -> None:
+        app = self.miner.directory / "long"
+        guides = app / "docs" / "verification"
+        guides.mkdir(parents=True)
+        (app / "pyproject.toml").write_text('[tool.fleet.verification]\nguides = "docs/verification"\n', encoding="utf-8")
+        stem = "a" * 60
+        names = {f"{stem}-first-area": "one/**", f"{stem}-other-area": "two/**"}
+        for name, glob in names.items():
+            (guides / f"{name}.md").write_text(f"# {name[-10:]}\n\n## Paths\n\n- `{glob}`\n\n## How to verify\n\n- `make test`\n\n"
+                                              "## Not verifiable yet\n\n- Nothing\n", encoding="utf-8")
+        gap = ("Thing", "not verified", "no fake for it", "-")
+        pulls = [pull(n, merged="2026-09-01T12:00:00Z", body=record(gap)) for n in (30, 31, 32)]
+        data = answers(pulls, [])
+        data[f"GET repos/{REPO}/pulls/30/files?per_page=100"] = files("one/a.py")
+        data[f"GET repos/{REPO}/pulls/31/files?per_page=100"] = files("two/b.py")
+        data[f"GET repos/{REPO}/pulls/32/files?per_page=100"] = files("elsewhere.txt")
+        result = self.miner.run(data, "--app-root", str(app), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No area had gaps on 2 or more pull requests.", result.stdout)
+        self.assertNotIn("row:gaps:", result.stdout)
+        data[f"GET repos/{REPO}/pulls/32/files?per_page=100"] = files("one/c.py")
+        ids = []
+        for _ in range(2):
+            result = self.miner.run(data, "--app-root", str(app), "--dry-run")
+            ids.append(sorted(i for i in rm.ticks_of(result.stdout.split("\n\n", 1)[1]) if i.startswith("gaps:")))
+        self.assertEqual(ids, [[f"gaps:{stem}-first-area"]] * 2)
+
     def test_ungrouped_gaps_need_two_merged_pull_requests_too(self) -> None:
         data = self.gap_answers()
         data[f"GET repos/{REPO}/pulls/20/files?per_page=100"] = files("elsewhere.txt")

@@ -552,7 +552,7 @@ def changed_files(repo: str, number: int) -> list[str]:
 
 def gap_areas(guides: list[verification_guides.Guide], paths: list[str]) -> list[tuple[str, str]]:
     found, _ = verification_guides.areas(guides, paths)
-    return [(slug(guide.name), guide.area) for guide, _ in found] or [(UNGROUPED, UNGROUPED)]
+    return [(guide.name, guide.area) for guide, _ in found] or [(UNGROUPED, UNGROUPED)]
 
 
 def verification_gaps(repo: str, pulls: list[Pull], required: bool, guides: list[verification_guides.Guide]) -> Gaps:
