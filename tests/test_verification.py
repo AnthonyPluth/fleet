@@ -207,13 +207,14 @@ class Parsing(unittest.TestCase):
         self.assertEqual(len(parse(record(ROW, "a note with an escaped \\| in it is prose"))), 1)
 
     def test_a_row_with_a_blockquote_or_list_marker_is_an_error(self) -> None:
-        for prefix in ("> ", ">", "- ", "* ", "+ ", "1. ", "12) ", "1.\t"):
+        for prefix in ("> ", ">", "- ", "* ", "+ ", "1. ", "12) ", "1.\t", "# ", "###### ", "#\t"):
             with self.subTest(prefix=prefix):
-                self.check_rejects(record(GAP, prefix + "Live sync | verified | a test | its name"), 9, "blockquote or list marker")
-                self.check_rejects(record(GAP, prefix + ROW), 9, "blockquote or list marker")
-                self.check_rejects(record(prefix + HEADER, header=HEADER), 8, "blockquote or list marker")
+                self.check_rejects(record(GAP, prefix + "Live sync | verified | a test | its name"), 9, "blockquote, list or heading marker")
+                self.check_rejects(record(GAP, prefix + ROW), 9, "blockquote, list or heading marker")
+                self.check_rejects(record(prefix + HEADER, header=HEADER), 8, "blockquote, list or heading marker")
         self.assertEqual(parse(record("--- | not verified | why | -"))[0].dimension, "---")
         self.assertEqual(parse(record("1.2 | verified | how | evidence"))[0].dimension, "1.2")
+        self.assertEqual(parse(record("#7 | verified | how | evidence"))[0].dimension, "#7")
 
     def test_an_escaped_pipe_is_a_literal_pipe_in_a_cell(self) -> None:
         found = parse(record("| a \\| b | verified | `x \\| y` | out \\| put |"))
@@ -410,7 +411,8 @@ class Skill(unittest.TestCase):
         text = (ROOT / "plugins" / "fleet" / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
         for phrase in ("name: verify-change", "[tool.fleet.verification]", HEADER, "`verified` or `not verified`", "\\|",
                        "Never mark a dimension `verified`", "Every gap goes in as `not verified`", "verify skill", "Testing",
-                       "fleet verification show --pr N", "every line with an unescaped `|` is read as a row", "start at the first column", "rejected as ambiguous"):
+                       "fleet verification show --pr N", "every line with an unescaped `|` is read as a row", "start at the first column", "rejected as ambiguous",
+                       "anywhere in the description"):
             self.assertIn(phrase, text)
         self.assertNotIn("nothing else between the markers is read", text)
         for word in ("Waypoint", "Runway", "Darkroom", "AnthonyPluth", "http"):
