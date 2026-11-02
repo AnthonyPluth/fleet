@@ -21,7 +21,6 @@ MAX_BODY = 65536
 MAX_ROWS = 100
 MAX_CELL = 1000
 SEPARATOR_CELL = re.compile(r":?-+:?")
-CONTAINER = re.compile(r"(?:>|(?:[-*+]|[0-9]{1,9}[.)]|#{1,6})[ \t])")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
 
 
@@ -61,7 +60,7 @@ def has_fence_run(line: str) -> bool:
 
 
 def is_row(line: str) -> bool:
-    return line.startswith("|") or CELL_SPLIT.search(line) is not None
+    return CELL_SPLIT.search(line) is not None
 
 
 def is_separator(line: str) -> bool:
@@ -98,8 +97,9 @@ def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
         found = fence_of(line)
         if found is None and has_fence_run(line):
             raise ParseError(index, f"{AMBIGUOUS}: a line holds a run of three or more backticks or tildes that isn't a plain "
-                                    "top-level code fence; write fences at the first column (the closing one with nothing else "
-                                    "on its line) and put such text in inline code with single backticks")
+                                    "top-level code fence; such a run can appear only as a fence at the first column, outside "
+                                    "lists and blockquotes, the closing one with nothing else on its line; elsewhere write it out "
+                                    "in words, such as three backticks")
         if found:
             if found[0][0] == "`" and "`" in found[1]:
                 raise ParseError(index, f"{AMBIGUOUS}: a backtick fence whose info string holds a backtick isn't a fence on "
@@ -185,10 +185,10 @@ def parse(body: str) -> list[Dimension]:
     begin, end = block(lines)
     table = [(number, lines[number - 1]) for number in range(begin + 1, end) if is_row(lines[number - 1])]
     for number, line in table:
-        if line[:1] in " \t":
-            raise ParseError(number, f"{AMBIGUOUS}: a table row that doesn't start at the first column")
-        if CONTAINER.match(line):
-            raise ParseError(number, f"{AMBIGUOUS}: a table row that starts with a blockquote, list or heading marker")
+        if not line.startswith("|"):
+            raise ParseError(number, f"{AMBIGUOUS}: table rows must start with |; a line between the markers that holds an "
+                                     "unescaped | is a row, so write it from the first column with its leading pipe, or escape "
+                                     "its pipes as \\|")
     if not table:
         raise ParseError(begin, f"the verification block has no table; its header is `{HEADER}`")
     number, header = table[0]

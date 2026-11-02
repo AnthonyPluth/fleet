@@ -115,7 +115,16 @@ class Parsing(unittest.TestCase):
         self.assertEqual([d.dimension for d in parse("~~~ `info`\n" + BEGIN + "\n~~~\n" + real)], ["Live sync"])
         with self.assertRaises(ParseError) as caught:
             parse("prose with ``` in it\n" + real)
-        self.assertIn("inline code with single backticks", caught.exception.rule)
+        self.assertIn("only as a fence at the first column", caught.exception.rule)
+
+    def test_the_stray_fence_run_message_doesnt_suggest_inline_code(self) -> None:
+        real = record(GAP, before="")
+        for line in ("prose with ``` in it", "`` ``` ``", "- ```"):
+            with self.subTest(line=line), self.assertRaises(ParseError) as caught:
+                parse(line + "\n" + real)
+            self.assertNotIn("inline code", caught.exception.rule)
+            self.assertNotIn("backticks)", caught.exception.rule)
+            self.assertIn("three backticks", caught.exception.rule)
 
     def test_an_indented_or_prefixed_marker_or_row_is_an_error(self) -> None:
         real = record(GAP, before="")
@@ -182,7 +191,7 @@ class Parsing(unittest.TestCase):
             with self.subTest(line=line), self.assertRaises(ParseError) as caught:
                 parse("```\n" + fake + line + "\n" + real + "```\n" + fake)
             self.assertEqual((caught.exception.line, "ambiguous indentation" in caught.exception.rule), (6, True))
-        self.assertEqual(len(parse("a\tb\n" + record("a\tb | verified | h\t | e"))), 1)
+        self.assertEqual(len(parse("a\tb\n" + record("| a\tb | verified | h\t | e |"))), 1)
 
     def test_long_lines_parse_in_linear_time(self) -> None:
         run = 60000
@@ -198,23 +207,50 @@ class Parsing(unittest.TestCase):
                 self.assertFalse(verification.is_separator("|" + " " * run + "x"))
                 self.assertLess(time.monotonic() - started, 0.5)
 
-    def test_a_row_without_a_leading_pipe_is_still_a_row(self) -> None:
-        found = parse(record("The page renders | verified | `make verify` | a screenshot", "Live sync | not verified | no fake | -"))
-        self.assertEqual([(d.dimension, d.status) for d in found], [("The page renders", "verified"), ("Live sync", "not verified")])
-        self.check_rejects(record("a | maybe | h | e"), 8, "isn't `verified` or `not verified`")
-        self.check_rejects(record(ROW, "a note with a | in it"), 9, "2 cells, not 4")
-        self.check_rejects(record(ROW, "a \\| verified | h | e"), 9, "3 cells, not 4")
-        self.assertEqual(len(parse(record(ROW, "a note with an escaped \\| in it is prose"))), 1)
+    def test_a_row_without_a_leading_pipe_is_an_error(self) -> None:
+        for row in ("The page renders | verified | `make verify` | a screenshot", "Live sync | not verified | no fake | -",
+                    "a | maybe | h | e", "a note with a | in it", "a \\| verified | h | e |", "#7 | verified | how | evidence",
+                    "--- | not verified | why | -", "1.2 | verified | how | evidence", "<div> Hidden | verified | x | y |",
+                    "<details> | verified | x | y |", "</div> | verified | x | y |", "<!-- x --> | verified | x | y |"):
+            with self.subTest(row=row):
+                self.check_rejects(record(ROW, row), 9, "table rows must start with |")
+                self.check_rejects(record(row, ROW), 8, "table rows must start with |")
+        self.check_rejects(record(ROW, header="Dimension | Status | How | Evidence"), 6, "table rows must start with |")
+        self.check_rejects(record(ROW, separator="--- | --- | --- | ---"), 7, "table rows must start with |")
+        self.assertEqual(len(parse(record(ROW, "a note with an escaped \\| in it is prose", "<div>no pipe here</div>"))), 1)
 
-    def test_a_row_with_a_blockquote_or_list_marker_is_an_error(self) -> None:
-        for prefix in ("> ", ">", "- ", "* ", "+ ", "1. ", "12) ", "1.\t", "# ", "###### ", "#\t"):
+    def test_a_row_with_a_blockquote_list_heading_or_html_start_is_an_error(self) -> None:
+        for prefix in ("> ", ">", "- ", "* ", "+ ", "1. ", "12) ", "1.\t", "# ", "###### ", "#\t", "<div> ", "<div>", "<table>",
+                       "<details> ", "<!-- x --> "):
             with self.subTest(prefix=prefix):
-                self.check_rejects(record(GAP, prefix + "Live sync | verified | a test | its name"), 9, "blockquote, list or heading marker")
-                self.check_rejects(record(GAP, prefix + ROW), 9, "blockquote, list or heading marker")
-                self.check_rejects(record(prefix + HEADER, header=HEADER), 8, "blockquote, list or heading marker")
-        self.assertEqual(parse(record("--- | not verified | why | -"))[0].dimension, "---")
-        self.assertEqual(parse(record("1.2 | verified | how | evidence"))[0].dimension, "1.2")
-        self.assertEqual(parse(record("#7 | verified | how | evidence"))[0].dimension, "#7")
+                self.check_rejects(record(GAP, prefix + "Live sync | verified | a test | its name"), 9, "table rows must start with |")
+                self.check_rejects(record(GAP, prefix + ROW), 9, AMBIGUOUS)
+                self.check_rejects(record(prefix + HEADER, header=HEADER), 8, AMBIGUOUS)
+
+    def test_every_block_start_scenario_is_the_real_record_or_an_error_never_the_example(self) -> None:
+        example = "| in an example | verified | a | b |"
+        bare = "in an example | verified | a | b |"
+        scenarios = {
+            "blockquote row": record(GAP, "> " + example),
+            "blockquote pipe-less row": record(GAP, "> " + bare),
+            "list row": record(GAP, "- " + example),
+            "list pipe-less row": record(GAP, "- " + bare),
+            "ordered list pipe-less row": record(GAP, "1. " + bare),
+            "heading pipe-less row": record(GAP, "# " + bare),
+            "html block pipe-less row": record(GAP, "<div> " + bare),
+            "html block row": record(GAP, "<div>" + example),
+            "html block before the rows": record(GAP, "<div>", bare),
+            "indented row": record(GAP, "    " + example),
+            "tab-indented row": record(GAP, "\t" + example),
+        }
+        for name, body in scenarios.items():
+            with self.subTest(scenario=name):
+                try:
+                    found = [d.dimension for d in parse(body)]
+                except ParseError:
+                    found = []
+                self.assertNotIn("in an example", found)
+                self.assertIn(found, ([], ["Live sync"]))
 
     def test_an_escaped_pipe_is_a_literal_pipe_in_a_cell(self) -> None:
         found = parse(record("| a \\| b | verified | `x \\| y` | out \\| put |"))
@@ -404,6 +440,8 @@ class Template(unittest.TestCase):
                        "open and close on one line", "rejected as ambiguous", "start at the first column", "plain top-level one"):
             self.assertIn(phrase, text)
         self.assertNotIn("other text between the markers, and everything outside them, is ignored", text)
+        self.assertIn("starts with `|` at the first column", text)
+        self.assertNotIn("leave off the leading pipe", text)
 
 
 class Skill(unittest.TestCase):
@@ -415,6 +453,8 @@ class Skill(unittest.TestCase):
                        "anywhere in the description"):
             self.assertIn(phrase, text)
         self.assertNotIn("nothing else between the markers is read", text)
+        self.assertIn("starts with `|` at the first column", text)
+        self.assertNotIn("leading pipe may be left off", text)
         for word in ("Waypoint", "Runway", "Darkroom", "AnthonyPluth", "http"):
             self.assertNotIn(word, text)
         example = text.split("```md\n", 1)[1].split("```", 1)[0]
