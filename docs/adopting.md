@@ -188,7 +188,7 @@ Secrets, both optional and passed by name: `ANTHROPIC_API_KEY` (an API key, whic
 
 ## Review mining
 
-`.github/workflows/review-mining.yml` (`workflow_call`) keeps one issue per repository, "Repeated review findings" (label `review-mining`, which must exist), rewritten each run: the kinds of review finding that came back on two or more pull requests in the window, with the check each should become, read from the reviews' hidden findings records and `AGENTS.md`'s "Mistakes that keep coming back" states; the kinds mostly dismissed, the findings open at merge and, where `[tool.fleet.verification]` is set, the areas that keep going unverified; no model, no secrets. Each row ends with a checkbox, "becomes an Agent task", that keeps its tick across rewrites. The report and its rules are in [review-mining.md](review-mining.md). The caller schedules it monthly, or weekly (`"17 6 * * 1"`): the issue is rewritten either way.
+`.github/workflows/review-mining.yml` (`workflow_call`) keeps one issue per repository, "Repeated review findings" (label `review-mining`, which must exist), rewritten each run: the kinds of review finding that came back on two or more pull requests in the window, with the check each should become, read from the reviews' hidden findings records and `AGENTS.md`'s "Mistakes that keep coming back" states; the kinds mostly dismissed, the findings open at merge and, where `[tool.fleet.verification]` is set, the areas that keep going unverified; at its top, "Loop health", whether review, verification and the report are improving the harness, beside last run's numbers, also in the job summary and the `loop-stats.json` artifact ([loop-stats.md](loop-stats.md)); no model, no secrets. Each row ends with a checkbox, "becomes an Agent task", that keeps its tick across rewrites. The report and its rules are in [review-mining.md](review-mining.md). The caller schedules it monthly, or weekly (`"17 6 * * 1"`): the issue is rewritten either way.
 
 ```yaml
 name: Review mining
@@ -203,7 +203,7 @@ permissions: {}
 jobs:
   mine:
     permissions:
-      contents: read           # AGENTS.md
+      contents: read           # AGENTS.md, and the default branch's commits for the loop stats
       issues: write            # the one issue
       pull-requests: read      # the pull requests in the window
     uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v1.0.0
@@ -212,7 +212,8 @@ jobs:
 | Input | Default | What |
 | --- | --- | --- |
 | `days` | `90` | The window, in days before the run, a pull request must have been updated in |
-| `dry-run` | `false` | Print the issue instead of opening or rewriting it |
+| `loop-stats-days` | `30` | The loop stats' window, in days before the run |
+| `dry-run` | `false` | Print the issue instead of opening or rewriting it (the job summary and the loop-stats artifact are still produced) |
 | `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the tool from (fleet's self-test only) |
 
 ### Ticked rows become Agent tasks
@@ -260,7 +261,8 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet test-timings DIR [--top N]` | Sums up the per-test timing files a timing test result wrote. | 0 |
 | `fleet review-outcomes --repo OWNER/NAME --pr N [--json] [--second]` | What became of each of a pull request's review findings: `open`, `resolved` by a later push, or `dismissed` by the owner with `/fleet dismiss f:<id> <reason>` ([agent-review.md](agent-review.md)). Reads the review comment and the pull request's comments with `gh`. | 0, 1 a failing `gh` |
 | `fleet agent-review [second] detect\|wanted\|previous\|plan\|risky\|report` | The agent reviews' decisions (`second` for the second review's marker, status and rules), run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
-| `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--app-root DIR] [--summary FILE] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings and outcomes records on the pull requests updated in the window (repeats, often dismissed, open at merge) and, where `DIR`'s `pyproject.toml` sets `[tool.fleet.verification]`, the verification gaps of the pull requests merged in it, run by `review-mining.yml` ([review-mining.md](review-mining.md)). | 0, 1 a failing `gh api`, 2 usage |
+| `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--app-root DIR] [--summary FILE] [--stats LOOP-STATS.json] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings and outcomes records on the pull requests updated in the window (repeats, often dismissed, open at merge) and, where `DIR`'s `pyproject.toml` sets `[tool.fleet.verification]`, the verification gaps of the pull requests merged in it, run by `review-mining.yml` ([review-mining.md](review-mining.md)); with `--stats`, a "Loop health" section at the top beside last run's numbers. | 0, 1 a failing `gh api`, 2 usage |
+| `fleet loop-stats --repo OWNER/NAME --json OUT.json --markdown OUT.md [--days 30] [--app-root DIR]` | Loop health over the window: the merged pull requests' reviews and what became of their findings, their verification records and the paths no guide covers (where `DIR` sets `[tool.fleet.verification]`), the report's rows and the issues opened from them, the harness changes on the default branch, `.fleet/version` and an open `fleet/sync` pull request, as schema 1 JSON and Markdown; a part it can't read is `null` and named, never zero ([loop-stats.md](loop-stats.md)). | 0 (also with parts not read), 1 the files can't be written, 2 usage |
 | `fleet mining-tasks --event PATH [--repo OWNER/NAME] [--dry-run]` | From an `issues` `edited` event of the "Repeated review findings" report by the owner, one Agent task issue per row of the current report that is ticked and not yet linked (at most 20 per run) (none when a `mined-from` marker for the row exists), and the ` → #N` written back on the row, run by `mining-tasks.yml` ([review-mining.md](review-mining.md#ticked-rows-become-agent-tasks)). | 0 (also when there is nothing to do), 1 a failing `gh api`, 2 an unreadable event or no repository |
 | `fleet verification show (--pr N \| --body-file PATH) [--json]` | The verification record in a pull request's description ([Verification records](#verification-records)): from pull request N in the current repository (`gh api repos/{owner}/{repo}/pulls/N --jq .body`) or a file (`-` is stdin). Text has mentions and HTML comments defused; `--json` prints `{"pr": N or null, "dimensions": [{"dimension", "status", "how", "evidence"}]}` with the cells as data. | 0, 1 a record that doesn't parse (the line and the rule), a failing `gh` or an unreadable file, 2 usage |
 | `fleet sync-plan [--root APP] [--changelog CHANGELOG.md --body FILE]` | The content sync's plan from the workflow pins and `.fleet/version` (`action=none\|sync\|migration`, `pin`, `title`, …), and the pull request's or issue's body from fleet's CHANGELOG at the pin, run by `sync.yml` ([Content sync](#content-sync-two-pins-two-bots)). | 0, 1 pins that disagree or another state it can't act on, 2 no app root |

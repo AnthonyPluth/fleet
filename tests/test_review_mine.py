@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fleet_tools import agent_review as ar
-from fleet_tools import cli, mining_tasks, review_outcomes, self_check
+from fleet_tools import cli, loop_health, mining_tasks, review_outcomes, self_check
 from fleet_tools import review_mine as rm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -707,13 +707,22 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn(f"GET repos/{REPO}/pulls/24/files?per_page=100", called)
         self.assertNotIn(f"GET repos/{REPO}/pulls/22/files?per_page=100", called)
 
+    def test_a_file_list_at_github_s_cap_skips_that_pull_request_and_is_counted(self) -> None:
+        data = self.gap_answers()
+        data[f"GET repos/{REPO}/pulls/21/files?per_page=100"] = [{"filename": f"lib/{i:04}.py"} for i in range(rm.MAX_FILES)]
+        result = self.miner.run(data, "--app-root", str(RUNWAY), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = result.stdout
+        self.assertIn("1 merged pull request(s) whose changed files couldn't be read in full were skipped.", body)
+        self.assertNotIn("row:gaps:screens", body)
+
     def test_a_failing_files_call_skips_that_pull_request_and_is_counted(self) -> None:
         data = self.gap_answers()
         data[f"GET repos/{REPO}/pulls/21/files?per_page=100"] = {"__status__": 502}
         result = self.miner.run(data, "--app-root", str(RUNWAY), "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         body = result.stdout
-        self.assertIn("1 merged pull request(s) whose changed files couldn't be read were skipped.", body)
+        self.assertIn("1 merged pull request(s) whose changed files couldn't be read in full were skipped.", body)
         self.assertNotIn("row:gaps:screens", body)
         self.assertNotIn("Chart colours", body)
         self.assertNotIn("502", body)
@@ -807,6 +816,156 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("<!-- row:open-at-merge:layout -->", result.stdout)
 
 
+def loop_stats(merged: int = 3, resolved: float | None = 0.4, when: str = NOW, days: int = 30) -> dict[str, Any]:
+    findings = {"raised": 5, "by_severity": {"blocking": 1, "advisory": 3, "unknown": 1}, "resolved": 2, "dismissed": 1, "open": 2,
+                "resolved_share": resolved, "dismissed_share": 0.2, "at_merge": 0, "open_at_merge": 0, "open_at_merge_share": None,
+                "indeterminate_at_merge": 0}
+    return {"schema": 1, "repo": REPO, "generated": when, "since": SINCE, "days": days, "default_branch": "main", "missing": [],
+            "reviews": {"merged": merged, "unread": 0, "with_agent_review": 2, "with_second_review": 1, "findings": findings},
+            "verification": {"configured": False},
+            "report": {"issue": 60, "rows": 2, "ticked": 1, "tasks_opened": 1, "tasks_opened_in_window": 1, "tasks_closed_in_window": 0},
+            "harness": {"commits": {"context": 1, "invariants": 0, "semgrep": 0, "skills": 2, "verification_guides": None, "total": 4},
+                        "checked_in_window": 1, "checked_items": ["Layout"], "days_since_change": {"AGENTS.md": 3}},
+            "fleet": {"version": "v1.0.0", "sync_open": False}}
+
+
+class LoopHealthTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.miner = Miner(self)
+        self.stats = self.miner.directory / "loop-stats.json"
+        self.comments = [review_comment(10, [finding("Layout", "Overflows")]), review_comment(11, [finding("Layout", "Cramped")])]
+        self.pulls = [pull(10), pull(11)]
+
+    def run_with(self, stats: dict[str, Any] | str | None, previous: str | None = None, *flags: str) -> str:
+        if isinstance(stats, dict):
+            self.stats.write_text(json.dumps(stats), encoding="utf-8")
+        elif isinstance(stats, str):
+            self.stats.write_text(stats, encoding="utf-8")
+        open_issues = [{"number": 60, "title": rm.TITLE, "body": previous}] if previous is not None else []
+        result = self.miner.run(answers(self.pulls, self.comments, open_issues), *(["--stats", str(self.stats)] if stats is not None else []), *flags)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.result = result
+        return self.miner.body()
+
+    def test_stats_for_another_repository_aren_t_used(self) -> None:
+        body = self.run_with({**loop_stats(), "repo": "owner/other"})
+        self.assertIn("owner/other", self.result.stderr)
+        self.assertNotIn(loop_health.PREFIX, body)
+
+    def test_now_with_an_offset_is_converted_to_utc(self) -> None:
+        now = rm.parse_now("2026-10-01T00:00:00-04:00")
+        self.assertEqual(rm.window(now, 0), "2026-10-01T04:00:00Z")
+
+    def test_the_section_and_the_hidden_line_lead_the_report(self) -> None:
+        body = self.run_with(loop_stats())
+        lines = body.splitlines()
+        self.assertEqual(lines[0], rm.MARKER)
+        summary = loop_health.decode(lines[1])
+        assert summary is not None
+        self.assertEqual(summary["values"]["merged"], 3)
+        self.assertEqual(summary["date"], "2026-10-01")
+        self.assertEqual(lines[2], "### Loop health")
+        self.assertLess(body.index("### Loop health"), body.index("Review findings that came back"))
+        self.assertIn("| Measure | This run (2026-10-01) |", body)
+        self.assertIn("| Merged pull requests | 3 |", body)
+        self.assertIn("| … resolved | 40% |", body)
+        self.assertIn("| … open at merge | n/a |", body)
+        self.assertIn("| Merged pull requests with a verification record | n/a |", body)
+        self.assertIn("No earlier numbers in this issue", body)
+        self.assertEqual(body.count("<!--"), 1 + 1 + body.count("<!-- row:"))
+        summary_text = self.miner.summary.read_text(encoding="utf-8")
+        self.assertNotIn("Loop health", summary_text)
+        self.assertNotIn("| Merged pull requests |", summary_text)
+        self.assertNotIn("<!-- loop-stats", summary_text)
+        self.assertNotIn(rm.MARKER, summary_text)
+        self.assertTrue(summary_text.startswith("Review findings that came back"))
+        self.assertEqual(set(mining_tasks.tasks_in(body)), {"repeated:layout"})
+
+    def test_last_run_s_numbers_round_trip_through_the_hidden_line(self) -> None:
+        first = self.run_with(loop_stats(merged=2, resolved=0.5, when="2026-09-01T00:00:00Z"))
+        second = self.run_with(loop_stats(), previous=first)
+        self.assertIn("| Measure | Last run (2026-09-01) | This run (2026-10-01) |", second)
+        self.assertIn("| Merged pull requests | 2 | 3 |", second)
+        self.assertIn("| … resolved | 50% | 40% |", second)
+        self.assertNotIn("No earlier numbers", second)
+        summary = loop_health.decode(second.splitlines()[1])
+        assert summary is not None
+        self.assertEqual(summary["values"]["merged"], 3)
+
+    def test_a_last_run_over_another_window_isn_t_compared(self) -> None:
+        first = self.run_with(loop_stats(merged=2, when="2026-09-01T00:00:00Z", days=90))
+        second = self.run_with(loop_stats(), previous=first)
+        self.assertIn("| Measure | This run (2026-10-01) |", second)
+        self.assertNotIn("Last run (", second)
+        self.assertIn("| Merged pull requests | 3 |", second)
+        self.assertIn("over the last 30 days", second)
+        self.assertIn("The last run (2026-09-01) covered 90 days, not 30, so it isn't compared", second)
+        summary = loop_health.decode(second.splitlines()[1])
+        assert summary is not None
+        self.assertEqual(summary["days"], 30)
+        third = self.run_with(loop_stats(merged=4), previous=second)
+        self.assertIn("| Merged pull requests | 3 | 4 |", third)
+
+    def test_a_malformed_or_oversized_previous_line_is_ignored(self) -> None:
+        good = loop_health.encode({"schema": 1, "date": "2026-09-01", "days": 30, "values": {"merged": 2}})
+        forged = good.replace("loop-stats ", "loop-stats x")
+        oversized = f"<!-- loop-stats {'A' * 4000} -->"
+        wrong = loop_health.encode({"schema": 1, "date": "2026-09-01", "days": 30, "values": {"merged": -2}})
+        for line in (forged, oversized, wrong, "<!-- loop-stats e30= -->"):
+            body = self.run_with(loop_stats(), previous=f"{rm.MARKER}\n{line}\nold")
+            self.assertNotIn("Last run", body, line[:40])
+            self.assertIn("No earlier numbers in this issue", body)
+        moved = self.run_with(loop_stats(), previous=f"{rm.MARKER}\nintro\n{good}")
+        self.assertNotIn("Last run", moved)
+
+    def test_this_run_s_numbers_unreadable_keeps_the_last_run_s(self) -> None:
+        first = self.run_with(loop_stats(merged=2, when="2026-09-01T00:00:00Z"))
+        whole = loop_stats()
+        reviews = {k: v for k, v in whole["reviews"].items() if k != "findings"}
+        findings = {k: v for k, v in whole["reviews"]["findings"].items() if k != "resolved_share"}
+        truncated = [{k: v for k, v in whole.items() if k != "reviews"}, {**whole, "reviews": reviews},
+                     {**whole, "reviews": {**whole["reviews"], "findings": findings}}, {**whole, "extra": 1},
+                     {**whole, "verification": {"configured": 0}}, {**whole, "missing": None}]
+        for broken in ("{not json", json.dumps({**loop_stats(), "schema": 2}), json.dumps(loop_stats(merged=-1)),
+                       *(json.dumps(each) for each in truncated)):
+            body = self.run_with(broken, previous=first)
+            self.assertIn("review-mine: the loop stats in", self.result.stderr)
+            self.assertIn("| Measure | Last run (2026-09-01) |", body)
+            self.assertNotIn("This run (", body)
+            self.assertIn("This run's numbers couldn't be read", body)
+            self.assertEqual(body.splitlines()[1], first.splitlines()[1])
+        self.miner.summary.unlink()
+        nothing = self.run_with("{", previous="old body")
+        self.assertIn("this issue holds no earlier ones", nothing)
+        self.assertFalse(nothing.splitlines()[1].startswith(loop_health.PREFIX))
+
+    def test_explicit_nulls_are_this_run_s_numbers(self) -> None:
+        first = self.run_with(loop_stats(merged=2, when="2026-09-01T00:00:00Z"))
+        unread = {**loop_stats(), "reviews": None, "harness": None, "missing": ["reviews: gh api failed (1)"]}
+        body = self.run_with(unread, previous=first)
+        self.assertIn("| Merged pull requests | 2 | n/a |", body)
+        self.assertNotIn("couldn't be read", body)
+        summary = loop_health.decode(body.splitlines()[1])
+        assert summary is not None
+        self.assertIsNone(summary["values"]["merged"])
+        self.assertEqual(summary["values"]["rows"], 2)
+
+    def test_without_stats_the_report_is_unchanged(self) -> None:
+        body = self.run_with(None, previous=f"{rm.MARKER}\n{loop_health.encode({'schema': 1, 'date': '2026-09-01', 'days': 30, 'values': {}})}\n")
+        self.assertNotIn("Loop health", body)
+        self.assertNotIn("loop-stats", body)
+        self.assertTrue(body.splitlines()[1].startswith("Review findings that came back"))
+
+    def test_a_dry_run_prints_the_section_and_writes_nothing(self) -> None:
+        self.stats.write_text(json.dumps(loop_stats()), encoding="utf-8")
+        result = self.miner.run(answers(self.pulls, self.comments), "--stats", str(self.stats), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Loop health", result.stdout)
+        self.assertIn("<!-- loop-stats ", result.stdout)
+        self.assertEqual(self.miner.writes(), [])
+        self.assertNotIn("Loop health", self.miner.summary.read_text(encoding="utf-8"))
+
+
 def mapping(node: object) -> dict[str, Any]:
     assert isinstance(node, dict), node
     return node
@@ -821,8 +980,10 @@ class WorkflowTest(unittest.TestCase):
         workflow = mapping(self.workflow)
         call = mapping(mapping(workflow["on"])["workflow_call"])
         inputs = mapping(call["inputs"])
-        self.assertEqual(sorted(inputs), ["days", "dry-run", "fleet-ref"])
+        self.assertEqual(sorted(inputs), ["days", "dry-run", "fleet-ref", "loop-stats-days"])
         self.assertEqual(mapping(inputs["days"])["default"], "90")
+        self.assertEqual(mapping(inputs["loop-stats-days"])["default"], "30")
+        self.assertEqual(mapping(mapping(call["outputs"])["loop-stats-url"])["value"], "${{ jobs.mine.outputs.loop-stats-url }}")
         self.assertEqual(mapping(inputs["dry-run"])["default"], "false")
         self.assertNotIn("secrets", call)
         self.assertNotIn("secrets.", self.text)
@@ -835,16 +996,41 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(self.text, r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
         self.assertEqual(self.text.count("actions/checkout@"), 2)
         self.assertEqual(self.text.count("persist-credentials: false"), 2)
+        self.assertEqual(mine["outputs"], {"loop-stats-url": "${{ steps.upload.outputs.artifact-url }}"})
         steps = mine["steps"]
         assert isinstance(steps, list)
         for step in map(mapping, steps):
-            if "uses" in step:
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
                 self.assertIn(mapping(step["with"]).get("path"), ("app", ".fleet"))
-        self.assertEqual(len([s for s in map(mapping, steps) if "run" in s]), 1)
-        script = self.text.split("run: |", 1)[1]
+        self.assertEqual([s.get("name") for s in map(mapping, steps) if "run" in s], ["Measure the loop", "Rewrite the report"])
+        upload = [mapping(s) for s in steps if str(mapping(s).get("uses", "")).startswith("actions/upload-artifact@")]
+        self.assertEqual(len(upload), 1)
+        self.assertRegex(str(upload[0]["uses"]), r"^actions/upload-artifact@[0-9a-f]{40}$")
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2", self.text)
+        self.assertEqual(upload[0]["id"], "upload")
+        self.assertEqual(mapping(upload[0]["with"]), {"path": "${{ runner.temp }}/loop-stats/loop-stats.json", "archive": "false",
+                                                      "retention-days": "90", "if-no-files-found": "error"})
+        names = [mapping(s).get("name") or mapping(s).get("uses") for s in steps]
+        self.assertLess(names.index("Measure the loop"), names.index(upload[0]["uses"]))
+        self.assertLess(names.index(upload[0]["uses"]), names.index("Rewrite the report"))
+        rewrite = mapping(next(s for s in steps if mapping(s).get("name") == "Rewrite the report"))
+        self.assertEqual(rewrite["if"], "${{ !cancelled() && steps.app.outcome == 'success' && steps.fleet.outcome == 'success' }}")
+        self.assertEqual([mapping(s).get("id") for s in steps], ["app", "fleet", None, "upload", None])
+        self.assertNotIn("success()", str(rewrite["if"]))
+        self.assertNotIn("steps.upload", str(rewrite["if"]))
+        self.assertNotIn("Measure", str(rewrite["if"]))
+        for step in map(mapping, steps):
+            self.assertNotIn("continue-on-error", step)
+            if step is not rewrite:
+                self.assertNotIn("if", step)
+        measure, script = self.text.split("run: |")[1:3]
+        self.assertIn("python3 -E -s -m fleet_tools.cli loop-stats", measure)
+        self.assertIn('--json "$OUT/loop-stats.json" --markdown "$OUT/loop-stats.md"', measure)
+        self.assertIn('cat "$OUT/loop-stats.md" >> "$GITHUB_STEP_SUMMARY"', measure)
+        self.assertNotRegex(measure.split("- uses:", 1)[0], r"\$\{\{")
         self.assertIn("python3 -E -s -m fleet_tools.cli review-mine", script)
         self.assertIn("cd .fleet", script)
-        self.assertIn('--summary "$GITHUB_STEP_SUMMARY"', script)
+        self.assertIn('--summary "$GITHUB_STEP_SUMMARY" --stats "$STATS"', script)
         self.assertIn('--app-root "$GITHUB_WORKSPACE/app"', script)
         app = mapping(mapping(steps[0])["with"])
         self.assertEqual(app["path"], "app")
@@ -860,6 +1046,14 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(job["uses"], "./.github/workflows/review-mining.yml")
         self.assertEqual(job["with"], {"fleet-ref": "${{ github.sha }}", "dry-run": "true"})
         self.assertEqual(job["permissions"], {"contents": "read", "issues": "write", "pull-requests": "read"})
+        check = mapping(mapping(workflow["jobs"])["review-mining-artifact"])
+        self.assertEqual(check["needs"], "[review-mining]")
+        self.assertEqual(check["permissions"], {"actions": "read"})
+        steps = check["steps"]
+        assert isinstance(steps, list)
+        step = mapping(steps[0])
+        self.assertEqual(mapping(step["env"])["URL"], "${{ needs.review-mining.outputs.loop-stats-url }}")
+        self.assertIn('select(.name == "loop-stats.json")', (WORKFLOWS / "self-test.yml").read_text(encoding="utf-8"))
         for doc in ("docs/review-mining.md", "docs/adopting.md"):
             text = (ROOT / doc).read_text(encoding="utf-8")
             self.assertIn("17 6 1 * *", text, doc)
