@@ -58,6 +58,7 @@ LIMITS = {"kind": 120, "title": 200, "file": 300, "check": 300}
 MISTAKES_HEADING = "## Mistakes that keep coming back"
 ITEM = re.compile(r"^- \*\*(?P<title>[^*]+)\*\*(?:\s*\((?P<state>[^)]*))?")
 ROW = re.compile(r"^- \[(?P<tick>[ xX])\] <!-- row:(?P<id>[a-z0-9:-]+) -->(?P<rest>.*?)(?: → #(?P<issue>\d+))?$")
+MINED = re.compile(r"^<!-- mined-from row:(?P<id>[a-z0-9:-]+) -->$")
 ISSUE_URL = re.compile(r"/issues/(\d+)$")
 NOT_WORD = re.compile(r"[^a-z0-9]+")
 
@@ -185,6 +186,24 @@ def gh(*args: str, stdin: str | None = None) -> Any:
         if isinstance(page, list):
             joined.extend(page)
     return joined
+
+
+def mined(repo: str) -> dict[str, int]:
+    found = gh("--paginate", f"repos/{repo}/issues?state=all&labels={LABEL}&per_page={PER_PAGE}")
+    markers: dict[str, int] = {}
+    for issue in found if isinstance(found, list) else []:
+        if not isinstance(issue, dict) or "pull_request" in issue or not isinstance(issue.get("number"), int):
+            continue
+        user = issue.get("user")
+        if not isinstance(user, dict) or user.get("login") != BOT:
+            continue
+        text = issue.get("body")
+        for line in text.splitlines() if isinstance(text, str) else []:
+            marker = MINED.match(line.strip())
+            if marker:
+                row_id = marker.group("id")
+                markers[row_id] = min(markers.get(row_id, issue["number"]), issue["number"])
+    return markers
 
 
 def mistakes(text: str) -> dict[str, Item]:
@@ -665,8 +684,11 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
 
 
 def render(rows: list[Row], repo: str, days: int, since: str, counts: tuple[int, int], previous: str = "",
-           run_url: str = "", signals: Signals | None = None) -> str:
+           run_url: str = "", signals: Signals | None = None, markers: dict[str, int] | None = None) -> str:
     kept = ticks_of(previous)
+    for row_id, number in (markers or {}).items():
+        if not kept.get(row_id, (False, ""))[1]:
+            kept[row_id] = (True, str(number))
     lines = [
         MARKER,
         f"Review findings that came back on more than one pull request of `{repo}` updated in the last {days} days "
@@ -756,9 +778,11 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     settings = verification_settings(app_root)
     if settings is not None:
         signals.gaps = verification_gaps(repo, pulls, *settings)
+    markers = mined(repo)
     existing = report_issue(repo)
     previous = str(existing.get("body") or "") if existing else ""
-    body = render(rows, repo, days, since, (len(numbers), len({n for n, _ in records})), previous, os.environ.get("RUN_URL", ""), signals)
+    body = render(rows, repo, days, since, (len(numbers), len({n for n, _ in records})), previous, os.environ.get("RUN_URL", ""), signals,
+                  markers)
     rows_count = len(rows) + signals.count()
     print(f"review-mine: {len(numbers)} pull request(s) updated since {since[:10]}, {len({n for n, _ in records})} with findings, "
           f"{len(merged)} merged, {rows_count} row(s)")

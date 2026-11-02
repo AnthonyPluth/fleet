@@ -7,7 +7,7 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 ## Adopting, step by step
 
 1. **Pick a release** and pin every fleet workflow at its commit, with the tag in the comment (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<commit>   # vX.Y.Z`). All the pins move together: `sync.yml` fails when they disagree.
-2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
+2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining) and [its tasks caller](#ticked-rows-become-agent-tasks), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
 3. **Set `[tool.fleet]`** in `pyproject.toml` ([`[tool.fleet]`](#toolfleet)), key by key: a check runs only where its key is set. Add `[tool.fleet.verification]` (with `guides` once the app has [verification guides](#verification-guides)) when the pull requests carry a [verification record](#verification-records).
 4. **Sync fleet's content** once by hand: `.fleet/version` names the release, the shim `tools/fleet` runs fleet at that version, and the first `tools/fleet sync` writes the `AGENTS.md` blocks and the vendored `.claude/` files. Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
 
@@ -215,6 +215,32 @@ jobs:
 | `dry-run` | `false` | Print the issue instead of opening or rewriting it |
 | `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the tool from (fleet's self-test only) |
 
+### Ticked rows become Agent tasks
+
+`.github/workflows/mining-tasks.yml` (`workflow_call`) opens one Agent task issue, once, per row of the report that is ticked and links no issue yet, on each edit of the report by the owner, and writes ` → #N` back on the row; nothing runs for anyone else's edit, or for any other issue. No secrets, `issues: write` only. The rules are in [review-mining.md](review-mining.md#ticked-rows-become-agent-tasks).
+
+```yaml
+name: Mining tasks
+
+on:
+  issues:
+    types: [edited]
+
+permissions: {}
+
+jobs:
+  tasks:
+    permissions:
+      issues: write            # open the task issues and link the report's rows
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v1.0.0
+```
+
+| Input | Default | What |
+| --- | --- | --- |
+| `dry-run` | `false` | Print the issues and links instead of writing them |
+| `fixture` | none | Self-test only: an issues event payload in fleet's checkout, read in place of the real event; implies `dry-run` |
+| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the tool from (fleet's self-test only) |
+
 ## The `fleet` command
 
 `fleet_tools` is standard library only (Python 3.11 or newer), so a runner's system `python3` runs it from a checkout of fleet with nothing installed:
@@ -235,6 +261,7 @@ Each command finds the app's root as the nearest `pyproject.toml` up from the wo
 | `fleet review-outcomes --repo OWNER/NAME --pr N [--json] [--second]` | What became of each of a pull request's review findings: `open`, `resolved` by a later push, or `dismissed` by the owner with `/fleet dismiss f:<id> <reason>` ([agent-review.md](agent-review.md)). Reads the review comment and the pull request's comments with `gh`. | 0, 1 a failing `gh` |
 | `fleet agent-review [second] detect\|wanted\|previous\|plan\|risky\|report` | The agent reviews' decisions (`second` for the second review's marker, status and rules), run by `agent-review.yml` as `python3 -I .fleet/fleet_tools/agent_review.py` ([agent-review.md](agent-review.md)). | 0, 2 usage |
 | `fleet review-mine --repo OWNER/NAME [--days 90] [--agents-md AGENTS.md] [--app-root DIR] [--summary FILE] [--dry-run]` | The "Repeated review findings" issue, from the reviews' findings and outcomes records on the pull requests updated in the window (repeats, often dismissed, open at merge) and, where `DIR`'s `pyproject.toml` sets `[tool.fleet.verification]`, the verification gaps of the pull requests merged in it, run by `review-mining.yml` ([review-mining.md](review-mining.md)). | 0, 1 a failing `gh api`, 2 usage |
+| `fleet mining-tasks --event PATH [--repo OWNER/NAME] [--dry-run]` | From an `issues` `edited` event of the "Repeated review findings" report by the owner, one Agent task issue per row of the current report that is ticked and not yet linked (at most 20 per run) (none when a `mined-from` marker for the row exists), and the ` → #N` written back on the row, run by `mining-tasks.yml` ([review-mining.md](review-mining.md#ticked-rows-become-agent-tasks)). | 0 (also when there is nothing to do), 1 a failing `gh api`, 2 an unreadable event or no repository |
 | `fleet verification show (--pr N \| --body-file PATH) [--json]` | The verification record in a pull request's description ([Verification records](#verification-records)): from pull request N in the current repository (`gh api repos/{owner}/{repo}/pulls/N --jq .body`) or a file (`-` is stdin). Text has mentions and HTML comments defused; `--json` prints `{"pr": N or null, "dimensions": [{"dimension", "status", "how", "evidence"}]}` with the cells as data. | 0, 1 a record that doesn't parse (the line and the rule), a failing `gh` or an unreadable file, 2 usage |
 | `fleet sync-plan [--root APP] [--changelog CHANGELOG.md --body FILE]` | The content sync's plan from the workflow pins and `.fleet/version` (`action=none\|sync\|migration`, `pin`, `title`, …), and the pull request's or issue's body from fleet's CHANGELOG at the pin, run by `sync.yml` ([Content sync](#content-sync-two-pins-two-bots)). | 0, 1 pins that disagree or another state it can't act on, 2 no app root |
 

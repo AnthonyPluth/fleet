@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fleet_tools import agent_review as ar
-from fleet_tools import cli, review_outcomes, self_check
+from fleet_tools import cli, mining_tasks, review_outcomes, self_check
 from fleet_tools import review_mine as rm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +23,7 @@ SINCE = "2026-07-03T00:00:00Z"
 PULLS = f"GET repos/{REPO}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=1"
 COMMENTS = f"GET repos/{REPO}/issues/comments?since={SINCE}&per_page=100"
 OPEN = f"GET repos/{REPO}/issues?state=open&labels=review-mining&per_page=100"
+MINED = f"GET repos/{REPO}/issues?state=all&labels=review-mining&per_page=100"
 CREATE = f"POST repos/{REPO}/issues"
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
@@ -85,7 +86,7 @@ def history(number: int, page: int = 1) -> str:
 
 
 def answers(pulls: list[dict[str, Any]], comments: list[dict[str, Any]], open_issues: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    data: dict[str, Any] = {PULLS: pulls, COMMENTS: comments, OPEN: open_issues or [], CREATE: {"number": 77},
+    data: dict[str, Any] = {PULLS: pulls, COMMENTS: comments, OPEN: open_issues or [], MINED: [], CREATE: {"number": 77},
                             f"PATCH repos/{REPO}/issues/60": {"number": 60}}
     for comment in comments:
         number = rm.issue_number(comment)
@@ -280,6 +281,26 @@ class RewriteTest(unittest.TestCase):
         self.assertNotIn("failure-paths", gone)
         self.assertIn("→ #41", gone)
 
+    def test_the_links_mining_tasks_writes_survive_a_rewrite_and_go_with_a_row_that_disappears(self) -> None:
+        records = {(n, "agent-review"): ("2026-08-01T00:00:00Z", [finding("Failure paths"), finding("Layout")]) for n in (1, 2)}
+        first = rm.render(rm.rows_of(rm.groups_of(records, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2)).replace("\n", "\r\n")
+        ticked = first.replace("- [ ] <!-- row:repeated:failure-paths -->", "- [x] <!-- row:repeated:failure-paths -->")
+        ticked = ticked.replace("- [ ] <!-- row:repeated:layout -->", "- [x] <!-- row:repeated:layout -->")
+        previous = mining_tasks.linked(ticked, {"repeated:failure-paths": 81, "repeated:layout": 82})
+        self.assertEqual(rm.ticks_of(previous), {"repeated:failure-paths": (True, "81"), "repeated:layout": (True, "82")})
+        again = {(n, "agent-review"): ("2026-09-01T00:00:00Z", [finding("Layout"), finding("Undo and restore")]) for n in (3, 4)}
+        second = rm.render(rm.rows_of(rm.groups_of(again, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2), previous=previous)
+        self.assertIn("- [x] <!-- row:repeated:layout --> **Layout** becomes an Agent task → #82\n", second)
+        self.assertEqual(rm.ticks_of(second), {"repeated:layout": (True, "82"), "repeated:undo-and-restore": (False, "")})
+        self.assertNotIn("#81", second)
+        back = rm.render(rm.rows_of(rm.groups_of(records, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2), previous=second)
+        self.assertIn("- [ ] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task\n", back)
+        self.assertEqual(mining_tasks.pending(back.replace("- [ ] <!-- row:repeated:failure-paths -->", "- [x] <!-- row:repeated:failure-paths -->")),
+                         ["repeated:failure-paths"])
+        restored = rm.render(rm.rows_of(rm.groups_of(records, rm.mistakes(AGENTS))), REPO, 90, SINCE, (2, 2), previous=second,
+                             markers={"repeated:failure-paths": 81, "repeated:layout": 99})
+        self.assertEqual(rm.ticks_of(restored), {"repeated:failure-paths": (True, "81"), "repeated:layout": (True, "82")})
+
     def test_a_previous_body_can_t_forge_a_tick_outside_a_row_line(self) -> None:
         self.assertEqual(rm.ticks_of("text <!-- row:repeated:x --> [x]\n- [x] <!-- row:repeated:y --> k becomes an Agent task → #9 extra"),
                          {"repeated:y": (True, "")})
@@ -329,7 +350,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("| **Failure paths** |", summary)
         self.assertNotIn(rm.MARKER, summary)
         calls = [c["call"] for c in self.miner.calls()]
-        self.assertEqual([c for c in calls if not re.search(r"/issues/\d+/comments", c)][:3], [PULLS, COMMENTS, OPEN])
+        self.assertEqual([c for c in calls if not re.search(r"/issues/\d+/comments", c)][:4], [PULLS, COMMENTS, MINED, OPEN])
         self.assertEqual(sorted(c for c in calls if re.search(r"/issues/\d+/comments", c)), [history(10), history(11), history(12)])
 
     def test_a_second_run_rewrites_the_open_issue_and_keeps_its_ticks(self) -> None:
@@ -345,6 +366,17 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(set(writes[0][1]), {"body"})
         self.assertIn("- [x] <!-- row:repeated:layout --> **Layout** becomes an Agent task → #41\n", body)
         self.assertIn("- [ ] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task\n", body)
+
+    def test_a_link_lost_from_the_body_comes_back_from_the_bot_s_mined_from_marker(self) -> None:
+        open_issues = [{"number": 60, "title": rm.TITLE, "body": "- [ ] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task\n"}]
+        data = answers(self.pulls, self.comments, open_issues)
+        data[MINED] = [{"number": 81, "user": {"login": rm.BOT}, "body": "x\n<!-- mined-from row:repeated:failure-paths -->\n"},
+                       {"number": 82, "user": {"login": "someone"}, "body": "<!-- mined-from row:repeated:layout -->"}]
+        result = self.miner.run(data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertIn("- [x] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task → #81\n", body)
+        self.assertIn("- [ ] <!-- row:repeated:layout --> **Layout** becomes an Agent task\n", body)
 
     def test_nothing_repeated_rewrites_an_open_issue_but_opens_none(self) -> None:
         few = [self.comments[0]]

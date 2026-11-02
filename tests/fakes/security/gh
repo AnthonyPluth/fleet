@@ -27,7 +27,12 @@ def main(argv: list[str]) -> int:
         else:
             path = arg
     key = f"{method} {path}"
-    with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as log:
+    log_path = os.environ["FAKE_GH_LOG"]
+    earlier = 0
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as log:
+            earlier = sum(1 for line in log if line.strip() and json.loads(line)["call"] == key)
+    with open(log_path, "a", encoding="utf-8") as log:
         log.write(json.dumps({"call": key, "input": stdin}) + "\n")
     with open(os.environ["FAKE_GH_ANSWERS"], encoding="utf-8") as file:
         answers = json.load(file)
@@ -35,6 +40,9 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"gh: Not Found (HTTP 404) for {key}\n")
         return 1
     answer = answers[key]
+    if isinstance(answer, dict) and "__series__" in answer:
+        series = answer["__series__"]
+        answer = series[min(earlier, len(series) - 1)]
     if isinstance(answer, dict) and "__status__" in answer:
         sys.stderr.write(f"gh: HTTP {answer['__status__']} for {key}\n")
         return 1

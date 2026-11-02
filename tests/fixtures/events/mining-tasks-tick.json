@@ -1,0 +1,32 @@
+{
+  "action": "edited",
+  "changes": {
+    "body": {
+      "from": "<!-- review-mining -->\nReview findings that came back on more than one pull request of `example/app` updated in the last 90 days (since 2026-07-03), read from the \"Agent review\" and \"Second review\" comments and counted per kind of `AGENTS.md`'s \"Mistakes that keep coming back\". A kind is listed when it appears on two or more pull requests and isn't fully checked, or when it is checked and still appears (the check misses a case); dismissed findings don't count. Each run rewrites this issue; a row is closed by a check, not by a new sentence in `AGENTS.md`. Tick a row and it becomes an Agent task: the tick and the issue opened from it stay through each rewrite.\n\n### Repeated findings\n\n| Kind | State | Pull requests | Fixed | Last seen | Proposed check |\n| --- | --- | --- | --- | --- | --- |\n| **Failure paths** | human-judged | [#10](https://github.com/example/app/pull/10), [#11](https://github.com/example/app/pull/11) | 1 | 2026-09-11 | a test of what the user sees on the failing path @​octocat &lt;!-- x --> |\n| **Layout** | human-judged | [#12](https://github.com/example/app/pull/12), [#13](https://github.com/example/app/pull/13) | 0 | 2026-09-12 | screenshots at phone and desktop widths from `make verify` |\n\n- [ ] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task\n- [ ] <!-- row:repeated:layout --> **Layout** becomes an Agent task\n\n### Often dismissed\n\nKinds with at least 3 findings dismissed by the owner in the window, dismissals being at least half of the kind's findings: the reviewer's guidance needs to say when this isn't a finding.\n\n| Kind | Raised | Fixed | Dismissed | Dismissal reasons | Proposal |\n| --- | --- | --- | --- | --- | --- |\n| **Layout** | 5 | 1 | 4 | \"desktop-only page\" (#12) | Review guidance: say when this isn't a finding, in the app's `.github/agent-review/context.md` or in fleet's `prompt.md` if it holds for every app |\n\n- [ ] <!-- row:dismissed:layout --> **Layout** becomes an Agent task\n\n### Open at merge\n\nFindings still open when their pull request merged in the window, per kind: the merge path let them through.\n\n| Kind | Open at merge | Pull requests |\n| --- | --- | --- |\n| **Failure paths** | 2 | [#14](https://github.com/example/app/pull/14) |\n\n- [ ] <!-- row:open-at-merge:failure-paths --> **Failure paths** becomes an Agent task\n\n<sub>4 pull request(s) updated in the window, 4 with review findings. From fleet's review-mining.yml ([run](https://example.invalid/run/1)).</sub>\n"
+    }
+  },
+  "issue": {
+    "number": 60,
+    "title": "Repeated review findings",
+    "body": "<!-- review-mining -->\nReview findings that came back on more than one pull request of `example/app` updated in the last 90 days (since 2026-07-03), read from the \"Agent review\" and \"Second review\" comments and counted per kind of `AGENTS.md`'s \"Mistakes that keep coming back\". A kind is listed when it appears on two or more pull requests and isn't fully checked, or when it is checked and still appears (the check misses a case); dismissed findings don't count. Each run rewrites this issue; a row is closed by a check, not by a new sentence in `AGENTS.md`. Tick a row and it becomes an Agent task: the tick and the issue opened from it stay through each rewrite.\n\n### Repeated findings\n\n| Kind | State | Pull requests | Fixed | Last seen | Proposed check |\n| --- | --- | --- | --- | --- | --- |\n| **Failure paths** | human-judged | [#10](https://github.com/example/app/pull/10), [#11](https://github.com/example/app/pull/11) | 1 | 2026-09-11 | a test of what the user sees on the failing path @​octocat &lt;!-- x --> |\n| **Layout** | human-judged | [#12](https://github.com/example/app/pull/12), [#13](https://github.com/example/app/pull/13) | 0 | 2026-09-12 | screenshots at phone and desktop widths from `make verify` |\n\n- [x] <!-- row:repeated:failure-paths --> **Failure paths** becomes an Agent task\n- [ ] <!-- row:repeated:layout --> **Layout** becomes an Agent task\n\n### Often dismissed\n\nKinds with at least 3 findings dismissed by the owner in the window, dismissals being at least half of the kind's findings: the reviewer's guidance needs to say when this isn't a finding.\n\n| Kind | Raised | Fixed | Dismissed | Dismissal reasons | Proposal |\n| --- | --- | --- | --- | --- | --- |\n| **Layout** | 5 | 1 | 4 | \"desktop-only page\" (#12) | Review guidance: say when this isn't a finding, in the app's `.github/agent-review/context.md` or in fleet's `prompt.md` if it holds for every app |\n\n- [ ] <!-- row:dismissed:layout --> **Layout** becomes an Agent task\n\n### Open at merge\n\nFindings still open when their pull request merged in the window, per kind: the merge path let them through.\n\n| Kind | Open at merge | Pull requests |\n| --- | --- | --- |\n| **Failure paths** | 2 | [#14](https://github.com/example/app/pull/14) |\n\n- [ ] <!-- row:open-at-merge:failure-paths --> **Failure paths** becomes an Agent task\n\n<sub>4 pull request(s) updated in the window, 4 with review findings. From fleet's review-mining.yml ([run](https://example.invalid/run/1)).</sub>\n",
+    "user": {
+      "login": "github-actions[bot]",
+      "type": "Bot"
+    },
+    "labels": [
+      {
+        "name": "review-mining"
+      }
+    ],
+    "html_url": "https://github.com/example/app/issues/60"
+  },
+  "repository": {
+    "full_name": "example/app",
+    "owner": {
+      "login": "example"
+    }
+  },
+  "sender": {
+    "login": "example"
+  }
+}
