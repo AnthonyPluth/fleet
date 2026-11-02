@@ -596,7 +596,7 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(env, dict)
         for variable in [
             "REQUIRED_WORKFLOWS", "IGNORED_WORKFLOWS", "REQUIRED_STATUSES", "IGNORED_APPS", "POLL_SECONDS", "POLL_ATTEMPTS",
-            "BLOCKING_THREAD_BADGES", "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
+            "BLOCKING_THREAD_BADGES", "BLOCKING_THREAD_AUTHORS", "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
         ]:
             self.assertIn(variable, env)
 
