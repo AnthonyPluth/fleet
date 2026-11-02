@@ -1,7 +1,10 @@
 import contextlib
 import io
 import json
+import random
+import re
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -147,6 +150,53 @@ class Matching(unittest.TestCase):
         self.assertTrue(found.covers("src/x.py"))
         self.assertFalse(found.covers("src/x/y.py"))
         self.assertTrue(found.covers("src/.hidden.py"))
+
+    def test_alternating_wildcards_dont_backtrack_exponentially(self) -> None:
+        found = guide(VALID.replace("- tests/test_settings.py", "- `src/*?*?*?*?*?*?*?*?*?*?*?*?a`\n- `**/*?*?*?*?*?*?*?*?b`"))
+        started = time.monotonic()
+        self.assertFalse(found.covers("src/" + "x" * 10000))
+        self.assertFalse(found.covers("/".join(["y" * 200] * 60) + "/" + "x" * 10000))
+        self.assertTrue(found.covers("src/" + "x" * 10000 + "a"))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_double_star_across_many_segments(self) -> None:
+        found = guide(VALID.replace("- tests/test_settings.py", "- `a/**/b/**/c/*.py`\n- `**/x/**`"))
+        deep = "/".join(f"d{index}" for index in range(60))
+        for path, covered in ((f"a/{deep}/b/{deep}/c/m.py", True), ("a/b/c/m.py", True), (f"a/{deep}/c/m.py", False),
+                              (f"a/{deep}/b/c/sub/m.py", False), (f"{deep}/x/{deep}", True), ("x/y", True), ("x", False),
+                              ("q/x", False), ("q/x/", False)):
+            with self.subTest(path=path[:40]):
+                self.assertEqual(found.covers(path), covered)
+
+    def test_the_matcher_agrees_with_a_reference_regex(self) -> None:
+        def reference(glob: str) -> re.Pattern[str]:
+            parts = glob.split("/")
+            out = []
+            for index, part in enumerate(parts):
+                last = index == len(parts) - 1
+                if part == "**":
+                    out.append(".+" if last else "(?:[^/]+/)*")
+                    continue
+                piece = "".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in part)
+                out.append(piece if last else piece + "/")
+            return re.compile("".join(out), re.DOTALL)
+
+        chooser = random.Random(19)
+        pieces = ["a", "b", "*", "?", "ab", "*a", "a*", "?b*"]
+        for _ in range(3000):
+            segments = ["**" if chooser.random() < 0.25 else "".join(chooser.choices(pieces, k=chooser.randint(1, 3)))
+                        for _ in range(chooser.randint(1, 4))]
+            if any("**" in segment and segment != "**" for segment in segments):
+                continue
+            glob = "/".join(segments)
+            path = "/".join("".join(chooser.choices("ab\n", k=chooser.randint(1, 4))) for _ in range(chooser.randint(1, 5)))
+            found = guide(VALID.replace("- tests/test_settings.py", f"- `{glob}`"))
+            with self.subTest(glob=glob, path=path):
+                self.assertEqual(found.paths[1].matches(path), reference(glob).fullmatch(path) is not None)
+
+    def test_long_globs_are_refused(self) -> None:
+        self.assertIn("over 1000 characters or 64 segments", error_of(VALID.replace("- tests/test_settings.py", "- " + "a" * 1001)).rule)
+        self.assertIn("over 1000 characters", error_of(VALID.replace("- tests/test_settings.py", "- " + "/".join(["a"] * 65))).rule)
 
     def test_areas_returns_every_matching_area_and_the_uncovered(self) -> None:
         other = parse_guide(VALID.replace("# Settings", "# Tests").replace("src/settings/**", "tests/**"), "g/tests.md", "tests")

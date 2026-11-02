@@ -15,6 +15,8 @@ NOTHING = ("Nothing", "Nothing.")
 MAX_GUIDE = 65536
 MAX_GUIDES = 200
 MAX_ITEMS = 200
+MAX_GLOB = 1000
+MAX_SEGMENTS = 64
 MAX_STDIN = 16 * 1024 * 1024
 TITLE = re.compile(r"# (?P<area>\S.*)")
 HEADING = re.compile(r"## (?P<name>.*)")
@@ -39,10 +41,10 @@ class GuideError(Exception):
 class Glob:
     text: str
     line: int
-    pattern: re.Pattern[str]
+    segments: tuple[str, ...]
 
     def matches(self, path: str) -> bool:
-        return self.pattern.fullmatch(path) is not None
+        return path_matches(self.segments, path.split("/"))
 
 
 @dataclass(frozen=True)
@@ -62,21 +64,43 @@ class Guide:
                 "how_to_verify": list(self.steps), "not_verifiable_yet": list(self.gaps)}
 
 
-def translate(text: str) -> re.Pattern[str]:
-    parts = text.split("/")
-    out = []
-    for index, part in enumerate(parts):
-        last = index == len(parts) - 1
-        if part == "**":
-            out.append(".+" if last else "(?:[^/]+/)*")
-            continue
-        piece = "".join("[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char) for char in part)
-        out.append(piece if last else piece + "/")
-    return re.compile("".join(out), re.DOTALL)
+def segment_matches(pattern: str, text: str) -> bool:
+    at = start = mark = 0
+    star = -1
+    while at < len(text):
+        if start < len(pattern) and pattern[start] in ("?", text[at]) and pattern[start] != "*":
+            at += 1
+            start += 1
+        elif start < len(pattern) and pattern[start] == "*":
+            star, mark = start, at
+            start += 1
+        elif star >= 0:
+            mark += 1
+            at, start = mark, star + 1
+        else:
+            return False
+    return all(char == "*" for char in pattern[start:])
+
+
+def path_matches(pattern: tuple[str, ...], segments: list[str]) -> bool:
+    reached = {0}
+    for index, part in enumerate(pattern):
+        if not reached:
+            return False
+        if part != "**":
+            reached = {at + 1 for at in reached if at < len(segments) and segment_matches(part, segments[at])}
+        elif index == len(pattern) - 1:
+            rest = [at for at in reached if at < len(segments) and (at < len(segments) - 1 or segments[at])]
+            reached = {len(segments)} if rest else set()
+        else:
+            reached = set(range(min(reached), len(segments) + 1))
+    return len(segments) in reached
 
 
 def glob_of(source: str, line: int, item: str) -> Glob:
     text = item[1:-1] if len(item) > 2 and item[0] == item[-1] == "`" else item
+    if len(text) > MAX_GLOB or text.count("/") >= MAX_SEGMENTS:
+        raise GuideError(source, line, f"a glob is over {MAX_GLOB} characters or {MAX_SEGMENTS} segments")
     if not text or NOT_GLOB.search(text) or "`" in text:
         raise GuideError(source, line, "a path is one glob, optionally in backticks: no spaces, backslashes, brackets or braces")
     if text.startswith(("/", "./", "!")) or text.endswith("/"):
@@ -87,7 +111,7 @@ def glob_of(source: str, line: int, item: str) -> Glob:
         raise GuideError(source, line, "a glob has an empty, `.` or `..` segment")
     if any("**" in segment and segment != "**" for segment in segments):
         raise GuideError(source, line, "`**` stands alone as a whole segment (`src/**`, `**/test_*.py`)")
-    return Glob(text, line, translate(text))
+    return Glob(text, line, tuple(segments))
 
 
 def sections(source: str, lines: list[str]) -> dict[str, list[tuple[int, str]]]:
