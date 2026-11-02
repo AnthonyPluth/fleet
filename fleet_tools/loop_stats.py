@@ -172,7 +172,7 @@ def reviews(run: Run, pulls: list[rm.Pull]) -> Json:
             "with_second_review": reviewed[SECOND.key], "findings": findings}
 
 
-def guide_settings(run: Run) -> tuple[str | None, list[verification_guides.Guide]] | None:
+def guide_settings(run: Run) -> tuple[str | None, list[verification_guides.Guide], bool] | None:
     if run.app_root is None:
         return None
     conf = config.load(run.app_root)
@@ -180,14 +180,14 @@ def guide_settings(run: Run) -> tuple[str | None, list[verification_guides.Guide
         return None
     relative = verification_guides.directory(conf)
     if relative is None:
-        return None, []
+        return None, [], True
     guides, errors = verification_guides.load(run.app_root, relative)
     for skipped in errors[:20]:
         run.missing.append(f"verification: a guide is skipped: {verification_guides.clean(str(skipped))[:MAX_MISSING]}")
-    return relative, guides
+    return relative, guides, not errors
 
 
-def verification_of(run: Run, pulls: list[rm.Pull], guides: list[verification_guides.Guide]) -> Json:
+def verification_of(run: Run, pulls: list[rm.Pull], guides: list[verification_guides.Guide], complete: bool = True) -> Json:
     counts: Counter[str] = Counter()
     uncovered: set[str] = set()
     pulls_uncovered = 0
@@ -207,6 +207,8 @@ def verification_of(run: Run, pulls: list[rm.Pull], guides: list[verification_gu
         except (subprocess.CalledProcessError, rm.FilesCapped):
             unread_files += 1
             continue
+        if not complete:
+            continue
         _, missed = verification_guides.areas(guides, paths)
         if missed:
             pulls_uncovered += 1
@@ -214,10 +216,13 @@ def verification_of(run: Run, pulls: list[rm.Pull], guides: list[verification_gu
     if unread_files:
         run.missing.append(f"verification: the changed files of {unread_files} merged pull request(s) couldn't be listed in full "
                            f"(GitHub returns at most {rm.MAX_FILES} files per pull request); their paths aren't counted")
-    return {"configured": True, "guides": len(guides), "merged": len(pulls), "with_record": counts["with_record"],
+    if not complete:
+        run.missing.append("verification: a guide couldn't be loaded, so the guides and the paths no guide covers aren't counted")
+    return {"configured": True, "guides": len(guides) if complete else None, "merged": len(pulls), "with_record": counts["with_record"],
             "without_record": counts["without_record"], "unparsed": counts["unparsed"], "verified": counts["verified"],
             "not_verified": counts["not verified"], "mean_not_verified": share(counts["not verified"], counts["with_record"]),
-            "uncovered_paths": len(uncovered), "pulls_with_uncovered_paths": pulls_uncovered, "unread_files": unread_files,
+            "uncovered_paths": len(uncovered) if complete else None,
+            "pulls_with_uncovered_paths": pulls_uncovered if complete else None, "unread_files": unread_files,
             "uncovered_samples": [cleaned(path, MAX_PATH) for path in sorted(uncovered)[:MAX_SAMPLES]]}
 
 
@@ -412,7 +417,7 @@ def fleet_of(run: Run, branch: str) -> Json:
 def collect(run: Run) -> Json:
     stats: Json = {"schema": SCHEMA, "repo": run.repo, "generated": run.until, "since": run.since, "days": run.days,
                    "default_branch": None, "reviews": None, "verification": None, "report": None, "harness": None, "fleet": None}
-    settings: tuple[str | None, list[verification_guides.Guide]] | None = None
+    settings: tuple[str | None, list[verification_guides.Guide], bool] | None = None
     configured = True
     try:
         settings = guide_settings(run)
@@ -433,7 +438,7 @@ def collect(run: Run) -> Json:
             stats["verification"] = {"configured": False}
         elif settings is not None:
             try:
-                stats["verification"] = verification_of(run, pulls, settings[1])
+                stats["verification"] = verification_of(run, pulls, settings[1], settings[2])
             except (subprocess.CalledProcessError, Unreadable, ValueError) as error:
                 run.lack("verification", error)
     try:
@@ -446,7 +451,7 @@ def collect(run: Run) -> Json:
         run.lack("harness and fleet: the default branch", error)
     else:
         stats["default_branch"] = branch
-        guides_dir, guides = settings if settings is not None else (None, [])
+        guides_dir, guides, _ = settings if settings is not None else (None, [], True)
         stats["harness"] = harness(run, branch, guides_dir, [guide.source for guide in guides])
         stats["fleet"] = fleet_of(run, branch)
     stats["missing"] = list(run.missing)

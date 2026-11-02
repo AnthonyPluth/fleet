@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -393,6 +394,31 @@ class EdgeTest(unittest.TestCase):
         missing = "\n".join(value["missing"])
         self.assertIn("the comments of 1 merged pull request(s) couldn't be read in full", missing)
         self.assertIn("the changed files of 1 merged pull request(s) couldn't be listed in full", missing)
+
+    def test_a_skipped_guide_makes_the_guide_numbers_unread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "app"
+            shutil.copytree(RUNWAY, app)
+            (app / "docs" / "verification" / "broken.md").write_text("not a guide\n", encoding="utf-8")
+            self.stats.run(fixture(), "--app-root", str(app))
+            value = self.stats.stats()
+        verification = value["verification"]
+        self.assertIsNone(verification["guides"])
+        self.assertIsNone(verification["uncovered_paths"])
+        self.assertIsNone(verification["pulls_with_uncovered_paths"])
+        self.assertEqual(verification["uncovered_samples"], [])
+        self.assertEqual(verification["merged"], 3)
+        self.assertIn("a guide couldn't be loaded", "\n".join(value["missing"]))
+
+    def test_a_missing_guides_directory_makes_the_guide_numbers_unread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "app"
+            shutil.copytree(RUNWAY, app)
+            shutil.rmtree(app / "docs" / "verification")
+            self.stats.run(fixture(), "--app-root", str(app))
+            verification = self.stats.stats()["verification"]
+        self.assertIsNone(verification["guides"])
+        self.assertIsNone(verification["uncovered_paths"])
 
     def test_a_file_list_at_github_s_cap_is_unread_not_complete(self) -> None:
         data = fixture()
