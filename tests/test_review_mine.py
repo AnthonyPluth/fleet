@@ -400,6 +400,32 @@ class SignalsTest(unittest.TestCase):
         self.assertIn(f"| **Failure paths** | human-judged | [#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2) | 1 |", body)
         self.assertNotIn("**Layout**", body)
 
+    def test_groups_come_from_the_outcomes_history_written_by_finish(self) -> None:
+        def review(number: int, sha: str, findings: list[dict[str, Any]], earlier: list[dict[str, Any]]) -> dict[str, Any]:
+            history = [{"user": ar.BOT, "body": c["body"]} for c in earlier]
+            body = review_outcomes.finish(ar.render(findings, "summary", "run", sha), history, sha, True)
+            return review_comment(number, findings, when=f"2026-09-0{number}T00:00:00Z", body=body)
+
+        layout = finding("Layout", "Overflows", "screenshots", file="a.py")
+        failure = finding("Failure paths", "Swallows the error", file="b.py")
+        comments: list[dict[str, Any]] = []
+        for number in (1, 2):
+            first = review(number, "a" * 40, [layout, failure], [])
+            fixed = review(number, "b" * 40, [failure], [first])
+            comments.append(fixed)
+        third = review(3, "a" * 40, [layout], [])
+        comments += [third, dismissal(3, "Layout", "Overflows", "desktop-only page by design", file="a.py")]
+        records = rm.newest_records(comments, {1, 2, 3})
+        self.assertEqual([f["kind"] for f in records[(1, "agent-review")][1]], ["Failure paths"])
+        result = self.miner.run(answers([pull(1, merged="2026-09-05T00:00:00Z"), pull(2), pull(3)], comments))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertIn(f"| **Layout** | human-judged | [#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2) | 2 |", body)
+        self.assertNotIn("pull/3", body.split("### Often dismissed")[0])
+        self.assertIn(f"| **Failure paths** | human-judged | [#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2) | 0 |", body)
+        self.assertIn(f"| **Failure paths** | 1 | [#1](https://github.com/{REPO}/pull/1) |", body)
+        self.assertNotIn("open-at-merge:layout", body)
+
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}

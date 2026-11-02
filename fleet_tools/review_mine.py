@@ -305,23 +305,40 @@ def group_key(finding: Json, items: dict[str, Item]) -> tuple[str, str, Group]:
     return f"{TABLE}:{key}", normalize(finding["kind"]), group
 
 
-Statuses = dict[tuple[int, str], dict[str, str]]
+Outcomes = dict[tuple[int, str], list[Json]]
+
+
+def counted(findings: list[Json], entries: list[Json]) -> list[tuple[Json, bool]]:
+    current = {f["id"]: f for f in findings if f.get("id")}
+    seen: set[str] = set()
+    kept: list[tuple[Json, bool]] = []
+    for entry in entries:
+        seen.add(str(entry["id"]))
+        if entry["status"] == "dismissed":
+            continue
+        found = current.get(str(entry["id"]))
+        if found is None:
+            kind, title = str(entry.get("kind") or "").strip(), str(entry.get("title") or "")
+            if not kind:
+                continue
+            found = {"kind": kind, "title": title, "check": ""}
+        kept.append((found, entry["status"] == "resolved"))
+    kept += [(f, False) for f in findings if not f.get("id") or f["id"] not in seen]
+    return kept
 
 
 def groups_of(records: dict[tuple[int, str], tuple[str, list[Json]]], items: dict[str, Item],
-              statuses: Statuses | None = None) -> dict[str, Group]:
+              outcomes: Outcomes | None = None) -> dict[str, Group]:
     groups: dict[str, Group] = {}
-    for (number, review), (when, findings) in sorted(records.items()):
-        known = (statuses or {}).get((number, review), {})
-        for finding in findings:
-            status = known.get(finding.get("id") or "", "")
-            if status == "dismissed":
-                continue
+    history = outcomes or {}
+    for key in sorted(set(records) | set(history)):
+        when, findings = records.get(key, ("", []))
+        for finding, fixed in counted(findings, history.get(key, [])):
             row_id, _, fresh = group_key(finding, items)
             group = groups.setdefault(row_id, fresh)
-            group.pulls.add(number)
+            group.pulls.add(key[0])
             group.last_seen = max(group.last_seen, when[:10])
-            if status == "resolved":
+            if fixed:
                 group.fixed += 1
             if finding["check"]:
                 group.checks[finding["check"]] += 1
@@ -410,10 +427,6 @@ def outcomes_from(repo: str, per_pull: dict[int, list[Json]]) -> dict[tuple[int,
             if entries:
                 found[(number, review.key)] = entries
     return found
-
-
-def statuses_of(outcomes: dict[tuple[int, str], list[Json]]) -> Statuses:
-    return {key: {str(e["id"]): str(e["status"]) for e in entries} for key, entries in outcomes.items()}
 
 
 def tallies(outcomes: dict[tuple[int, str], list[Json]], items: dict[str, Item],
@@ -686,7 +699,7 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     comments = comments_since(repo, since)
     records = newest_records(comments, set(numbers))
     outcomes, unread = outcomes_of(repo, {n for n, _ in records})
-    rows = rows_of(groups_of(records, items, statuses_of(outcomes)))
+    rows = rows_of(groups_of(records, items, outcomes))
     signals = Signals(often_dismissed(repo, tallies(outcomes, items)), open_at_merge(repo, open_tallies(outcomes, items, merged)),
                       unread_outcomes=unread)
     settings = verification_settings(app_root)
