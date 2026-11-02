@@ -524,6 +524,11 @@ class FleetsOwnSecondReviewScopeTest(unittest.TestCase):
             relative = path.relative_to(cli.ROOT).as_posix()
             self.assertTrue(any(ar.matches(relative, pattern) for pattern in listed), relative)
 
+    def test_the_release_workflow_is_covered(self) -> None:
+        listed = always_risky_in_caller()
+        self.assertIn(".github/workflows/release.yml", listed)
+        self.assertTrue(any(ar.matches(".github/workflows/release.yml", pattern) for pattern in listed))
+
     def test_the_exempt_workflows_are_fleets_own_ci_only(self) -> None:
         listed = always_risky_in_caller()
         exempt = [path.name for path in sorted(WORKFLOWS.glob("*.yml"))

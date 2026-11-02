@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-HELP = "check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, the self-test's calls)"
+from fleet_tools import release
+
+HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, the self-test's calls, and "
+        "VERSION agreeing with CHANGELOG.md, plugin.json, pyproject.toml and the snippets in docs/)")
 
 WORKFLOWS = Path(".github/workflows")
 SELF_TEST = "self-test.yml"
@@ -174,6 +177,7 @@ def check(root: Path) -> list[str]:
         errors.append(f"{(WORKFLOWS / SELF_TEST).as_posix()}: missing")
     else:
         errors.extend(check_self_test(self_test.relative_to(root).as_posix(), parse(self_test.read_text("utf-8"))))
+    errors.extend(release.check(root, version))
     return errors
 
 
