@@ -421,6 +421,16 @@ class EdgeTest(unittest.TestCase):
         self.assertIsNone(verification["guides"])
         self.assertIsNone(verification["uncovered_paths"])
 
+    def test_a_malformed_config_makes_the_harness_total_unread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "app"
+            shutil.copytree(RUNWAY, app)
+            (app / "pyproject.toml").write_text("[tool.fleet\n", encoding="utf-8")
+            self.stats.run(fixture(), "--app-root", str(app))
+            value = self.stats.stats()
+        self.assertIsNone(value["harness"]["commits"]["total"])
+        self.assertIn("[tool.fleet.verification]", "\n".join(value["missing"]))
+
     def test_a_task_opened_after_the_window_isn_t_counted_in_it(self) -> None:
         data = fixture()
         data[MINED].append({"number": 86, "user": {"login": rm.BOT}, "body": "<!-- mined-from row:repeated:later -->",
