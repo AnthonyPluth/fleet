@@ -972,7 +972,11 @@ class WorkflowTest(unittest.TestCase):
         self.assertLess(names.index("Measure the loop"), names.index(upload[0]["uses"]))
         self.assertLess(names.index(upload[0]["uses"]), names.index("Rewrite the report"))
         rewrite = mapping(next(s for s in steps if mapping(s).get("name") == "Rewrite the report"))
-        self.assertEqual(rewrite["if"], "${{ !cancelled() }}")
+        self.assertEqual(rewrite["if"], "${{ !cancelled() && steps.app.outcome == 'success' && steps.fleet.outcome == 'success' }}")
+        self.assertEqual([mapping(s).get("id") for s in steps], ["app", "fleet", None, "upload", None])
+        self.assertNotIn("success()", str(rewrite["if"]))
+        self.assertNotIn("steps.upload", str(rewrite["if"]))
+        self.assertNotIn("Measure", str(rewrite["if"]))
         for step in map(mapping, steps):
             self.assertNotIn("continue-on-error", step)
             if step is not rewrite:
