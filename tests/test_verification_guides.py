@@ -232,6 +232,20 @@ class Commands(unittest.TestCase):
         self.assertEqual(out, "migrations  Migrations  (docs/verification/migrations.md)\n    tests/test_migrations.py\n"
                               "no guide covers:\n    Makefile\n")
 
+    def test_paths_after_a_double_dash_are_paths_even_when_they_look_like_options(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        guide_file = root / "docs/verification/migrations.md"
+        guide_file.write_text(guide_file.read_text(encoding="utf-8").replace("- `tests/test_migrations.py`",
+                                                                              "- `tests/test_migrations.py`\n- `--json`"), encoding="utf-8")
+        code, out, err = run("areas", "--root", str(root), "--json", "--", "--root", "-h", "--json", "tests/test_migrations.py")
+        self.assertEqual((code, err), (0, ""))
+        data = json.loads(out)
+        self.assertEqual([(each["name"], each["matched"]) for each in data["areas"]],
+                         [("migrations", ["--json", "tests/test_migrations.py"])])
+        self.assertEqual(data["uncovered"], ["--root", "-h"])
+        code, out, _ = run("areas", "--root", str(root), "--", "-h")
+        self.assertEqual((code, out), (0, "no guide covers:\n    -h\n"))
+
     def test_without_the_key_or_with_a_broken_guide(self) -> None:
         code, _, err = run("guides", "--root", str(WAYPOINT))
         self.assertEqual(code, 2)
@@ -260,7 +274,7 @@ class Skills(unittest.TestCase):
 
     def test_verify_change_says_how_it_uses_the_guides(self) -> None:
         text = (ROOT / "plugins" / "fleet" / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
-        for phrase in ("## Read the area guides first", "git diff -z --name-only --no-renames origin/main...HEAD | xargs -0 -r fleet verification areas", "`## How to verify`",
+        for phrase in ("## Read the area guides first", "git diff -z --name-only --no-renames origin/main...HEAD | xargs -0 -r fleet verification areas --json --`", "`## How to verify`",
                        "`## Not verifiable yet`", "says why in its How column", "fleet-verification-guide"):
             self.assertIn(phrase, text)
 
