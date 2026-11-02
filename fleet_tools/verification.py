@@ -114,11 +114,33 @@ def is_separator(line: str) -> bool:
     return bool(found) and all(SEPARATOR_CELL.fullmatch(cell) for cell in found)
 
 
+def has_fence_run(line: str) -> bool:
+    return "```" in line or "~~~" in line
+
+
+def reject_ambiguity(index: int, line: str) -> None:
+    if "\t" in line and has_fence_run(line):
+        raise ParseError(index, "ambiguous indentation: a tab on a line with a code fence; indent with spaces")
+    rest = line
+    while "<!--" in rest:
+        start = rest.index("<!--")
+        stop = rest.find("-->", start + 4)
+        if stop < 0:
+            raise ParseError(index, "multiline HTML comment: a comment opened here doesn't close on its line; the only comments "
+                                    "the record allows span one line each")
+        rest = rest[:start] + rest[stop + 3:]
+    if "-->" in rest:
+        raise ParseError(index, "multiline HTML comment: a comment closes here without opening on its line; the only comments "
+                                "the record allows span one line each")
+
+
 def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
     begins: list[int] = []
     ends: list[int] = []
     fence: Fence | None = None
     opened = 0
+    for index, line in enumerate(lines, start=1):
+        reject_ambiguity(index, line)
     for index, line in enumerate(lines, start=1):
         found = fence_of(line)
         if found:

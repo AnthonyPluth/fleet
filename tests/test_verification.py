@@ -176,6 +176,28 @@ class Parsing(unittest.TestCase):
             self.assertEqual(caught.exception.line, 1 + record(GAP, before="").count("\n"))
         self.assertEqual(len(parse("- ```\n  " + BEGIN + "\n  ```\n" + record(GAP, before=""))), 1)
 
+    def test_a_multiline_html_comment_is_rejected_as_ambiguous(self) -> None:
+        fake = BEGIN + "\n" + HEADER + "\n| in a comment | verified | a | b |\n" + END + "\n"
+        real = record(GAP, before="")
+        with self.assertRaises(ParseError) as caught:
+            parse("<!--\n```\n-->\n" + fake + "```\n" + real + "```\n" + fake + "```\n")
+        self.assertEqual((caught.exception.line, "multiline HTML comment" in caught.exception.rule), (1, True))
+        with self.assertRaises(ParseError) as caught:
+            parse(real + "text -->\n")
+        self.assertEqual((caught.exception.line, "multiline HTML comment" in caught.exception.rule), (1 + real.count("\n"), True))
+        with self.assertRaises(ParseError):
+            parse("```\n<!--\n```\n" + real)
+        self.assertEqual([d.dimension for d in parse("<!-- a note --> <!-- ``` -->\n> <!-- ``` -->\n" + real)], ["Live sync"])
+
+    def test_a_tab_on_a_fence_line_is_rejected_as_ambiguous(self) -> None:
+        fake = BEGIN + "\n" + HEADER + "\n| in an example | verified | a | b |\n" + END + "\n"
+        real = record(GAP, before="")
+        for line in ("\t```", "- \t```", "```\t", "  \t ~~~"):
+            with self.subTest(line=line), self.assertRaises(ParseError) as caught:
+                parse("```\n" + fake + line + "\n" + real + "```\n" + fake)
+            self.assertEqual((caught.exception.line, "ambiguous indentation" in caught.exception.rule), (6, True))
+        self.assertEqual(len(parse("a\tb\n" + record("a\tb | verified | h\t | e"))), 1)
+
     def test_a_very_long_run_of_whitespace_parses_in_linear_time(self) -> None:
         run = 60000
         for prefix in ("", "> ", "- ", "1. ", ">> - "):
@@ -379,7 +401,8 @@ class Template(unittest.TestCase):
     def test_the_adopting_doc_gives_the_apps_the_same_section_and_the_keys(self) -> None:
         text = (ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
         for phrase in ("[tool.fleet.verification]", "required = false", "exempt-authors", BEGIN, END, HEADER, "types: [opened, synchronize, reopened, ready_for_review, edited]",
-                       "fleet verification show", "--pr-event", "every line with an unescaped `|` is a table row (the leading pipe may be left off)"):
+                       "fleet verification show", "--pr-event", "every line with an unescaped `|` is a table row (the leading pipe may be left off)",
+                       "multiline HTML comment", "rejected as ambiguous"):
             self.assertIn(phrase, text)
         self.assertNotIn("other text between the markers, and everything outside them, is ignored", text)
 
