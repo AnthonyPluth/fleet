@@ -171,8 +171,14 @@ def agents_errors(text: str, version: str) -> list[str]:
         found = agents_md.blocks(text)
     except agents_md.MarkerError as error:
         return [f"{AGENTS.as_posix()}: {error}"]
-    return [f"{AGENTS.as_posix()}: the {block.name} block's marker says {block.version}, but VERSION is {version}"
-            for block in found if block.version != f"v{version}"]
+    names = [block.name for block in found]
+    errors = [f"{AGENTS.as_posix()}: the {name} block is missing; fleet ships it (agents-md/sections/{name}.md)"
+              for name in agents_md.ORDER if name not in names]
+    errors += [f"{AGENTS.as_posix()}: the {name} block isn't one fleet ships ({', '.join(agents_md.ORDER)})"
+               for name in names if name not in agents_md.ORDER]
+    errors += [f"{AGENTS.as_posix()}: the {block.name} block's marker says {block.version}, but VERSION is {version}"
+               for block in found if block.version != f"v{version}"]
+    return errors
 
 
 def docs(root: Path) -> list[Path]:

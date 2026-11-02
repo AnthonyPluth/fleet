@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fleet_tools import cli, self_check
+from fleet_tools import agents_md, cli, self_check
 
 WORKFLOW_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "workflows"
 
@@ -17,7 +17,7 @@ def stamps(root: Path, version: str) -> None:
     plugin = root / "plugins" / "fleet" / ".claude-plugin"
     plugin.mkdir(parents=True)
     (plugin / "plugin.json").write_text(f'{{"name": "fleet", "version": "{version}"}}\n', encoding="utf-8")
-    (root / "AGENTS.md").write_text("# Agent guide\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text(agents_md.sync("# Agent guide\n", agents_md.sections(), f"v{version}")[0], encoding="utf-8")
     (root / "docs").mkdir()
     (root / "docs" / "adopting.md").write_text(f"# Adopting fleet\n\n```sh\ntools/fleet sync --to v{version}\n```\n", encoding="utf-8")
 

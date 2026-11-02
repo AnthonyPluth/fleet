@@ -92,6 +92,30 @@ class DisagreementTest(unittest.TestCase):
         edit(self.root / "AGENTS.md", f"<!-- fleet:begin mistakes v{CURRENT} -->", "<!-- fleet:begin mistakes v0.0.9 -->")
         self.assert_one_error("AGENTS.md", "mistakes", "v0.0.9")
 
+    def test_a_deleted_agents_block_fails_naming_it(self) -> None:
+        path = self.root / "AGENTS.md"
+        text = path.read_text(encoding="utf-8")
+        block = next(block for block in agents_md.blocks(text) if block.name == "mistakes")
+        path.write_text(text[:block.start] + text[block.end:], encoding="utf-8")
+        self.assertEqual(self_check.check(self.root),
+                         ["AGENTS.md: the mistakes block is missing; fleet ships it (agents-md/sections/mistakes.md)"])
+
+    def test_a_renamed_agents_block_fails_naming_both(self) -> None:
+        path = self.root / "AGENTS.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("fleet:begin mistakes ", "fleet:begin mistakes-old ").replace("fleet:end mistakes ", "fleet:end mistakes-old "),
+                        encoding="utf-8")
+        errors = self_check.check(self.root)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("the mistakes block is missing", errors[0])
+        self.assertIn("the mistakes-old block isn't one fleet ships", errors[1])
+
+    def test_fleets_agents_md_carries_every_shipped_block(self) -> None:
+        names = [block.name for block in agents_md.blocks((ROOT / "AGENTS.md").read_text(encoding="utf-8"))]
+        self.assertEqual(sorted(names), sorted(agents_md.ORDER))
+        self.assertEqual(sorted(agents_md.sections(ROOT)), sorted(agents_md.ORDER))
+        self.assertEqual(sorted(path.stem for path in (ROOT / "agents-md" / "sections").glob("*.md")), sorted(agents_md.ORDER))
+
     def test_a_missing_agents_md_fails(self) -> None:
         (self.root / "AGENTS.md").unlink()
         self.assertEqual(self_check.check(self.root), ["AGENTS.md: missing"])
