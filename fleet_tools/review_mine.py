@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -158,7 +159,11 @@ def normalize(text: str) -> str:
 
 
 def slug(text: str, limit: int = 60) -> str:
-    return normalize(text).replace(" ", "-")[:limit].strip("-") or "untitled"
+    full = normalize(text).replace(" ", "-") or "untitled"
+    if len(full) <= limit:
+        return full
+    digest = hashlib.sha256(full.encode()).hexdigest()[:12]
+    return f"{full[:limit - len(digest) - 1].strip('-')}-{digest}"
 
 
 def gh(*args: str, stdin: str | None = None) -> Any:

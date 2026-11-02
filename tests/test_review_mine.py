@@ -506,6 +506,32 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn("**Layout**", section)
         self.assertIn("2 merged pull request(s) whose review or dismissal comments were posted or changed at or after the merge instant were skipped", section)
 
+    def test_kinds_that_differ_only_after_sixty_characters_stay_apart(self) -> None:
+        stem = "Unused helper " + "x" * 50
+        first, second = f"{stem} in the parser", f"{stem} in the writer"
+        self.assertEqual(rm.normalize(first)[:60], rm.normalize(second)[:60])
+        comments = [outcomes_comment(n, [outcome("other", first), outcome("other", second)]) for n in (1, 2)]
+        pulls = [pull(1, merged="2026-09-01T12:00:00Z"), pull(2, merged="2026-09-01T12:00:00Z")]
+
+        def ids(data_pulls: list[dict[str, Any]], data_comments: list[dict[str, Any]]) -> list[str]:
+            self.miner.run(answers(data_pulls, data_comments))
+            return sorted(rm.ticks_of(self.miner.body()))
+
+        found = ids(pulls, comments)
+        self.assertEqual(len([i for i in found if i.startswith("open-at-merge:other:")]), 2, found)
+        self.assertEqual(len([i for i in found if i.startswith("repeated:other:")]), 2, found)
+        self.assertTrue(all(re.fullmatch(r"[a-z0-9:-]+", i) and len(i.split(":", 2)[2]) <= 60 for i in found), found)
+        self.assertEqual(ids(list(reversed(pulls)), list(reversed(comments))), found)
+        dismissed = [outcomes_comment(3, [outcome("other", first, file="a.py"), outcome("other", first, file="b.py"), outcome("other", second)]),
+                     dismissal(3, "other", first, "not a finding on this page", "a.py"),
+                     dismissal(3, "other", first, "not a finding on this page", "b.py"),
+                     dismissal(3, "other", second, "not a finding on this page")]
+        result = self.miner.run(answers([pull(3)], dismissed), "--dry-run")
+        self.assertIn("No kind was mostly dismissed in the window.", result.stdout)
+        self.assertEqual(rm.slug("Failure paths"), "failure-paths")
+        self.assertEqual(rm.slug("a" * 60), "a" * 60)
+        self.assertNotEqual(rm.slug("a" * 61), rm.slug("a" * 60 + "b"))
+
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
