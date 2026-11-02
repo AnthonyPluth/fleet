@@ -313,10 +313,45 @@ Inputs, each with the default fleet's own gate uses:
 | `required-statuses` | `Agent review`, `Second review` | Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests. An empty string requires none |
 | `ignored-apps` | `codecov\|github-actions` | Apps whose check runs don't count (Codecov's are informational; Actions' runs are counted as workflows) |
 | `poll-seconds`, `poll-attempts` | 30, 20 | How long to look again for CodeQL, whose finishing starts no workflow |
+| `blocking-thread-badges` | `P1\|P2` | Badges on a review thread's first comment that fail the gate while the thread is open (Codex marks its findings `P1 Badge`, `P2 Badge`), as a regex alternation of letters and digits. An empty string turns the check off. An outdated thread counts until it is resolved. If the review threads can't be read, the gate stays pending |
+| `blocking-thread-authors` | `chatgpt-codex-connector` | Whose first comment counts toward `blocking-thread-badges`, as a regex alternation of letters, digits and `-` (a bot's login without `[bot]`). Anyone else's badge text is ignored; an empty string lets any author's count |
 | `automerge-dependabot` | `true` | Merge Dependabot's pull requests once the gate passes (every commit Dependabot's own and verified, same repository, not a draft, no fleet reference changed) |
 | `after-merge-workflows` | `docker.yml security.yml` | Workflow files to start on `main` after such a merge, space-separated; a merge made with the token starts none by itself |
 | `dry-run` | `false` | Print the status posts, the merge and the workflow starts instead of doing them |
 | `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the script from; the self-test passes its own commit |
+
+### Open review threads
+
+A review thread whose first comment is by one of the `blocking-thread-authors` (Codex, by default) and carries one of the `blocking-thread-badges` fails the gate until someone resolves it. Resolving a thread, reopening one, or a new review or review comment starts no workflow the gate listens to, so the caller adds a second small workflow, `merge-gate-threads.yml` (`workflow_call`; inputs `pr`, `merge-gate-workflow` (default `merge-gate.yml`), `dry-run`, `fleet-ref`; `actions: write` only), which starts the caller's own merge gate workflow on `main` with the pull request's number. It checks out nothing and runs nothing of the pull request's. The caller keeps the triggers, and skips a pull request from a fork, whose token is read-only there (that pull request's gate looks again on its next push or check, or by hand):
+
+```yaml
+name: Merge gate threads
+
+on:
+  pull_request_review_thread:
+    types: [resolved, unresolved]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+concurrency:
+  group: merge-gate-threads-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  decide:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: write   # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # vX.Y.Z
+    with:
+      pr: ${{ github.event.pull_request.number }}
+```
+
+Upgrading changes behaviour: an app that adopts this version, or whose pin moves to it, fails its gate on an open P1 or P2 thread. Pass `blocking-thread-badges: ""` to keep the old behaviour.
 
 What each app passes today: Waypoint `required-workflows: Docker image, Security scans, CodeQL` and `required-statuses: ""` (its review is off); Runway the same workflows, `required-statuses: Agent review` and `ignored-workflows: Preview|Screenshot diff`. Both move to the default statuses when they adopt the reviews.
 

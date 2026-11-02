@@ -13,6 +13,7 @@
 #       pulls/12                         -> pulls__N.json
 #       pulls/12/commits                 -> pulls__N__commits.json
 #       pulls/12/files                   -> pulls__N__files.json
+#       graphql (the review threads)     -> graphql.json, the whole GraphQL reply
 #     An answer that changes between looks (CodeQL arriving while the gate polls) is a numbered series: the first read
 #     of a path answers <name>.1.json, the second <name>.2.json, and so on; the last file in the series answers every
 #     later read. A read with no file fails, so a case that forgot an answer fails loudly.

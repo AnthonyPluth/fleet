@@ -107,6 +107,18 @@ jobs:
       required-statuses: ""
       dry-run: true
 
+  # The merge gate's review-thread half in dry run: it prints the workflow start it would make for this pull request
+  # and starts nothing. The called job asks for `actions: write`, so the caller grants it.
+  merge-gate-threads:
+    name: Merge gate threads (dry run)
+    permissions:
+      actions: write
+    uses: ./.github/workflows/merge-gate-threads.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      pr: ${{ github.event.pull_request.number }}
+      dry-run: true
+
   # The agent review on this pull request in dry run, with fleet's stub reviewer (tests/fakes/claude) in place of
   # Claude Code, so the plumbing is tested without a secret: the detection, the last review's state, the checkout and
   # the gathering of the change, the runner script, the verdict and the report job, which prints the comment and the
