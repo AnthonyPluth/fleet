@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -120,6 +121,20 @@ class DisagreementTest(unittest.TestCase):
         (self.root / "AGENTS.md").unlink()
         self.assertEqual(self_check.check(self.root), ["AGENTS.md: missing"])
 
+    def test_version_is_read_raw(self) -> None:
+        for raw in (b"1.0.0 ", b" 1.0.0", b"1.0.0\r\n", b"1.0.0\n\n", b"\xef\xbb\xbf1.0.0\n", b"1.0.0 \n", b"\n1.0.0", b"\xff"):
+            with self.subTest(raw=raw):
+                (self.root / "VERSION").write_bytes(raw)
+                errors = self_check.check(self.root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("isn't a version", errors[0])
+                with self.assertRaisesRegex(release.ReleaseError, "isn't a version"):
+                    release.read_version(self.root)
+        for good in (CURRENT + "\n", CURRENT):
+            (self.root / "VERSION").write_bytes(good.encode("ascii"))
+            self.assertEqual(release.read_version(self.root), CURRENT)
+            self.assertEqual(self_check.check(self.root), [])
+
     def test_a_malformed_snippet_tag_fails(self) -> None:
         for old, new, found in ((f"tools/fleet sync --to {DOC_TAG}\n", "tools/fleet sync --to v1.0\n", "v1.0"),
                                 (f"security.yml@<commit>   # {DOC_TAG}", "security.yml@<commit>   # v1.0", "v1.0"),
@@ -235,6 +250,31 @@ class PrepareTest(unittest.TestCase):
         drifted = fixtures / "drifted"
         self.assertEqual((drifted / ".fleet/version").read_text(encoding="utf-8"), f"v{NEXT}\n")
         self.assertEqual({block.version for block in agents_md.blocks((drifted / "AGENTS.md").read_text(encoding="utf-8"))}, {f"v{NEXT}"})
+
+    def test_prepare_refuses_a_version_file_with_extra_whitespace(self) -> None:
+        (self.root / "VERSION").write_bytes(f"{CURRENT} \n".encode("ascii"))
+        code, _, err = self.prepare()
+        self.assertEqual(code, 1)
+        self.assertIn("isn't a version", err)
+
+    def test_a_failing_fixture_sync_leaves_the_tree_untouched(self) -> None:
+        def state() -> dict[str, tuple[str, int]]:
+            return {path.relative_to(self.root).as_posix(): (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mode)
+                    for path in sorted(self.root.rglob("*")) if path.is_file()}
+
+        agents = sorted((self.root / "tests" / "fixtures").glob("consumer-*"))[-1] / "AGENTS.md"
+        good = agents.read_text(encoding="utf-8")
+        agents.write_text(good.replace("<!-- fleet:end mistakes -->", "", 1), encoding="utf-8")
+        before = state()
+        code, out, err = self.prepare()
+        self.assertEqual(code, 1, out)
+        self.assertIn("fleet release:", err)
+        self.assertEqual(state(), before)
+        agents.write_text(good, encoding="utf-8")
+        code, _, err = self.prepare()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self_check.check(self.root), [])
+        self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), f"{NEXT}\n")
 
     def test_the_release_after_that_moves_every_stamp_again(self) -> None:
         self.assertEqual(self.prepare()[0], 0)
@@ -491,15 +531,18 @@ class ReleaseScriptsTest(unittest.TestCase):
         (work / "fleet_tools").symlink_to(ROOT / "fleet_tools")
         (work / "CHANGELOG.md").write_text("## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n\n- First.\n", encoding="utf-8")
         output = self.directory / "output"
-        for version in ("01.0.0", "1.00.0", "\u0661.\u0660.\u0660", "1.0", "v1.0.0"):
+        for version in ("01.0.0\n", "1.00.0\n", "\u0661.\u0660.\u0660\n", "1.0\n", "v1.0.0\n", "1.0.0 \n", " 1.0.0\n",
+                        "1.0.0\r\n", "1.0.0\n\n", "1.0.0 ", "\ufeff1.0.0\n"):
             with self.subTest(version=version):
-                (work / "VERSION").write_text(version + "\n", encoding="utf-8")
+                (work / "VERSION").write_bytes(version.encode("utf-8"))
                 result = self.run_step("Read the version and the notes", cwd=work, GITHUB_OUTPUT=str(output))
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("isn't MAJOR.MINOR.PATCH", result.stdout)
-        (work / "VERSION").write_text("1.0.0\n", encoding="utf-8")
-        result = self.run_step("Read the version and the notes", cwd=work, GITHUB_OUTPUT=str(output))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for version in ("1.0.0\n", "1.0.0"):
+            (work / "VERSION").write_bytes(version.encode("utf-8"))
+            output.write_text("", encoding="utf-8")
+            result = self.run_step("Read the version and the notes", cwd=work, GITHUB_OUTPUT=str(output))
+            self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output.read_text(encoding="utf-8"), "tag=v1.0.0\n")
         self.assertEqual((self.directory / "notes.md").read_text(encoding="utf-8"), "- First.\n")
 

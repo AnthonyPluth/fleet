@@ -151,12 +151,10 @@ def expected_ref(version: str) -> str:
 
 def check(root: Path) -> list[str]:
     errors: list[str] = []
-    version_file = root / "VERSION"
-    if not version_file.is_file():
-        return ["VERSION: missing"]
-    version = version_file.read_text(encoding="utf-8").strip()
-    if not VERSION_PATTERN.fullmatch(version):
-        return [f"VERSION: {version!r} isn't a version (MAJOR.MINOR.PATCH, ASCII digits, no leading zeros)"]
+    try:
+        version = release.read_version(root)
+    except release.ReleaseError as error:
+        return [str(error)]
     expected = expected_ref(version)
     directory = root / WORKFLOWS
     files = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])

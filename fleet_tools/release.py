@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from fleet_tools import agents_md, sync
+from fleet_tools import agents_md, sync, vendor
 
 HELP = ("fleet's release stamps: `prepare X.Y.Z` rewrites VERSION, CHANGELOG.md, every FLEET_REF, plugin.json, "
         "pyproject.toml, the snippets in docs/ (docs/adopting.md's and the others) and AGENTS.md's markers, and re-syncs "
@@ -50,6 +50,22 @@ class Section:
     start: int
     body_start: int
     end: int
+
+
+def read_version(root: Path) -> str:
+    path = root / VERSION_FILE
+    if not path.is_file():
+        raise ReleaseError("VERSION: missing")
+    raw = path.read_bytes()
+    text = raw[:-1] if raw.endswith(b"\n") else raw
+    try:
+        version = text.decode("ascii")
+    except UnicodeDecodeError:
+        version = ""
+    if not VERSION_PATTERN.fullmatch(version):
+        raise ReleaseError(f"VERSION: {raw!r} isn't a version (MAJOR.MINOR.PATCH, ASCII digits, no leading zeros, "
+                           "at most one newline after it and nothing else)")
+    return version
 
 
 def is_date(text: str) -> bool:
@@ -255,10 +271,7 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
     new = parse_version(version)
     if new[0] < 1:
         raise ReleaseError(f"fleet releases start at 1.0.0; {version} is a pre-release version (docs/release.md)")
-    current_text = read(root, VERSION_FILE)
-    if current_text is None:
-        raise ReleaseError("VERSION: missing")
-    current = current_text.strip()
+    current = read_version(root)
     if parse_version(current) >= new:
         raise ReleaseError(f"{version} isn't newer than VERSION {current}")
     if not is_date(date):
@@ -290,19 +303,55 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
         raise ReleaseError(f"{AGENTS.as_posix()}: missing")
     writes[AGENTS], _ = agents_md.sync(agents, agents_md.sections(root), tag)
     writes.update(stamp_fixtures(root, tag))
-    changed = []
-    for path, text in writes.items():
-        target = root / path
-        if target.read_text(encoding="utf-8") != text:
-            target.write_text(text, encoding="utf-8")
-            changed.append(path.as_posix())
-    for consumer in consumers(root):
-        changed.extend(f"{consumer.relative_to(root).as_posix()}/{change.split(':', 1)[0]}"
-                       for change in sync.sync(consumer, tag, root))
-    after = self_check.check(root)
-    if after:
-        raise ReleaseError("the stamps still disagree after preparing:\n" + "\n".join(after))
+    snapshot = Snapshot(root, [*writes, *(path.relative_to(root) for consumer in consumers(root)
+                                           for path in consumer.rglob("*"))])
+    try:
+        changed = []
+        for path, text in writes.items():
+            target = root / path
+            if target.read_text(encoding="utf-8") != text:
+                target.write_text(text, encoding="utf-8")
+                changed.append(path.as_posix())
+        for consumer in consumers(root):
+            changed.extend(f"{consumer.relative_to(root).as_posix()}/{change.split(':', 1)[0]}"
+                           for change in sync.sync(consumer, tag, root))
+        after = self_check.check(root)
+        if after:
+            raise ReleaseError("the stamps still disagree after preparing:\n" + "\n".join(after))
+    except BaseException:
+        snapshot.restore()
+        raise
     return sorted(changed)
+
+
+class Snapshot:
+    def __init__(self, root: Path, paths: list[Path]) -> None:
+        self.root = root
+        self.files: dict[Path, tuple[bytes, int]] = {}
+        self.directories: set[Path] = set()
+        for path in paths:
+            target = root / path
+            if target.is_file() and not target.is_symlink():
+                self.files[path] = (target.read_bytes(), target.stat().st_mode)
+            elif target.is_dir():
+                self.directories.add(path)
+        self.consumers = [consumer.relative_to(root) for consumer in consumers(root)]
+
+    def restore(self) -> None:
+        for consumer in self.consumers:
+            for target in sorted((self.root / consumer).rglob("*"), reverse=True):
+                relative = target.relative_to(self.root)
+                if target.is_file() and relative not in self.files:
+                    target.unlink()
+                elif target.is_dir() and relative not in self.directories and not any(target.iterdir()):
+                    target.rmdir()
+        for path, (data, mode) in self.files.items():
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.is_file() or target.read_bytes() != data:
+                target.write_bytes(data)
+            if target.stat().st_mode != mode:
+                target.chmod(mode)
 
 
 def configure(parser: argparse.ArgumentParser) -> None:
@@ -328,7 +377,7 @@ def run(args: argparse.Namespace) -> int:
             sys.stdout.write(notes(text, args.version))
             return 0
         changed = prepare(root, args.version, args.date)
-    except (ReleaseError, agents_md.MarkerError) as error:
+    except (ReleaseError, agents_md.MarkerError, vendor.VendorError) as error:
         print(f"fleet release: {error}", file=sys.stderr)
         return 1
     for path in changed:

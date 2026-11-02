@@ -41,7 +41,10 @@ jobs:
       - name: Read the version and the notes
         id: version
         run: |
-          version=$(cat VERSION)
+          # Exactly as fleet self-check reads it: the version, then at most one newline ($(cat) would drop them all).
+          raw=$(cat VERSION; printf x)
+          raw=${raw%x}
+          version=${raw%$'\n'}
           if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::VERSION isn't MAJOR.MINOR.PATCH in ASCII digits without leading zeros"
             exit 1
