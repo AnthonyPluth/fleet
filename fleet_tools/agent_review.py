@@ -74,6 +74,7 @@ EVENT_KEYS = ("action", "sender", "label", "labels", "files")
 VERIFICATION_FILE = "verification.md"
 VERIFICATION_PROMPT = "verification-review.md"
 VERIFICATION_CHANGED = "verification-changed.md"
+NO_BLOCK = "no verification block"
 RECORD_HASH = re.compile(r"^[0-9a-f]{16}$")
 UNPARSED = ("NOTE: this record doesn't parse ({error}). Its format is `fleet checks`' job; judge what it covers from the text as "
             "it stands.\n\n")
@@ -378,19 +379,19 @@ def verification_record(body: str) -> tuple[str, str] | None:
     verification = record_parser()
     text = body.replace("\r\n", "\n")
     lines = text.split("\n")
-    begins = [index for index, line in enumerate(lines) if line.strip() == verification.BEGIN]
-    if not begins:
-        return None
+    try:
+        begin, end = verification.block(lines)
+        kept = lines[begin - 1:end]
+    except verification.ParseError as error:
+        begins = [index for index, line in enumerate(lines) if line.strip() == verification.BEGIN]
+        if error.rule.startswith(NO_BLOCK) or not begins:
+            return None
+        kept = lines[begins[0]:]
     note = ""
     try:
         verification.parse(text)
     except verification.ParseError as error:
         note = UNPARSED.format(error=error)
-    try:
-        begin, end = verification.block(lines)
-        kept = lines[begin - 1:end]
-    except verification.ParseError:
-        kept = lines[begins[0]:]
     record = "\n".join(kept).rstrip("\n")
     if len(record) > verification.MAX_BODY:
         record = record[:verification.MAX_BODY] + "\n(cut: the record is over the size limit)"

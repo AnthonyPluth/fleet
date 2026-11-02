@@ -803,7 +803,8 @@ class Plan(unittest.TestCase):
         self.write("app/app.py", "a = 2\n")
         head = self.commit("change")
         for body, flag in ((self.RECORD, "false"), (self.RECORD, ""), ("## What\n\nNo table here.\n", "true"), ("", "true"),
-                           ("```\n<!-- fleet-verification -->\n```\n", "false")):
+                           ("```\n<!-- fleet-verification -->\n```\n", "false"), ("```\n<!-- fleet-verification -->\n```\n", "true"),
+                           ("Like this:\n\n~~~markdown\n" + self.RECORD + "~~~\n", "true")):
             with self.subTest(body=body[:20], flag=flag):
                 values = self.record_plan(head, body, flag)
                 self.assertFalse((self.out / "verification.md").exists())
