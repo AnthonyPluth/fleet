@@ -6,11 +6,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from consumers import RUNWAY, WAYPOINT, copy, write
+from consumers import AGENT, RUNWAY, WAYPOINT, commit, copy, git, write
 
 from fleet_tools import cli, config
 from fleet_tools.checks import runner
 from fleet_tools.checks import verification as check
+from fleet_tools.checks import verification_guides as guides_check
 from fleet_tools.checks.context import Advisory, Context, PullRequest
 
 EVENTS = Path(__file__).resolve().parent / "fixtures" / "events"
@@ -222,6 +223,123 @@ class Forgery(unittest.TestCase):
         code, out, err = run("--root", str(root), "--pr-event", str(path), actions=True)
         self.assertEqual((code, err), (0, ""))
         self.assertIn("a verification record in the description", out)
+
+
+def guides_outcome(root: Path, commits: str | None = None) -> tuple[list[str], list[str], bool]:
+    found = runner.resolve(root, commits) if commits else None
+    problems, warnings, ran = runner.check(Context(root, config.load(root), found), [guides_check.CHECK])
+    return problems, warnings, bool(ran)
+
+
+class Guides(unittest.TestCase):
+    def test_the_fixture_s_guides_pass(self) -> None:
+        root = copy(self, RUNWAY)
+        self.assertEqual(guides_outcome(root), ([], [], True))
+        code, out, err = run("--root", str(root))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("the verification guides", out)
+
+    def test_a_stale_glob_is_a_problem(self) -> None:
+        root = copy(self, RUNWAY)
+        guide = root / "docs/verification/screens.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace("- `screenshots/**`", "- `screenshots/**`\n- `runway/web/**`"),
+                         encoding="utf-8")
+        commit(root, "docs: a guide naming a removed directory")
+        problems, warnings, _ = guides_outcome(root)
+        self.assertEqual(warnings, [])
+        self.assertEqual(problems, ["docs/verification/screens.md, line 10: the glob `runway/web/**` matches no tracked file, so the "
+                                    "guide is stale; fix the glob or the guide (the fleet-verification-guide skill updates it)"])
+        code, out, err = run("--root", str(root))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("runway/web/**", err)
+
+    def test_a_glob_matching_only_an_untracked_file_is_stale(self) -> None:
+        root = copy(self, RUNWAY)
+        guide = root / "docs/verification/migrations.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace("- `tests/test_migrations.py`", "- `tests/test_migrations.py`\n- `notes/*.txt`"),
+                         encoding="utf-8")
+        commit(root, "docs: a glob for an ignored file")
+        write(root, "notes/scratch.txt", "x")
+        problems, _, _ = guides_outcome(root)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("`notes/*.txt` matches no tracked file", problems[0])
+
+    def test_a_guide_that_doesnt_parse_is_a_problem(self) -> None:
+        root = copy(self, RUNWAY)
+        write(root, "docs/verification/broken.md", "# Broken\n\n## Paths\n\n- `tests/**`\n")
+        commit(root, "docs: a broken guide")
+        problems, _, _ = guides_outcome(root)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("docs/verification/broken.md, line 6: no `## How to verify` section"), problems[0])
+
+    def test_an_uncovered_changed_path_is_a_warning(self) -> None:
+        root = copy(self, RUNWAY)
+        base = git(root, "rev-parse", "HEAD").strip()
+        write(root, "frontend/verify/flows/budget.json", "{}\n")
+        write(root, "runway/server/app.py", "app = 1\n")
+        write(root, "docs/verification/screens.md", (root / "docs/verification/screens.md").read_text(encoding="utf-8") + "\n")
+        commit(root, "feat: a server\n\n" + AGENT)
+        problems, warnings, _ = guides_outcome(root, f"{base}..HEAD")
+        self.assertEqual(problems, [])
+        self.assertEqual(warnings, ["no verification guide covers 1 changed path(s): runway/server/app.py (the "
+                                    "fleet-verification-guide skill writes or extends one)"])
+        code, _, err = run("--root", str(root), "--commits", f"{base}..HEAD")
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: no verification guide covers 1 changed path(s): runway/server/app.py", err)
+
+    def test_both_names_of_a_renamed_path_are_checked(self) -> None:
+        root = copy(self, RUNWAY)
+        base = git(root, "rev-parse", "HEAD").strip()
+        git(root, "mv", "tests/test_budget.py", "tests/test_totals.py")
+        commit(root, "refactor: rename a test\n\n" + AGENT)
+        _, warnings, _ = guides_outcome(root, f"{base}..HEAD")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("covers 2 changed path(s): tests/test_budget.py, tests/test_totals.py", warnings[0])
+        guide = root / "docs/verification/screens.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace("- `screenshots/**`", "- `screenshots/**`\n- `tests/test_totals.py`"),
+                         encoding="utf-8")
+        commit(root, "docs: cover the renamed test\n\n" + AGENT)
+        _, warnings, _ = guides_outcome(root, f"{base}..HEAD")
+        self.assertIn("covers 1 changed path(s): tests/test_budget.py", warnings[0])
+
+    def test_many_uncovered_paths_are_one_warning(self) -> None:
+        root = copy(self, RUNWAY)
+        base = git(root, "rev-parse", "HEAD").strip()
+        for index in range(25):
+            write(root, f"runway/domain/m{index:02}.py", "x = 1\n")
+        commit(root, "feat: modules\n\n" + AGENT)
+        _, warnings, _ = guides_outcome(root, f"{base}..HEAD")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("covers 25 changed path(s): runway/domain/m00.py,", warnings[0])
+        self.assertTrue(warnings[0].endswith("runway/domain/m19.py and 5 more (the fleet-verification-guide skill writes or extends one)"))
+
+    def test_messages_are_escaped_for_workflow_commands(self) -> None:
+        root = copy(self, RUNWAY)
+        base = git(root, "rev-parse", "HEAD").strip()
+        write(root, "runway/100%\x1bodd.py", "x = 1\n")
+        commit(root, "feat: an odd name\n\n" + AGENT)
+        _, warnings, _ = guides_outcome(root, f"{base}..HEAD")
+        self.assertIn("runway/100%25?odd.py", warnings[0])
+
+    def test_it_runs_only_where_guides_is_set_in_a_checkout(self) -> None:
+        self.assertEqual(guides_outcome(copy(self, WAYPOINT)), ([], [], False))
+        self.assertEqual(guides_outcome(copy(self, RUNWAY, repository=False)), ([], [], False))
+        root = copy(self, RUNWAY)
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('guides = "docs/verification"\n', ""), encoding="utf-8")
+        self.assertEqual(guides_outcome(root), ([], [], False))
+
+    def test_a_missing_directory_and_a_bad_key(self) -> None:
+        root = copy(self, RUNWAY)
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('"docs/verification"', '"docs/nowhere"'), encoding="utf-8")
+        problems, _, _ = guides_outcome(root)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("doesn't exist inside the repository", problems[0])
+        pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('"docs/nowhere"', '"../elsewhere"'), encoding="utf-8")
+        code, _, err = run("--root", str(root))
+        self.assertEqual(code, 2)
+        self.assertIn("[tool.fleet.verification] guides", err)
 
 
 if __name__ == "__main__":

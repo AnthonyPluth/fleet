@@ -1,7 +1,7 @@
 ---
 # vendored from fleet v0.1.0 (plugins/fleet/skills/verify-change/SKILL.md) by `fleet sync`; edit it in fleet, not here: `fleet drift` fails on any change
 name: fleet-verify-change
-description: Use before marking a pull request ready for review, in a repository whose pyproject.toml sets [tool.fleet.verification]. Lists the change's dimensions (each user-visible behaviour, failure path, migration, permission and invariant), verifies each with the app's own tools and verify skills, and writes the Verification block into the pull request's description - every dimension verified with evidence from this session, or not verified with the reason.
+description: Use before marking a pull request ready for review, in a repository whose pyproject.toml sets [tool.fleet.verification]. Lists the change's dimensions (each user-visible behaviour, failure path, migration, permission and invariant), verifies each with the verification guides for the changed paths where the repository has them and the app's own tools and verify skills, and writes the Verification block into the pull request's description - every dimension verified with evidence from this session, or not verified with the reason.
 ---
 
 # Verify the change and record it
@@ -24,9 +24,20 @@ Read the diff (`git diff origin/main...HEAD`) and the issue, and write down ever
 
 A change with one dimension has one row. A refactor still has the behaviours it must not have changed.
 
+## Read the area guides first
+
+Where `[tool.fleet.verification]` also sets `guides` (a directory of verification guides, one per area of the app), read the guides for the changed paths before verifying anything:
+
+1. `git diff --name-only --no-renames origin/main...HEAD | xargs fleet verification areas --json` names every area whose `## Paths` globs match a changed path (both names of a renamed file count), with each guide's steps and gaps, and lists the paths no guide covers.
+2. For each dimension in a named area, verify it the way the guide's `## How to verify` says: those are the commands, flows, fakes and tests the area is checked with.
+3. A dimension the guide lists under `## Not verifiable yet` is `not verified`, and its How gives the guide's reason and what would change it.
+4. A dimension you verified some other way than its guide says (a step the guide lacks, or one that didn't apply) says why in its How column, so a reviewer sees that the guide was read and why it was set aside.
+
+Paths no guide covers are verified as below, and the `fleet-verification-guide` skill can write a guide for them once the change is done; the `verification-guides` check lists them as a warning on the pull request. Without `guides`, skip this step.
+
 ## Verify each one
 
-Use the repository's own tools, in this order of preference:
+Use the area's guide where there is one, and otherwise the repository's own tools, in this order of preference:
 
 1. The app's verify skill (`.claude/skills/verify-*/`), which says how to run the app and drive its flows, and `make verify` or the control smoke where the repository has one: for anything on screen or in a flow.
 2. A test that fails before the change and passes after, run in this session: for logic, failure paths and migrations.
