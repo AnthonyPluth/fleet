@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -224,9 +225,16 @@ def load(root: Path, relative: str) -> tuple[list[Guide], list[GuideError]]:
     return guides, errors
 
 
+def split0(data: bytes) -> list[str]:
+    return [os.fsdecode(path) for path in data.split(b"\0") if path]
+
+
+def git_paths(root: Path, *args: str) -> list[str]:
+    return split0(subprocess.run(["git", *args], cwd=root, check=True, capture_output=True).stdout)
+
+
 def tracked(root: Path) -> list[str]:
-    done = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True, text=True)
-    return [path for path in done.stdout.split("\0") if path]
+    return git_paths(root, "ls-files", "-z")
 
 
 def normalize(path: str) -> str:
@@ -242,8 +250,12 @@ def areas(guides: list[Guide], paths: list[str]) -> tuple[list[tuple[Guide, list
     return [(guide, found) for guide, found in matched if found], [path for path in wanted if path not in covered]
 
 
+def shown(text: str) -> str:
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 def clean(text: str) -> str:
-    return CONTROL.sub("?", text)
+    return CONTROL.sub("?", shown(text))
 
 
 def heading(guide: Guide) -> str:
@@ -280,7 +292,7 @@ def stdin_paths() -> list[str]:
     data = sys.stdin.buffer.read(MAX_STDIN + 1)
     if len(data) > MAX_STDIN:
         raise config.ConfigError(f"--stdin0: the paths on stdin are over {MAX_STDIN:,} bytes")
-    return [path for path in data.decode("utf-8", errors="replace").split("\0") if path]
+    return split0(data)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -309,7 +321,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
     found, uncovered = areas(guides, args.paths)
     if args.json:
-        print(json.dumps({"areas": [{**guide.as_json(), "matched": paths} for guide, paths in found], "uncovered": uncovered},
+        print(json.dumps({"areas": [{**guide.as_json(), "matched": [shown(path) for path in paths]} for guide, paths in found],
+                          "uncovered": [shown(path) for path in uncovered]},
                          indent=2, ensure_ascii=False))
     else:
         sys.stdout.write(describe_areas(found, uncovered))

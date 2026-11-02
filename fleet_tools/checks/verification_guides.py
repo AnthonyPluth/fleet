@@ -15,8 +15,7 @@ def changed(context: Context) -> list[str]:
     commits = context.commits
     if commits is None:
         return []
-    out = git(context.root, "diff", "--name-only", "--no-renames", "--relative", "-z", commits.base, commits.head)
-    return [path for path in out.split("\0") if path]
+    return guides.git_paths(context.root, "diff", "--name-only", "--no-renames", "--relative", "-z", commits.base, commits.head)
 
 
 def under(path: str, relative: str) -> bool:

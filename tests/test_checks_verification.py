@@ -309,6 +309,30 @@ class Guides(unittest.TestCase):
         _, warnings, _ = guides_outcome(root, f"{base}..HEAD")
         self.assertIn("covers 1 changed path(s): tests/test_budget.py", warnings[0])
 
+    def test_a_tracked_name_that_isnt_utf8_neither_crashes_nor_hides_a_path(self) -> None:
+        root = copy(self, RUNWAY)
+        base = git(root, "rev-parse", "HEAD").strip()
+        name = os.fsencode(root) + b"/runway/static/caf\xe9.css"
+        other = os.fsencode(root) + b"/runway/server/caf\xe9.py"
+        try:
+            os.makedirs(os.path.dirname(other), exist_ok=True)
+            for path in (name, other):
+                with open(path, "wb") as file:
+                    file.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"the filesystem refuses a file name that isn't UTF-8 ({error})")
+        guide = root / "docs/verification/screens.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace("- `runway/static/**`", "- `runway/static/*.css`"),
+                         encoding="utf-8")
+        commit(root, "feat: files named in Latin-1\n\n" + AGENT)
+        problems, warnings, _ = guides_outcome(root, f"{base}..HEAD")
+        self.assertEqual(problems, [])
+        self.assertEqual(warnings, ["no verification guide covers 1 changed path(s): runway/server/caf\ufffd.py (the "
+                                    "fleet-verification-guide skill writes or extends one)"])
+        code, out, err = run("--root", str(root))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("the verification guides", out)
+
     def test_many_uncovered_paths_are_one_warning(self) -> None:
         root = copy(self, RUNWAY)
         base = git(root, "rev-parse", "HEAD").strip()

@@ -328,6 +328,17 @@ class Commands(unittest.TestCase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("areas needs a PATH, or --stdin0", err)
 
+    def test_stdin0_decodes_names_that_arent_utf8_like_git_paths(self) -> None:
+        code, out, err = run("areas", "--root", str(RUNWAY), "--json", "--stdin0",
+                             stdin=b"runway/storage/migrations/versions/caf\xe9.py\0src/caf\xe9.py\0")
+        self.assertEqual((code, err), (0, ""))
+        data = json.loads(out)
+        self.assertEqual([(each["name"], each["matched"]) for each in data["areas"]],
+                         [("migrations", ["runway/storage/migrations/versions/caf\ufffd.py"])])
+        self.assertEqual(data["uncovered"], ["src/caf\ufffd.py"])
+        code, out, _ = run("areas", "--root", str(RUNWAY), "--stdin0", stdin=b"src/caf\xe9.py\0")
+        self.assertEqual((code, out), (0, "no guide covers:\n    src/caf\ufffd.py\n"))
+
     def test_stdin0_over_the_limit_is_an_error(self) -> None:
         code, out, err = run("areas", "--root", str(RUNWAY), "--stdin0", stdin=b"a" * (16 * 1024 * 1024 + 1))
         self.assertEqual((code, out), (2, ""))
