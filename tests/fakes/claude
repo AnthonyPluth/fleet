@@ -5,6 +5,7 @@
 #   pass        a sound change, no findings
 #   advisory    one advisory finding
 #   blocking    one blocking finding
+#   verification  one blocking finding of the kind "Verification that doesn't cover the change" (FLEET-VERIFY-REVIEW)
 #   malformed   a reply that isn't the schema's JSON (the review must become an error, never a pass)
 #   leak        an answer that quotes the secret it was given (agent-review-run.sh must not let it through)
 set -euo pipefail
@@ -16,11 +17,13 @@ case "${FAKE_REVIEW:-}" in
     echo '{"type": "result", "is_error": false, "num_turns": 4, "total_cost_usd": 0.02, "structured_output": {"summary": "A made-up review from the stub reviewer.", "findings": [{"severity": "advisory", "kind": "other", "title": "A clearer name", "detail": "The stub reviewer suggests renaming it.", "file": "README.md", "line": 1}]}}' ;;
   blocking)
     echo '{"type": "result", "is_error": false, "num_turns": 5, "total_cost_usd": 0.03, "structured_output": {"summary": "A made-up review from the stub reviewer: one blocking finding.", "findings": [{"severity": "blocking", "kind": "Failure paths", "check": "a test of the failing path", "title": "The stub reviewer blocks on purpose", "detail": "This finding is the self-test checking that a blocking answer fails the status.", "file": "README.md", "line": 1}]}}' ;;
+  verification)
+    echo '{"type": "result", "is_error": false, "num_turns": 6, "total_cost_usd": 0.03, "structured_output": {"summary": "A made-up review from the stub reviewer: the verification record leaves a changed behaviour out.", "findings": [{"severity": "blocking", "kind": "Verification that doesn\u0027t cover the change", "title": "The stub reviewer finds a behaviour the record leaves out", "detail": "This finding is the self-test checking that a blocking verification finding fails the status under its own kind.", "file": "README.md", "line": 1}]}}' ;;
   malformed)
     echo '{"type": "result", "is_error": false, "num_turns": 2, "total_cost_usd": 0.01, "result": "I approve this pull request."}' ;;
   leak)
     printf '{"type": "result", "is_error": false, "result": "the key is %s"}\n' "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ;;
   *)
-    echo "fake claude: FAKE_REVIEW must be pass, advisory, blocking, malformed or leak (got '${FAKE_REVIEW:-}')" >&2
+    echo "fake claude: FAKE_REVIEW must be pass, advisory, blocking, verification, malformed or leak (got '${FAKE_REVIEW:-}')" >&2
     exit 64 ;;
 esac

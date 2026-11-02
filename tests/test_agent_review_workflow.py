@@ -52,11 +52,12 @@ class ReusableWorkflowTest(unittest.TestCase):
     def test_the_inputs_the_secrets_and_the_outputs(self) -> None:
         call = mapping(mapping(self.workflow["on"])["workflow_call"])
         self.assertEqual(sorted(call["inputs"]), sorted([
-            "generated", "first-review", "budget-usd", "max-turns", "merge-gate-workflow", "fleet-ref", "dry-run", "fake-review",
+            "generated", "first-review", "verification", "budget-usd", "max-turns", "merge-gate-workflow", "fleet-ref", "dry-run", "fake-review",
             "second-review-labels", "second-review-paths", "second-review-always", "second-review-budget-usd", "second-review-max-turns", "fake-event",
         ]))
         inputs = mapping(call["inputs"])
         self.assertEqual(mapping(inputs["first-review"])["default"], "true")
+        self.assertEqual((mapping(inputs["verification"])["type"], mapping(inputs["verification"])["default"]), ("boolean", "false"))
         self.assertEqual(mapping(inputs["budget-usd"])["default"], "3")
         self.assertEqual(mapping(inputs["max-turns"])["default"], "60")
         self.assertEqual(mapping(inputs["second-review-labels"])["default"], "safety-critical,security")
@@ -72,10 +73,12 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(sorted(secrets), ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"])
         for secret in secrets.values():
             self.assertEqual(mapping(secret)["required"], "false")
-        self.assertEqual(sorted(call["outputs"]), ["description", "second-description", "second-verdict", "verdict"])
+        self.assertEqual(sorted(call["outputs"]), ["description", "record", "second-description", "second-verdict", "verdict"])
         outputs = mapping(call["outputs"])
         self.assertEqual(mapping(outputs["second-verdict"])["value"], "${{ jobs.second-review.outputs.verdict }}")
         self.assertEqual(mapping(outputs["verdict"])["value"], "${{ jobs.review.outputs.verdict }}")
+        self.assertEqual(mapping(outputs["record"])["value"], "${{ jobs.review.outputs.record }}")
+        self.assertEqual(mapping(mapping(mapping(self.workflow["jobs"])["review"])["outputs"])["record"], "${{ steps.plan.outputs.record }}")
         self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
@@ -340,6 +343,27 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertIn("No .github/agent-review/context.md", verdict)
         self.assertIsNone(SECRET.search(verdict))
 
+    def test_the_verification_record_reaches_plan_as_data_and_only_its_hash_leaves(self) -> None:
+        for job in REVIEW_JOBS:
+            steps = steps_of(self.workflow, job)
+            plan = mapping(next(s for s in steps if s.get("id") == "plan")["env"])
+            self.assertEqual(plan["VERIFICATION"], "${{ inputs.verification }}")
+            self.assertEqual(plan["BODY"], "${{ github.event.pull_request.body }}")
+            self.assertEqual(plan["PREV_RECORD"], "${{ steps.prev.outputs.record }}")
+            verdict = mapping(next(s for s in steps if s.get("id") == "result")["env"])
+            self.assertEqual(verdict["RECORD_HASH"], "${{ steps.plan.outputs.record }}")
+            prev = next(c for c in step_sources(self.text, job) if c.startswith("name: The last review"))
+            self.assertIn("read -r sha verdict record < <(", prev)
+            self.assertIn('echo "record=${record:-}"', prev)
+            for chunk in step_sources(self.text, job):
+                if "run:" in chunk:
+                    self.assertNotRegex(chunk.split("run:", 1)[1], r"\$\{\{[^}]*body")
+                    self.assertNotIn("verification.md", chunk.split("run:", 1)[1])
+        for job in REPORT_JOBS.values():
+            self.assertNotIn("BODY", job_source(self.text, job))
+            self.assertNotIn("pull_request.body", job_source(self.text, job))
+        self.assertEqual(self.text.count("BODY: ${{ github.event.pull_request.body }}"), 4)
+
     def test_the_stub_review_runs_only_when_asked_and_the_real_one_only_otherwise(self) -> None:
         steps = {step_name(step): step for step in steps_of(self.workflow, "review")}
         self.assertEqual(steps["Review"]["if"], "steps.plan.outputs.mode == 'review' && inputs.fake-review == ''")
@@ -380,22 +404,30 @@ class SelfTestTest(unittest.TestCase):
         jobs = mapping(workflow["jobs"])
         calls = {name: mapping(job) for name, job in jobs.items() if mapping(job).get("uses") == "./.github/workflows/agent-review.yml"}
         first = {name: job for name, job in calls.items() if name.startswith("agent-review-")}
-        self.assertEqual(sorted(first), ["agent-review-blocking", "agent-review-malformed", "agent-review-pass"])
+        self.assertEqual(sorted(first), ["agent-review-blocking", "agent-review-malformed", "agent-review-pass", "agent-review-verification"])
         answers = []
-        for job in calls.values():
+        for name, job in calls.items():
             inputs = mapping(job["with"])
             self.assertEqual(inputs["dry-run"], "true")
             self.assertEqual(inputs["fleet-ref"], "${{ github.sha }}")
             self.assertEqual(inputs["merge-gate-workflow"], "")
             self.assertNotIn("secrets", job)
             self.assertNotEqual(inputs["fake-review"], "")
+            if name == "agent-review-verification":
+                self.assertEqual(inputs["verification"], "true")
+            else:
+                self.assertNotIn("verification", inputs, name)
         for job in first.values():
             inputs = mapping(job["with"])
             self.assertNotIn("fake-event", inputs)
             answers.append(inputs["fake-review"])
-        self.assertEqual(sorted(answers), ["blocking", "malformed", "pass"])
+        self.assertEqual(sorted(answers), ["blocking", "malformed", "pass", "verification"])
         verdicts = mapping(jobs["agent-review-verdicts"])
         self.assertEqual(sorted(str(verdicts["needs"]).strip("[]").split(", ")), sorted(first))
+        source = job_source(SELF_TEST.read_text(encoding="utf-8"), "agent-review-verdicts")
+        self.assertIn('[ "$VERIFICATION" = blocking ]', source)
+        self.assertIn("needs.agent-review-verification.outputs.record", source)
+        self.assertIn("::warning::", source)
 
     def test_the_self_test_fakes_each_second_review_case_the_issue_lists(self) -> None:
         workflow = mapping(self_check.parse(SELF_TEST.read_text(encoding="utf-8")))

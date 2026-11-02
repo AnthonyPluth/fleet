@@ -167,11 +167,32 @@ jobs:
       fake-review: malformed
       merge-gate-workflow: ""
 
-  # The verdicts the three runs reached, through the reusable workflow's outputs. A pull request that isn't an agent's
+  # The verification record (FLEET-VERIFY-REVIEW): with `verification: true` the review reads this pull request's own
+  # record (fleet's template carries one) into verification.md, and the stub answers with a blocking finding of the
+  # kind "Verification that doesn't cover the change", which must fail the status like any other. The three cases
+  # above leave the input at its default, so they also show that nothing changes without it.
+  agent-review-verification:
+    name: Agent review (dry run, verification record, blocking)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      fake-review: verification
+      verification: true
+      merge-gate-workflow: ""
+
+  # The verdicts the four runs reached, through the reusable workflow's outputs. A pull request that isn't an agent's
   # (the owner's by hand) gets "Not an agent's pull request" from each and runs no stub, which is the right answer too.
+  # The verification case also reports the hash of the record it read: empty means this pull request's description has
+  # no record block, so that path wasn't exercised here, which is a warning rather than a failure.
   agent-review-verdicts:
     name: Agent review (dry run) verdicts
-    needs: [agent-review-pass, agent-review-blocking, agent-review-malformed]
+    needs: [agent-review-pass, agent-review-blocking, agent-review-malformed, agent-review-verification]
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest   # hosted: fleet's own CI, a few lines of shell
     timeout-minutes: 5
@@ -185,15 +206,23 @@ jobs:
           BLOCKING_WHY: ${{ needs.agent-review-blocking.outputs.description }}
           MALFORMED: ${{ needs.agent-review-malformed.outputs.verdict }}
           MALFORMED_WHY: ${{ needs.agent-review-malformed.outputs.description }}
+          VERIFICATION: ${{ needs.agent-review-verification.outputs.verdict }}
+          VERIFICATION_WHY: ${{ needs.agent-review-verification.outputs.description }}
+          VERIFICATION_RECORD: ${{ needs.agent-review-verification.outputs.record }}
         run: |
           echo "pass: $PASS ($PASS_WHY); blocking: $BLOCKING ($BLOCKING_WHY); malformed: $MALFORMED ($MALFORMED_WHY)"
+          echo "verification: $VERIFICATION ($VERIFICATION_WHY), record ${VERIFICATION_RECORD:-none}"
           if [ "$PASS_WHY" = "Not an agent's pull request" ]; then
-            [ "$PASS:$BLOCKING:$MALFORMED" = "pass:pass:pass" ] || { echo "::error::A non-agent pull request should pass every run"; exit 1; }
+            [ "$PASS:$BLOCKING:$MALFORMED:$VERIFICATION" = "pass:pass:pass:pass" ] || { echo "::error::A non-agent pull request should pass every run"; exit 1; }
             exit 0
           fi
           [ "$PASS" = pass ] || { echo "::error::The passing answer gave $PASS"; exit 1; }
           [ "$BLOCKING" = blocking ] || { echo "::error::The blocking answer gave $BLOCKING"; exit 1; }
           [ "$MALFORMED" = error ] || { echo "::error::The malformed answer gave $MALFORMED, not error"; exit 1; }
+          [ "$VERIFICATION" = blocking ] || { echo "::error::The verification answer gave $VERIFICATION, not blocking"; exit 1; }
+          if [ -z "$VERIFICATION_RECORD" ]; then
+            echo "::warning::This pull request's description has no verification record, so the review read none; the template's block is missing"
+          fi
 
   # The finding outcomes (FLEET-FINDING-OUTCOMES) with the stub reviewer, through the same runner script, verdict and
   # outcomes steps the review runs, on fixed commits and recorded comments: a blocking finding, then a push the stub

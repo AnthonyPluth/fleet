@@ -19,7 +19,8 @@ RULE = (
     "*human-judged* only when no check can express it, and says why. Every month the \"Repeated review findings\" issue "
     "lists the kinds that came back; a row there is closed by a check, not by a new sentence here."
 )
-SHARED_MISTAKES = ("Failure paths", "Access that outlives the person", "Undo and restore", "GitHub Actions", "Layout")
+SHARED_MISTAKES = ("Failure paths", "Access that outlives the person", "Undo and restore", "GitHub Actions", "Layout",
+                   "Verification that doesn't cover the change")
 REGENERATE = "regenerate it with `poetry run fleet sync --to v$(cat VERSION) --root {}`"
 
 

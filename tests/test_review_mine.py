@@ -82,7 +82,9 @@ class Miner:
 class MistakesTest(unittest.TestCase):
     def test_reads_each_item_s_state_from_its_parenthesis(self) -> None:
         items = rm.mistakes(AGENTS)
-        self.assertEqual(sorted(items), ["access that outlives the person", "failure paths", "github actions", "layout", "undo and restore"])
+        self.assertEqual(sorted(items), ["access that outlives the person", "failure paths", "github actions", "layout", "undo and restore",
+                                         "verification that doesn t cover the change"])
+        self.assertEqual(items["verification that doesn t cover the change"].state, rm.PARTLY)
         self.assertEqual(items["failure paths"].state, rm.HUMAN)
         self.assertEqual(items["github actions"].state, rm.PARTLY)
         self.assertEqual(items["failure paths"].title, "Failure paths")
