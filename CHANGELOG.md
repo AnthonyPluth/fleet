@@ -4,6 +4,8 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-02
+
 ### Changed
 
 - TEMPORARY: the second review runs on `claude-opus-5-5` instead of `claude-fable-5-1` while Fable is rate-limited (an owner exception; still fixed in the workflow, no input; budget, turns and statuses unchanged). Reverting means restoring `claude-fable-5-1` in `.github/workflows/agent-review.yml` (both `MODEL:` lines of the `second-review` job and its three comments), `tests/test_agent_review_workflow.py`, `tests/test_agent_review_risky.py`, `.github/agent-review/invariants.md` item 7, `docs/agent-review.md`, `docs/adopting.md`, `docs/drift.md` and `CHANGELOG.md`, or reverting this change's pull request.
