@@ -11,7 +11,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fleet_tools import config, review_outcomes, verification, verification_guides
+from fleet_tools import (
+    config,
+    loop_health,
+    review_outcomes,
+    verification,
+    verification_guides,
+)
 from fleet_tools.agent_review import (
     FINDING_ID,
     FIRST,
@@ -684,13 +690,14 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
 
 
 def render(rows: list[Row], repo: str, days: int, since: str, counts: tuple[int, int], previous: str = "",
-           run_url: str = "", signals: Signals | None = None, markers: dict[str, int] | None = None) -> str:
+           run_url: str = "", signals: Signals | None = None, markers: dict[str, int] | None = None,
+           health: list[str] | None = None, hidden: str = "") -> str:
     kept = ticks_of(previous)
     for row_id, number in (markers or {}).items():
         if not kept.get(row_id, (False, ""))[1]:
             kept[row_id] = (True, str(number))
-    lines = [
-        MARKER,
+    lines = [MARKER, *([hidden] if hidden else []), *([*health, ""] if health else [])]
+    lines += [
         f"Review findings that came back on more than one pull request of `{repo}` updated in the last {days} days "
         f"(since {since[:10]}), read from the \"Agent review\" and \"Second review\" comments and counted per kind of "
         f"`AGENTS.md`'s \"Mistakes that keep coming back\". A kind is listed when it appears on two or more pull requests "
@@ -759,8 +766,26 @@ def parse_now(text: str | None) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def loop_section(stats: Path | None, previous: str) -> tuple[list[str] | None, str]:
+    if stats is None:
+        return None, ""
+    current, why = loop_health.read(stats)
+    earlier = loop_health.previous(previous, MARKER)
+    if current is None:
+        print(f"review-mine: the loop stats in {stats} aren't used: {why}", file=sys.stderr)
+    kept = current or earlier
+    return loop_health.section(current, earlier, why), loop_health.encode(kept) if kept else ""
+
+
+def summary_text(body: str) -> str:
+    lines = body.split("\n")[1:]
+    if lines and lines[0].startswith(loop_health.PREFIX):
+        lines = lines[1:]
+    return "\n".join(lines)
+
+
 def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: bool, summary: Path | None,
-         app_root: Path | None = None) -> int:
+         app_root: Path | None = None, stats: Path | None = None) -> int:
     since = window(now, days)
     items = read_mistakes(agents_md)
     pulls = pulls_since(repo, since)
@@ -781,14 +806,15 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     markers = mined(repo)
     existing = report_issue(repo)
     previous = str(existing.get("body") or "") if existing else ""
+    health, hidden = loop_section(stats, previous)
     body = render(rows, repo, days, since, (len(numbers), len({n for n, _ in records})), previous, os.environ.get("RUN_URL", ""), signals,
-                  markers)
+                  markers, health, hidden)
     rows_count = len(rows) + signals.count()
     print(f"review-mine: {len(numbers)} pull request(s) updated since {since[:10]}, {len({n for n, _ in records})} with findings, "
           f"{len(merged)} merged, {rows_count} row(s)")
     if summary is not None:
         with open(summary, "a", encoding="utf-8") as f:
-            f.write(body.split("\n", 1)[1] + "\n")
+            f.write(summary_text(body) + "\n")
     if dry_run:
         what = f"rewrite #{existing['number']}" if existing else ("open" if rows_count else "open nothing")
         print(f"review-mine: (dry run) would {what}:\n\n{body}")
@@ -814,6 +840,9 @@ def configure(parser: argparse.ArgumentParser) -> None:
                         help="a checkout of the repository's default branch, for [tool.fleet.verification] and its guides "
                              "(default: none, so no verification gaps)")
     parser.add_argument("--summary", type=Path, help="a file to append the report to ($GITHUB_STEP_SUMMARY)")
+    parser.add_argument("--stats", type=Path, metavar="LOOP-STATS.json",
+                        help="`fleet loop-stats`' JSON: a \"Loop health\" section at the top, beside the last run's numbers read "
+                             "from the report's hidden loop-stats line (default: none, no section)")
     parser.add_argument("--dry-run", action="store_true", help="print the issue instead of opening or rewriting it")
     parser.add_argument("--now", help="the end of the window as an ISO 8601 time (tests; default: now)")
 
@@ -823,7 +852,7 @@ def run(args: argparse.Namespace) -> int:
         print("review-mine: --days must be at least 1", file=sys.stderr)
         return 2
     try:
-        return mine(args.repo, args.days, args.agents_md, parse_now(args.now), args.dry_run, args.summary, args.app_root)
+        return mine(args.repo, args.days, args.agents_md, parse_now(args.now), args.dry_run, args.summary, args.app_root, args.stats)
     except subprocess.CalledProcessError as e:
         print(f"review-mine: gh api failed ({e.returncode}): {e.stderr.strip()}", file=sys.stderr)
         return 1

@@ -11,7 +11,7 @@ Waypoint and Runway each carry their own copy of the same automation: the indepe
 - `.github/agent-review/`, `.github/scripts/`: the review prompts and the scripts the reusable workflows run.
 - `.claude-plugin/`, `plugins/fleet/`: the Claude Code plugin (skills, the reviewer agent, the session-start hook), vendored into each app by `fleet sync` with `shim/fleet` as the app's `tools/fleet` ([adopting](docs/adopting.md#claude-code-plugin)).
 - `agents-md/sections/`: the `AGENTS.md` blocks the apps share.
-- `docs/`: [adopting fleet](docs/adopting.md), [where the apps differed](docs/drift.md), [the agent review](docs/agent-review.md), [review mining](docs/review-mining.md), [where skills live](docs/skills.md), the owner's [deep-scan runbook](docs/deep-scan.md) and [releasing](docs/release.md).
+- `docs/`: [adopting fleet](docs/adopting.md), [where the apps differed](docs/drift.md), [the agent review](docs/agent-review.md), [review mining](docs/review-mining.md), [loop stats](docs/loop-stats.md), [where skills live](docs/skills.md), the owner's [deep-scan runbook](docs/deep-scan.md) and [releasing](docs/release.md).
 
 Most of these arrive in later issues; this repository starts with the scaffold.
 

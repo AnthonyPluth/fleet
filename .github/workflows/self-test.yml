@@ -75,7 +75,8 @@ jobs:
       dry-run: true
 
   # Review mining in dry run on fleet itself: it reads fleet's own pull requests and the reviews' comments on them,
-  # prints the report it would post and the job summary, and opens or rewrites nothing. The called job asks for
+  # measures the loop (`fleet loop-stats`: the job summary and the `loop-stats.json` artifact are produced), prints
+  # the report it would post, with its "Loop health" section, and opens or rewrites nothing. The called job asks for
   # `issues: write`, so the caller grants it.
   review-mining:
     name: Review mining (dry run)
@@ -87,6 +88,30 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
+
+  # The dry run's loop-stats artifact exists: its link came back through the workflow's output, and this run's
+  # artifact list holds a non-empty `loop-stats.json`.
+  review-mining-artifact:
+    name: Review mining (dry run) artifact
+    needs: [review-mining]
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, one API read
+    timeout-minutes: 5
+    permissions:
+      actions: read            # this run's artifact list
+    steps:
+      - name: The loop-stats artifact was uploaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUNS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/
+          URL: ${{ needs.review-mining.outputs.loop-stats-url }}
+        run: |
+          echo "loop-stats artifact: ${URL:-none}"
+          case "$URL" in "$RUNS"*) ;; *) echo "::error::The loop-stats artifact's link isn't this run's: '$URL'"; exit 1 ;; esac
+          size=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name == "loop-stats.json") | .size_in_bytes' | sort -n | tail -n 1)
+          [ "${size:-0}" -gt 0 ] || { echo "::error::This run has no non-empty loop-stats.json artifact"; exit 1; }
 
   # Mining tasks on a fixture event (the owner ticks one row of a made-up report), in dry run: it lists fleet's own
   # review-mining issues for the row's marker, prints the issue it would open and the link it would write back, and

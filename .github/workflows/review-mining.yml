@@ -16,10 +16,18 @@ name: Review mining
 # rows of the verification records of the pull requests merged in the window (parsed as data by
 # fleet_tools/verification.py, never run), grouped by the verification guides' areas.
 # `fleet_tools/review_mine.py` decides it all; docs/review-mining.md explains the report.
+# FLEET-LOOP-STATS measures whether the loop turns: before the report is rewritten, `fleet loop-stats`
+# (fleet_tools/loop_stats.py, docs/loop-stats.md) counts, over the last `loop-stats-days` days, the merged pull requests'
+# reviews and what became of their findings, their verification records, the report's rows and the issues opened from
+# them, and the harness changes on the default branch (read with the API: commits and file contents, never run). Its
+# Markdown goes to the job summary, its JSON is uploaded as the `loop-stats.json` artifact (kept 90 days) and given to
+# `review-mine --stats`, which puts a "Loop health" section at the top of the issue beside the last run's numbers, kept
+# in a hidden `<!-- loop-stats <base64 JSON> -->` second line that is read back under a strict schema and size cap.
 #
 # The caller schedules it monthly (`17 6 1 * *`) or weekly (`17 6 * * 1`; the issue is rewritten either way) and may
 # run it by hand. No secrets: the workflow's own token, with `issues: write` for the one issue, `pull-requests: read`
-# for the list of pull requests and `contents: read` for the caller's AGENTS.md, pyproject.toml and Markdown files.
+# for the list of pull requests and `contents: read` for the caller's AGENTS.md, pyproject.toml and Markdown files and
+# the default branch's commits and files the loop stats read.
 # Titles, kinds, checks, dismissal reasons and verification cells are defused and cut short before posting (no
 # @mentions, no HTML comments, no tags), as the reviews' comments are.
 on:
@@ -29,14 +37,22 @@ on:
         description: The window, in days before the run, that a pull request must have been updated in to count.
         type: string
         default: "90"
+      loop-stats-days:
+        description: The loop stats' window, in days before the run (the merged pull requests, closed task issues and harness commits it counts).
+        type: string
+        default: "30"
       dry-run:
-        description: Print the issue that would be opened or rewritten instead of posting it.
+        description: Print the issue that would be opened or rewritten instead of posting it (the job summary and the loop-stats artifact are still produced).
         type: boolean
         default: false
       fleet-ref:
         description: The fleet ref to fetch the tool from (the self-test passes its own commit).
         type: string
         default: ""
+    outputs:
+      loop-stats-url:
+        description: The link to the run's `loop-stats.json` artifact.
+        value: ${{ jobs.mine.outputs.loop-stats-url }}
 
 env:
   FLEET_REF: v1.0.0   # stamped by the release
@@ -53,8 +69,10 @@ jobs:
     name: Review mining
     runs-on: ubuntu-latest   # hosted: holds the write token for the issue; a few API reads and one write
     timeout-minutes: 15
+    outputs:
+      loop-stats-url: ${{ steps.upload.outputs.artifact-url }}
     permissions:
-      contents: read           # the caller's AGENTS.md, pyproject.toml and verification guides
+      contents: read           # the caller's AGENTS.md, pyproject.toml and verification guides; the default branch's commits and files
       issues: write            # the "Repeated review findings" issue (and reading the comments)
       pull-requests: read      # the pull requests updated in the window
     steps:
@@ -84,6 +102,30 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # The loop's numbers: Markdown to the job summary, JSON for the artifact and the report. A part it can't read is
+      # null in the JSON and listed under "Not read", never zero; it fails only when it can't write its files.
+      - name: Measure the loop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DAYS: ${{ inputs.loop-stats-days }}
+          OUT: ${{ runner.temp }}/loop-stats
+        run: |
+          mkdir -p "$OUT"
+          cd .fleet || exit 1
+          python3 -E -s -m fleet_tools.cli loop-stats --repo "$REPO" --days "$DAYS" --app-root "$GITHUB_WORKSPACE/app" \
+            --json "$OUT/loop-stats.json" --markdown "$OUT/loop-stats.md"
+          cat "$OUT/loop-stats.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # The JSON alone, not zipped: with `archive: false` the artifact is named after the file (`loop-stats.json`).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        id: upload
+        with:
+          path: ${{ runner.temp }}/loop-stats/loop-stats.json
+          archive: false
+          retention-days: 90
+          if-no-files-found: error
+
       - name: Rewrite the report
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,10 +133,11 @@ jobs:
           DAYS: ${{ inputs.days }}
           DRY_RUN: ${{ inputs.dry-run }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STATS: ${{ runner.temp }}/loop-stats/loop-stats.json
         run: |
           flags=()
           if [ "$DRY_RUN" = true ]; then flags+=(--dry-run); fi
           cd .fleet || exit 1
           python3 -E -s -m fleet_tools.cli review-mine --repo "$REPO" --days "$DAYS" \
             --agents-md "$GITHUB_WORKSPACE/app/AGENTS.md" --app-root "$GITHUB_WORKSPACE/app" \
-            --summary "$GITHUB_STEP_SUMMARY" "${flags[@]}"
+            --summary "$GITHUB_STEP_SUMMARY" --stats "$STATS" "${flags[@]}"
