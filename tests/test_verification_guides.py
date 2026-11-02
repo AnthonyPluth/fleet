@@ -1,8 +1,10 @@
 import contextlib
 import io
 import json
+import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from consumers import RUNWAY, WAYPOINT, copy, write
 
@@ -50,9 +52,10 @@ def error_of(text: str) -> GuideError:
     return caught.exception
 
 
-def run(*args: str) -> tuple[int, str, str]:
+def run(*args: str, stdin: bytes = b"") -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    piped = io.TextIOWrapper(io.BytesIO(stdin), encoding="utf-8")
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(sys, "stdin", piped):
         code = cli.main(["verification", *args])
     return code, out.getvalue(), err.getvalue()
 
@@ -246,6 +249,40 @@ class Commands(unittest.TestCase):
         code, out, _ = run("areas", "--root", str(root), "--", "-h")
         self.assertEqual((code, out), (0, "no guide covers:\n    -h\n"))
 
+    def test_stdin0_reads_any_number_of_paths_in_one_run(self) -> None:
+        paths = [f"runway/storage/migrations/versions/m{index}.py" for index in range(25000)]
+        paths += [f"src/x{index}.py" for index in range(25000)]
+        code, out, err = run("areas", "--root", str(RUNWAY), "--json", "--stdin0", stdin="\0".join(paths).encode() + b"\0")
+        self.assertEqual((code, err), (0, ""))
+        data = json.loads(out)
+        self.assertEqual([(each["name"], len(each["matched"])) for each in data["areas"]], [("migrations", 25000)])
+        self.assertEqual(len(data["uncovered"]), 25000)
+        self.assertEqual(data["uncovered"][-1], "src/x24999.py")
+
+    def test_stdin0_keeps_odd_paths_whole(self) -> None:
+        odd = ["runway/storage/migrations/versions/new\nline.py", "with space.py", "--root", "-h", "--json", "tests/test_migrations.py"]
+        code, out, err = run("areas", "--root", str(RUNWAY), "--json", "--stdin0", "Makefile",
+                             stdin="\0".join(odd).encode())
+        self.assertEqual((code, err), (0, ""))
+        data = json.loads(out)
+        self.assertEqual([(each["name"], each["matched"]) for each in data["areas"]],
+                         [("migrations", [odd[0], "tests/test_migrations.py"])])
+        self.assertEqual(data["uncovered"], ["Makefile", "with space.py", "--root", "-h", "--json"])
+
+    def test_stdin0_with_empty_input_and_no_paths_at_all(self) -> None:
+        code, out, err = run("areas", "--root", str(RUNWAY), "--json", "--stdin0")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"areas": [], "uncovered": []})
+        self.assertEqual(run("areas", "--root", str(RUNWAY), "--stdin0"), (0, "", ""))
+        code, out, err = run("areas", "--root", str(RUNWAY))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("areas needs a PATH, or --stdin0", err)
+
+    def test_stdin0_over_the_limit_is_an_error(self) -> None:
+        code, out, err = run("areas", "--root", str(RUNWAY), "--stdin0", stdin=b"a" * (16 * 1024 * 1024 + 1))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("over 16,777,216 bytes", err)
+
     def test_without_the_key_or_with_a_broken_guide(self) -> None:
         code, _, err = run("guides", "--root", str(WAYPOINT))
         self.assertEqual(code, 2)
@@ -274,7 +311,7 @@ class Skills(unittest.TestCase):
 
     def test_verify_change_says_how_it_uses_the_guides(self) -> None:
         text = (ROOT / "plugins" / "fleet" / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
-        for phrase in ("## Read the area guides first", "git diff -z --name-only --no-renames origin/main...HEAD | xargs -0 -r fleet verification areas --json --`", "`## How to verify`",
+        for phrase in ("## Read the area guides first", "git diff -z --name-only --no-renames origin/main...HEAD | fleet verification areas --json --stdin0`", "`## How to verify`",
                        "`## Not verifiable yet`", "says why in its How column", "fleet-verification-guide"):
             self.assertIn(phrase, text)
 
@@ -283,7 +320,7 @@ class Skills(unittest.TestCase):
             path = ROOT / "tests" / "fixtures" / consumer / ".claude" / "skills" / "fleet-verification-guide" / "SKILL.md"
             self.assertIn("name: fleet-verification-guide", path.read_text(encoding="utf-8"))
         text = (ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
-        for phrase in ('guides = "docs/verification"', "fleet verification guides [--json]", "fleet verification areas PATH...",
+        for phrase in ('guides = "docs/verification"', "fleet verification guides [--json]", "fleet verification areas [PATH...] [--stdin0] [--json]", "fleet verification areas --json --stdin0",
                        "verification-guides", "`Nothing`"):
             self.assertIn(phrase, text)
         example = text.split("### Verification guides", 1)[1].split("```md\n", 1)[1].split("```", 1)[0]

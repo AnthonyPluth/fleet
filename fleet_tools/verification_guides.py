@@ -15,6 +15,7 @@ NOTHING = ("Nothing", "Nothing.")
 MAX_GUIDE = 65536
 MAX_GUIDES = 200
 MAX_ITEMS = 200
+MAX_STDIN = 16 * 1024 * 1024
 TITLE = re.compile(r"# (?P<area>\S.*)")
 HEADING = re.compile(r"## (?P<name>.*)")
 ITEM = re.compile(r"[-*] (?P<text>.*\S)")
@@ -71,7 +72,7 @@ def translate(text: str) -> re.Pattern[str]:
             continue
         piece = "".join("[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char) for char in part)
         out.append(piece if last else piece + "/")
-    return re.compile("".join(out))
+    return re.compile("".join(out), re.DOTALL)
 
 
 def glob_of(source: str, line: int, item: str) -> Glob:
@@ -243,14 +244,27 @@ def configure(actions: "argparse._SubParsersAction[argparse.ArgumentParser]") ->
     matching = actions.add_parser("areas", help="name the areas whose guides cover these paths",
                                   description="name the areas whose globs match the given paths (pass both names of a "
                                               "renamed file); paths no guide covers are listed after them")
-    matching.add_argument("paths", nargs="+", metavar="PATH", help="a path relative to the repository root")
+    matching.add_argument("paths", nargs="*", metavar="PATH", help="a path relative to the repository root")
+    matching.add_argument("--stdin0", action="store_true", help="also read NUL-separated paths from stdin (`git diff -z "
+                          f"--name-only`), up to {MAX_STDIN // 1024 // 1024} MiB; one run, one result, whatever the count")
     for parser in (listing, matching):
         parser.add_argument("--root", type=Path, help="the repository (default: the nearest pyproject.toml up from here)")
         parser.add_argument("--json", action="store_true", help="print JSON")
 
 
+def stdin_paths() -> list[str]:
+    data = sys.stdin.buffer.read(MAX_STDIN + 1)
+    if len(data) > MAX_STDIN:
+        raise config.ConfigError(f"--stdin0: the paths on stdin are over {MAX_STDIN:,} bytes")
+    return [path for path in data.decode("utf-8", errors="replace").split("\0") if path]
+
+
 def run(args: argparse.Namespace) -> int:
     try:
+        if args.action == "areas" and args.stdin0:
+            args.paths = [*args.paths, *stdin_paths()]
+        elif args.action == "areas" and not args.paths:
+            raise config.ConfigError("areas needs a PATH, or --stdin0 with the paths on stdin")
         root = (args.root or config.find_root(Path.cwd())).resolve()
         relative = directory(config.load(root))
         if relative is None:
