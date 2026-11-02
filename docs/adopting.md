@@ -330,7 +330,7 @@ on:
   pull_request_review:
     types: [submitted]
   pull_request_review_comment:
-    types: [created]
+    types: [created, edited, deleted]
 
 permissions: {}
 

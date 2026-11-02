@@ -8,7 +8,7 @@ name: Merge gate threads
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them:
 # pull_request_review_thread (resolved, unresolved), pull_request_review (submitted) and pull_request_review_comment
-# (created). A pull request from a fork gets a read-only token there, so the caller skips it; the gate of such a pull
+# (created, edited, deleted). A pull request from a fork gets a read-only token there, so the caller skips it; the gate of such a pull
 # request looks again on the next push or check, or by hand.
 on:
   workflow_call:
@@ -43,7 +43,7 @@ defaults:
 jobs:
   decide:
     name: Ask the merge gate to decide again
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # hosted: holds the write token that starts the caller's merge gate
     timeout-minutes: 5
     permissions:
       actions: write   # start the caller's merge gate workflow

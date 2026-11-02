@@ -611,6 +611,7 @@ class WorkflowTest(unittest.TestCase):
         text = (cli.ROOT / ".github" / "workflows" / "merge-gate-threads.yml").read_text(encoding="utf-8")
         self.assertIn('gh workflow run "$WORKFLOW" --repo "$REPO" --ref main -f pr="$PR"', text)
         self.assertNotIn("actions/checkout", text)
+        self.assertRegex(text, r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
 
 
 if __name__ == "__main__":
