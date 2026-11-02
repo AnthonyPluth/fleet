@@ -1,0 +1,18 @@
+{
+  "action": "opened",
+  "number": 7,
+  "pull_request": {
+    "number": 7,
+    "draft": false,
+    "body": "## What\n\nA made-up change to the budget page.\n\n## Testing\n\n`make check` passed.\n\n## Verification\n\n<!-- fleet-verification -->\n| Dimension | Status | How | Evidence |\n| --- | --- | --- | --- |\n| Budget page renders the new total | verified | `make verify`, flow `budget-overview` | `screenshots/flow-budget-overview-desktop.png` |\n| Empty budget shows the hint | verified | `tests/test_budget.py::EmptyBudget` | `test_an_empty_budget_shows_the_hint` passed |\n| Import of a `\\|`-separated statement | not verified | no fixture statement uses a pipe; a fixture in `tests/fixtures/statements/` would make it testable | - |\n<!-- /fleet-verification -->\n",
+    "user": {
+      "login": "octocat"
+    },
+    "head": {
+      "sha": "0000000000000000000000000000000000000000"
+    },
+    "base": {
+      "sha": "1111111111111111111111111111111111111111"
+    }
+  }
+}

@@ -77,7 +77,9 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # The commit range comes from the event, not the pull request's text, and is checked to be two commit ids.
+      # The commit range comes from the event, not the pull request's text, and is checked to be two commit ids. The
+      # pull request's description reaches the verification check as the event payload file, never through an
+      # expression: the check reads pull_request.body, .user.login and .draft from it (FLEET-VERIFY-RECORD).
       - name: fleet checks
         env:
           DIR: ${{ inputs.working-directory }}
@@ -91,7 +93,7 @@ jobs:
               echo "::error::The pull request's base and head aren't commit ids"
               exit 1
             fi
-            args=(--commits "$BASE..$HEAD")
+            args=(--commits "$BASE..$HEAD" --pr-event "$GITHUB_EVENT_PATH")
           fi
           root=$(cd "app/$DIR" && pwd)
           cd .fleet || exit 1

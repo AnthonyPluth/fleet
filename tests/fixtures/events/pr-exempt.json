@@ -1,0 +1,18 @@
+{
+  "action": "opened",
+  "number": 7,
+  "pull_request": {
+    "number": 7,
+    "draft": false,
+    "body": "## What\n\nA made-up change.\n\n## Testing\n\n`make check` passed.\n",
+    "user": {
+      "login": "dependabot[bot]"
+    },
+    "head": {
+      "sha": "0000000000000000000000000000000000000000"
+    },
+    "base": {
+      "sha": "1111111111111111111111111111111111111111"
+    }
+  }
+}
