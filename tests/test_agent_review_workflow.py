@@ -141,14 +141,14 @@ class ReusableWorkflowTest(unittest.TestCase):
 
     def test_the_models_are_fixed_and_each_review_s_secrets_stay_in_its_own_job(self) -> None:
         second = mapping(next(s for s in steps_of(self.workflow, "second-review") if s.get("id") == "review")["env"])
-        self.assertEqual(second["MODEL"], "claude-fable-5-1")
+        self.assertEqual(second["MODEL"], "claude-opus-5-5")
         self.assertEqual(second["BUDGET"], "${{ inputs.second-review-budget-usd }}")
         self.assertEqual(second["MAX_TURNS"], "${{ inputs.second-review-max-turns }}")
         stub = mapping(next(s for s in steps_of(self.workflow, "second-review") if step_name(s).startswith("Review with the stub"))["env"])
-        self.assertEqual(stub["MODEL"], "claude-fable-5-1")
-        self.assertNotIn("claude-fable-5-1", job_source(self.text, "review"))
+        self.assertEqual(stub["MODEL"], "claude-opus-5-5")
+        self.assertNotIn("claude-opus-5-5", job_source(self.text, "review"))
         self.assertNotIn("MODEL: sonnet", job_source(self.text, "second-review"))
-        self.assertEqual(len(re.findall(r"^\s+MODEL: claude-fable-5-1$", self.text, re.MULTILINE)), 2)
+        self.assertEqual(len(re.findall(r"^\s+MODEL: claude-opus-5-5$", self.text, re.MULTILINE)), 2)
         self.assertEqual(len(re.findall(r"^\s+MODEL: sonnet$", self.text, re.MULTILINE)), 2)
         self.assertNotIn("inputs.model", self.text)
         for job in (*REPORT_JOBS.values(),):
