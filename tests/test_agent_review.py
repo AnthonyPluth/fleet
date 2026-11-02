@@ -861,6 +861,24 @@ class Plan(unittest.TestCase):
         values = self.record_plan(head, self.RECORD, PREV_SHA=prev, PREV_BODY=self.previous_body(), PREV_RECORD=same, VERIFICATION="false")
         self.assertEqual((self.out / "prompt.md").read_text(), "PROMPT\n\nRE-REVIEW\n")
 
+    def test_a_merge_only_push_carries_the_verdict_only_while_the_record_is_unchanged(self) -> None:
+        prev, head = self.merge_main()
+        found = ar.verification_record(self.RECORD)
+        assert found is not None
+        same = ar.record_hash(found[0])
+        values = self.record_plan(head, self.RECORD, PREV_SHA=prev, PREV_RECORD=same, **self.PASSED)
+        self.assertEqual(values["mode"], "carry")
+        for earlier in ("", "0" * 16):
+            values = self.record_plan(head, self.RECORD, PREV_SHA=prev, PREV_BODY=self.previous_body(), PREV_RECORD=earlier,
+                                      **self.PASSED)
+            self.assertEqual((values["mode"], values["incremental"]), ("review", "true"), earlier)
+            self.assertEqual((self.out / "prompt.md").read_text(), "PROMPT\n\nVERIFY\n\nRE-REVIEW\n\nCHANGED\n", earlier)
+        values = self.record_plan(head, "No record now.", PREV_SHA=prev, PREV_RECORD=same, **self.PASSED)
+        self.assertEqual(values["mode"], "review")
+        for flag in ("false", ""):
+            values = self.record_plan(head, self.RECORD, flag, PREV_SHA=prev, PREV_RECORD="0" * 16, **self.PASSED)
+            self.assertEqual((values["mode"], values["record"]), ("carry", ""), flag)
+
     def test_the_workflow_s_isolated_run_of_the_script_finds_the_record_parser(self) -> None:
         self.write("app/app.py", "a = 2\n")
         head = self.commit("change")

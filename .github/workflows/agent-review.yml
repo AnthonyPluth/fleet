@@ -73,7 +73,8 @@ name: Agent review
 # file, read with its read-only tools, never in the prompt; the description reaches this workflow as an environment
 # variable, never in an expression. The comment's state line carries a hash of the record (`record=`), and a re-review
 # whose record differs from the last review's rereads it in full (verification-changed.md); an edit to the description
-# alone starts no review, the next push picks it up. The default, `verification: false`, changes nothing.
+# alone starts no review, the next push picks it up (a merge-only push carries a pass forward only while the record
+# is unchanged). The default, `verification: false`, changes nothing.
 #
 # An agent's pull request is one whose commits carry a Claude-Session or a Claude Co-Authored-By trailer, or whose
 # description says Claude Code generated it (fleet_tools/agent_review.py). Anyone else's gets a passing status saying

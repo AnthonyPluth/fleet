@@ -427,7 +427,8 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     result = {"mode": "review", "description": "", "incremental": "false", "touched": "", "record": record}
     prev = env.get("PREV_SHA", "")
     try:
-        if env.get("PREV_VERDICT") == "pass" and env.get("PREV_STATE") == "success" \
+        same_record = env.get("VERIFICATION") != "true" or record == env.get("PREV_RECORD", "")
+        if env.get("PREV_VERDICT") == "pass" and env.get("PREV_STATE") == "success" and same_record \
                 and only_main_merged(repo, main, prev, head):
             return {**result, "mode": "carry",
                     "description": f"Carried forward from the review of {prev[:7]}: only main merged in since"}
