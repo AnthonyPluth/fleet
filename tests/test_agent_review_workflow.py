@@ -79,7 +79,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(mapping(outputs["verdict"])["value"], "${{ jobs.review.outputs.verdict }}")
         self.assertEqual(mapping(outputs["record"])["value"], "${{ jobs.review.outputs.record }}")
         self.assertEqual(mapping(mapping(mapping(self.workflow["jobs"])["review"])["outputs"])["record"], "${{ steps.plan.outputs.record }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": "main"})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
 

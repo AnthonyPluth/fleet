@@ -8,10 +8,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from fleet_tools import agents_md
+from fleet_tools import agents_md, sync
 
 HELP = ("fleet's release stamps: `prepare X.Y.Z` rewrites VERSION, CHANGELOG.md, every FLEET_REF, plugin.json, "
-        "pyproject.toml, the snippets in docs/ (docs/adopting.md's and the others) and AGENTS.md's markers; `notes X.Y.Z` prints that CHANGELOG section")
+        "pyproject.toml, the snippets in docs/ (docs/adopting.md's and the others) and AGENTS.md's markers, and re-syncs "
+        "the fixture consumers and the drifted fixture; `notes X.Y.Z` prints that CHANGELOG section")
 
 VERSION_FILE = Path("VERSION")
 CHANGELOG = Path("CHANGELOG.md")
@@ -27,8 +28,13 @@ DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 HEADING = re.compile(r"^## .*$", re.MULTILINE)
 RELEASED = re.compile(r"## \[(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\] - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-SNIPPET_VERSION = re.compile(r"(?P<head>uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*|\"ref\":[ \t]*\"|fleet sync --to[ \t]+"
-                             r"|fleet:begin [a-z0-9-]+ |AnthonyPluth/fleet[@/]|echo[ \t]+)(?P<tag>v(?:[0-9]+\.[0-9]+\.[0-9]+|X\.Y\.Z))\b")
+SNIPPET_VERSION = re.compile(r"(?P<head>uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*|\"AnthonyPluth/fleet\",[ \t]*\"ref\":[ \t]*\""
+                             r"|fleet sync --to[ \t]+|fleet:begin [a-z0-9-]+[ \t]+|raw\.githubusercontent\.com/AnthonyPluth/fleet/"
+                             r"|github\.com/AnthonyPluth/fleet@|echo[ \t]+(?=\S+[ \t]*>[ \t]*\.fleet/version))(?P<tag>[^\s\"/]*)")
+FIXTURES = Path("tests/fixtures")
+DRIFTED = FIXTURES / "drifted"
+FIXTURE_PIN = re.compile(r"^([ \t-]*uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*)v[0-9]+\.[0-9]+\.[0-9]+", re.MULTILINE)
+DRIFTED_MARKER = re.compile(r"(<!-- fleet:begin [a-z0-9-]+ )v[0-9]+\.[0-9]+\.[0-9]+")
 FLEET_REF_LINE = re.compile(r"^(  FLEET_REF:[ \t]+)(\S+)", re.MULTILINE)
 PLUGIN_VERSION = re.compile(r'^(\s*"version":\s*")([^"]*)(")', re.MULTILINE)
 PYPROJECT_VERSION = re.compile(r'^(version\s*=\s*")([^"]*)(")', re.MULTILINE)
@@ -153,7 +159,9 @@ def check(root: Path, version: str) -> list[str]:
     for doc in docs(root):
         errors.extend(adopting_errors((root / doc).read_text(encoding="utf-8"), version, doc))
     agents = read(root, AGENTS)
-    if agents is not None:
+    if agents is None:
+        errors.append(f"{AGENTS.as_posix()}: missing")
+    else:
         errors.extend(agents_errors(agents, version))
     return errors
 
@@ -217,6 +225,24 @@ def reusable_workflows(root: Path) -> list[Path]:
     return [path for path in paths if self_check.is_reusable(self_check.parse(path.read_text(encoding="utf-8")))]
 
 
+def consumers(root: Path) -> list[Path]:
+    return sorted(path for path in (root / FIXTURES).glob("consumer-*") if path.is_dir())
+
+
+def stamp_fixtures(root: Path, tag: str) -> dict[Path, str]:
+    writes: dict[Path, str] = {}
+    for consumer in consumers(root):
+        for workflow in sorted((consumer / WORKFLOWS).glob("*.y*ml")):
+            text = workflow.read_text(encoding="utf-8")
+            writes[workflow.relative_to(root)] = FIXTURE_PIN.sub(lambda match: match.group(1) + tag, text)
+    drifted = root / DRIFTED
+    if (drifted / AGENTS).is_file():
+        text = (drifted / AGENTS).read_text(encoding="utf-8")
+        writes[DRIFTED / AGENTS] = DRIFTED_MARKER.sub(lambda match: match.group(1) + tag, text)
+        writes[DRIFTED / agents_md.VERSION_FILE] = tag + "\n"
+    return writes
+
+
 def prepare(root: Path, version: str, date: str) -> list[str]:
     from fleet_tools import self_check
 
@@ -254,14 +280,19 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
             raise ReleaseError(f"{relative.as_posix()}: expected exactly one top-level `FLEET_REF:` line")
         writes[relative] = FLEET_REF_LINE.sub(lambda match: match.group(1) + tag, text)
     agents = read(root, AGENTS)
-    if agents is not None:
-        writes[AGENTS], _ = agents_md.sync(agents, agents_md.sections(root), tag)
+    if agents is None:
+        raise ReleaseError(f"{AGENTS.as_posix()}: missing")
+    writes[AGENTS], _ = agents_md.sync(agents, agents_md.sections(root), tag)
+    writes.update(stamp_fixtures(root, tag))
     changed = []
     for path, text in writes.items():
         target = root / path
         if target.read_text(encoding="utf-8") != text:
             target.write_text(text, encoding="utf-8")
             changed.append(path.as_posix())
+    for consumer in consumers(root):
+        changed.extend(f"{consumer.relative_to(root).as_posix()}/{change.split(':', 1)[0]}"
+                       for change in sync.sync(consumer, tag, root))
     after = self_check.check(root)
     if after:
         raise ReleaseError("the stamps still disagree after preparing:\n" + "\n".join(after))
@@ -296,7 +327,6 @@ def run(args: argparse.Namespace) -> int:
         return 1
     for path in changed:
         print(f"stamped {path}")
-    print(f"fleet release: stamped v{args.version}. Next: `poetry run fleet sync --to v{args.version} --root <consumer>` "
-          "for each tests/fixtures/consumer-* (and move their fleet pins' version comments), then `make check`, "
-          "then open the release pull request (docs/release.md).")
+    print(f"fleet release: stamped v{args.version}. Next: `make check`, then open the release pull request "
+          "(docs/release.md).")
     return 0

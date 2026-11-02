@@ -350,7 +350,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("secrets", call)
         self.assertNotIn("secrets.", self.text)
         self.assertEqual(workflow["permissions"], "{}")
-        self.assertEqual(workflow["env"], {"FLEET_REF": "main"})
+        self.assertEqual(workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
         jobs = mapping(workflow["jobs"])
         self.assertEqual(list(jobs), ["mine"])
         mine = mapping(jobs["mine"])

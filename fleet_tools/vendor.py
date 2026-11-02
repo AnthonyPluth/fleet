@@ -116,8 +116,8 @@ def is_vendored_skill(text: str) -> bool:
     return len(lines) > 2 and lines[0] == "---" and bool(SKILL_NOTE.fullmatch(lines[1]))
 
 
-def sync(root: Path, version: str) -> list[str]:
-    shipped = shipped_at(version)
+def sync(root: Path, version: str, shipped: dict[Path, Vendored] | None = None) -> list[str]:
+    shipped = shipped if shipped is not None else shipped_at(version)
     if shipped is None:
         raise VendorError(f"can't read fleet's vendored files at {version}")
     changes = []
