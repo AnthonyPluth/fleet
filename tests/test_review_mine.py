@@ -91,6 +91,8 @@ def answers(pulls: list[dict[str, Any]], comments: list[dict[str, Any]], open_is
         number = rm.issue_number(comment)
         if number is not None:
             data.setdefault(history(number), []).append(comment)
+    for each in pulls:
+        data.setdefault(history(each["number"]), [])
     return data
 
 
@@ -453,6 +455,17 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("1 merged pull request(s) whose review comments changed after the merge were skipped for Open at merge.", body)
         self.assertNotIn("#1](", body.split("### Open at merge", 1)[1])
 
+    def test_a_pull_request_reviewed_before_the_window_and_merged_in_it_is_open_at_merge(self) -> None:
+        old = {**outcomes_comment(5, [outcome("Failure paths", "Swallows the error")]),
+               "created_at": "2026-05-01T00:00:00Z", "updated_at": "2026-05-01T00:00:00Z"}
+        data = answers([pull(5, merged="2026-09-30T00:00:00Z")], [])
+        data[history(5)] = [old]
+        result = self.miner.run(data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertIn(f"| **Failure paths** | 1 | [#5](https://github.com/{REPO}/pull/5) |", body)
+        self.assertIn("Nothing came back on two or more pull requests in the window.", body)
+
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
@@ -465,12 +478,27 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn("row:open-at-merge:layout", result.stdout)
         self.assertIn("would open nothing", result.stdout)
 
-    def test_a_comment_history_that_can_t_be_read_in_full_is_skipped_and_counted(self) -> None:
+    def long_history(self, extra: int) -> dict[str, Any]:
         comments = [outcomes_comment(n, [outcome("Layout", f"t{n}")]) for n in (1, 2)]
         data = answers([pull(1, merged="2026-09-01T00:00:00Z"), pull(2, merged="2026-09-01T00:00:00Z")], comments)
+        filler = {"user": {"login": "someone"}, "author_association": "NONE", "body": "thanks", "created_at": "2026-08-01T00:00:00Z"}
+        data[history(2, 1)] = [comments[1]] + [filler] * 99
+        for page in range(2, rm.MAX_COMMENT_PAGES + 1):
+            data[history(2, page)] = [filler] * 100
+        data[history(2, rm.MAX_COMMENT_PAGES + 1)] = [filler] * extra
+        return data
+
+    def test_a_history_of_exactly_the_cap_is_read(self) -> None:
+        self.assertEqual(rm.MAX_COMMENT_PAGES * rm.PER_PAGE, 1000)
+        result = self.miner.run(self.long_history(0))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertNotIn("couldn't be read in full", body)
+        self.assertIn(f"| **Layout** | 2 | [#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2) |", body)
+
+    def test_a_comment_history_that_can_t_be_read_in_full_is_skipped_and_counted(self) -> None:
+        data = self.long_history(1)
         del data[history(1)]
-        for page in range(1, rm.MAX_COMMENT_PAGES + 1):
-            data[history(2, page)] = [comments[1]] * 100
         result = self.miner.run(data)
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.miner.body()

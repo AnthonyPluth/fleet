@@ -396,13 +396,15 @@ def shaped(comments: list[Json]) -> list[Json]:
 
 def pull_comments(repo: str, number: int) -> list[Json] | None:
     found: list[Json] = []
-    for page in range(1, MAX_COMMENT_PAGES + 1):
+    for page in range(1, MAX_COMMENT_PAGES + 2):
         try:
             batch = gh(f"repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}&page={page}")
         except subprocess.CalledProcessError:
             return None
         if not isinstance(batch, list):
             return None
+        if page > MAX_COMMENT_PAGES:
+            return None if batch else found
         found += [c for c in batch if isinstance(c, dict)]
         if len(batch) < PER_PAGE:
             return found
@@ -731,7 +733,7 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     merged = {each.number: each.merged_at for each in pulls if each.merged}
     comments = comments_since(repo, since)
     records = newest_records(comments, set(numbers))
-    per_pull, unread = histories(repo, {n for n, _ in records})
+    per_pull, unread = histories(repo, {n for n, _ in records} | set(merged))
     outcomes = outcomes_from(repo, per_pull)
     snapshot, edited = at_merge(per_pull, merged)
     merge_time = outcomes_from(repo, snapshot)
