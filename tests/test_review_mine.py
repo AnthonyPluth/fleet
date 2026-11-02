@@ -80,8 +80,18 @@ def files(*names: str) -> list[dict[str, Any]]:
     return [{"filename": name} for name in names]
 
 
+def history(number: int, page: int = 1) -> str:
+    return f"GET repos/{REPO}/issues/{number}/comments?per_page=100&page={page}"
+
+
 def answers(pulls: list[dict[str, Any]], comments: list[dict[str, Any]], open_issues: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return {PULLS: pulls, COMMENTS: comments, OPEN: open_issues or [], CREATE: {"number": 77}, f"PATCH repos/{REPO}/issues/60": {"number": 60}}
+    data: dict[str, Any] = {PULLS: pulls, COMMENTS: comments, OPEN: open_issues or [], CREATE: {"number": 77},
+                            f"PATCH repos/{REPO}/issues/60": {"number": 60}}
+    for comment in comments:
+        number = rm.issue_number(comment)
+        if number is not None:
+            data.setdefault(history(number), []).append(comment)
+    return data
 
 
 class Miner:
@@ -316,7 +326,9 @@ class EndToEndTest(unittest.TestCase):
         summary = self.miner.summary.read_text(encoding="utf-8")
         self.assertIn("| **Failure paths** |", summary)
         self.assertNotIn(rm.MARKER, summary)
-        self.assertEqual([c["call"] for c in self.miner.calls()][:3], [PULLS, COMMENTS, OPEN])
+        calls = [c["call"] for c in self.miner.calls()]
+        self.assertEqual([c for c in calls if not re.search(r"/issues/\d+/comments", c)][:3], [PULLS, COMMENTS, OPEN])
+        self.assertEqual(sorted(c for c in calls if re.search(r"/issues/\d+/comments", c)), [history(10), history(11), history(12)])
 
     def test_a_second_run_rewrites_the_open_issue_and_keeps_its_ticks(self) -> None:
         previous = "- [x] <!-- row:repeated:layout --> **Layout** becomes an Agent task → #41\n"
@@ -388,6 +400,31 @@ class SignalsTest(unittest.TestCase):
         self.assertIn(f"| **Failure paths** | human-judged | [#1](https://github.com/{REPO}/pull/1), [#2](https://github.com/{REPO}/pull/2) | 1 |", body)
         self.assertNotIn("**Layout**", body)
 
+    def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
+        old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
+               "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+        comments = [outcomes_comment(1, [outcome("Layout", "Overflows")]), outcomes_comment(2, [outcome("Layout", "Overflows again")])]
+        data = answers([pull(1), pull(2, merged="2026-09-01T00:00:00Z")], comments)
+        data[history(2)].insert(0, old)
+        result = self.miner.run(data, "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("**Layout**", result.stdout)
+        self.assertNotIn("row:open-at-merge:layout", result.stdout)
+        self.assertIn("would open nothing", result.stdout)
+
+    def test_a_comment_history_that_can_t_be_read_in_full_is_skipped_and_counted(self) -> None:
+        comments = [outcomes_comment(n, [outcome("Layout", f"t{n}")]) for n in (1, 2)]
+        data = answers([pull(1, merged="2026-09-01T00:00:00Z"), pull(2, merged="2026-09-01T00:00:00Z")], comments)
+        del data[history(1)]
+        for page in range(1, rm.MAX_COMMENT_PAGES + 1):
+            data[history(2, page)] = [comments[1]] * 100
+        result = self.miner.run(data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertIn("2 pull request(s) whose comments couldn't be read in full", body)
+        self.assertIn("No finding was open at merge in the window.", body)
+        self.assertIn("| **Layout** | human-judged |", body)
+
     def test_a_dismissal_by_anyone_but_the_owner_or_without_a_reason_doesn_t_count(self) -> None:
         comments = [
             outcomes_comment(1, [outcome("Layout", "Overflows")]),
@@ -401,7 +438,7 @@ class SignalsTest(unittest.TestCase):
     def often_dismissed(self, dismissed: int, kept: int) -> list[rm.Signal]:
         entries = [outcome("Layout", f"d{i}") for i in range(dismissed)] + [outcome("Layout", f"k{i}") for i in range(kept)]
         comments = [outcomes_comment(1, entries)] + [dismissal(1, "Layout", f"d{i}", f"reason number {i} for it") for i in range(dismissed)]
-        outcomes = rm.outcomes_of(REPO, comments, {1})
+        outcomes = rm.outcomes_from(REPO, {1: comments})
         return rm.often_dismissed(REPO, rm.tallies(outcomes, rm.mistakes(AGENTS)))
 
     def test_often_dismissed_holds_at_its_edges(self) -> None:
@@ -490,6 +527,17 @@ class SignalsTest(unittest.TestCase):
         called = [c["call"] for c in self.miner.calls()]
         self.assertNotIn(f"GET repos/{REPO}/pulls/24/files?per_page=100", called)
         self.assertNotIn(f"GET repos/{REPO}/pulls/22/files?per_page=100", called)
+
+    def test_a_failing_files_call_skips_that_pull_request_and_is_counted(self) -> None:
+        data = self.gap_answers()
+        data[f"GET repos/{REPO}/pulls/21/files?per_page=100"] = {"__status__": 502}
+        result = self.miner.run(data, "--app-root", str(RUNWAY), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = result.stdout
+        self.assertIn("1 merged pull request(s) whose changed files couldn't be read were skipped.", body)
+        self.assertNotIn("row:gaps:screens", body)
+        self.assertNotIn("Chart colours", body)
+        self.assertNotIn("502", body)
 
     def test_ungrouped_gaps_need_two_merged_pull_requests_too(self) -> None:
         data = self.gap_answers()

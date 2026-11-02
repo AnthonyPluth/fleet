@@ -42,6 +42,7 @@ MIN_GAP_PULLS = 2
 MAX_SAMPLES = 3
 MAX_REASON = 120
 MAX_FILES = 3000
+MAX_COMMENT_PAGES = 10
 GUIDANCE = ("Review guidance: say when this isn't a finding, in the app's `.github/agent-review/context.md` or in fleet's "
             "`prompt.md` if it holds for every app")
 GAP_PROPOSAL = "a fake, flow or test that makes this verifiable, or an update to the area's guide"
@@ -135,6 +136,7 @@ class Gaps:
     rows: list[Signal] = field(default_factory=list)
     without_record: int = 0
     unparsed: int = 0
+    unread_files: int = 0
 
 
 @dataclass
@@ -142,6 +144,7 @@ class Signals:
     dismissed: list[Signal] = field(default_factory=list)
     open_at_merge: list[Signal] = field(default_factory=list)
     gaps: Gaps | None = None
+    unread_outcomes: int = 0
 
     def count(self) -> int:
         return len(self.dismissed) + len(self.open_at_merge) + (len(self.gaps.rows) if self.gaps else 0)
@@ -371,12 +374,34 @@ def shaped(comments: list[Json]) -> list[Json]:
             for c in [*bots, *others]]
 
 
-def outcomes_of(repo: str, comments: list[Json], pulls: set[int]) -> dict[tuple[int, str], list[Json]]:
+def pull_comments(repo: str, number: int) -> list[Json] | None:
+    found: list[Json] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        try:
+            batch = gh(f"repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}&page={page}")
+        except subprocess.CalledProcessError:
+            return None
+        if not isinstance(batch, list):
+            return None
+        found += [c for c in batch if isinstance(c, dict)]
+        if len(batch) < PER_PAGE:
+            return found
+    return None
+
+
+def outcomes_of(repo: str, numbers: set[int]) -> tuple[dict[tuple[int, str], list[Json]], int]:
     per_pull: dict[int, list[Json]] = {}
-    for comment in comments:
-        number = issue_number(comment)
-        if number is not None and number in pulls:
-            per_pull.setdefault(number, []).append(comment)
+    unread = 0
+    for number in sorted(numbers):
+        history = pull_comments(repo, number)
+        if history is None:
+            unread += 1
+        else:
+            per_pull[number] = history
+    return outcomes_from(repo, per_pull), unread
+
+
+def outcomes_from(repo: str, per_pull: dict[int, list[Json]]) -> dict[tuple[int, str], list[Json]]:
     found: dict[tuple[int, str], list[Json]] = {}
     for number, listed_comments in sorted(per_pull.items()):
         ready = shaped(listed_comments)
@@ -497,7 +522,12 @@ def verification_gaps(repo: str, pulls: list[Pull], required: bool, guides: list
         unverified = [d for d in dimensions if d.status == "not verified"]
         if not unverified:
             continue
-        for key, label in gap_areas(guides, changed_files(repo, each.number)):
+        try:
+            paths = changed_files(repo, each.number)
+        except subprocess.CalledProcessError:
+            gaps.unread_files += 1
+            continue
+        for key, label in gap_areas(guides, paths):
             tally = areas.setdefault(key, Tally(label))
             tally.pulls.add(each.number)
             kept = samples.setdefault(key, [])
@@ -551,6 +581,10 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
         "Open at merge",
         "Findings still open when their pull request merged in the window, per kind: the merge path let them through.",
         ("Kind", "Open at merge", "Pull requests"), signals.open_at_merge, "No finding was open at merge in the window.", kept)
+    if signals.unread_outcomes:
+        lines += ["", f"{signals.unread_outcomes} pull request(s) whose comments couldn't be read in full (an error, or over "
+                      f"{MAX_COMMENT_PAGES * PER_PAGE} comments) were skipped in these two tables; their findings still count "
+                      "as repeats, without their outcomes."]
     gaps = signals.gaps
     if gaps is None:
         return lines
@@ -565,6 +599,8 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
         notes.append(f"{gaps.without_record} merged pull request(s) without a verification record (it isn't required).")
     if gaps.unparsed:
         notes.append(f"{gaps.unparsed} verification record(s) that don't parse were skipped.")
+    if gaps.unread_files:
+        notes.append(f"{gaps.unread_files} merged pull request(s) whose changed files couldn't be read were skipped.")
     return lines + (["", " ".join(notes)] if notes else [])
 
 
@@ -649,9 +685,10 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     merged = {each.number for each in pulls if each.merged}
     comments = comments_since(repo, since)
     records = newest_records(comments, set(numbers))
-    outcomes = outcomes_of(repo, comments, set(numbers))
+    outcomes, unread = outcomes_of(repo, {n for n, _ in records})
     rows = rows_of(groups_of(records, items, statuses_of(outcomes)))
-    signals = Signals(often_dismissed(repo, tallies(outcomes, items)), open_at_merge(repo, open_tallies(outcomes, items, merged)))
+    signals = Signals(often_dismissed(repo, tallies(outcomes, items)), open_at_merge(repo, open_tallies(outcomes, items, merged)),
+                      unread_outcomes=unread)
     settings = verification_settings(app_root)
     if settings is not None:
         signals.gaps = verification_gaps(repo, pulls, *settings)
