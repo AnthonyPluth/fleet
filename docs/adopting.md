@@ -383,7 +383,7 @@ To adopt: delete the app's copies of the shared bullets, put an empty pair of ma
 
 ## Claude Code plugin
 
-fleet's Claude Code plugin (`plugins/fleet/`, listed by the marketplace in `.claude-plugin/marketplace.json`) holds the skills every app shares (`fix-with-checks`, `design-signoff`, `agent-task`, `review-guidance`, `verify-change`), the `fleet-reviewer` agent (the first review's prompt run locally on `git diff origin/main...HEAD` with the app's `.github/agent-review/context.md`; read-only and advisory) and the session-start hook. A cloud session doesn't install the plugins a repository enables, but loads the repository's own `.claude/skills/`, `.claude/agents/` and `.claude/settings.json` hooks, and the agents run in cloud sessions. So `fleet sync --to vX.Y.Z` also vendors the plugin into the app at that version:
+fleet's Claude Code plugin (`plugins/fleet/`, listed by the marketplace in `.claude-plugin/marketplace.json`) holds the skills every app shares (`fix-with-checks`, `design-signoff`, `agent-task`, `review-guidance`, `verify-change`, `verification-guide`), the `fleet-reviewer` agent (the first review's prompt run locally on `git diff origin/main...HEAD` with the app's `.github/agent-review/context.md`; read-only and advisory) and the session-start hook. A cloud session doesn't install the plugins a repository enables, but loads the repository's own `.claude/skills/`, `.claude/agents/` and `.claude/settings.json` hooks, and the agents run in cloud sessions. So `fleet sync --to vX.Y.Z` also vendors the plugin into the app at that version:
 
 | Vendored file | From fleet's |
 | --- | --- |
@@ -515,6 +515,47 @@ The app's pull request template keeps its "Testing" section and gains this one a
 ```
 
 From advisory to required: set the table with `required = false` and `edited` and `ready_for_review` in the caller's types, read the warnings on a few agents' pull requests until the records are complete and honest, then flip `required = true`; a ready pull request without a parseable record then fails "fleet checks", which the merge gate sees, while drafts stay warnings. `fleet verification show --pr N` prints a record as the tools read it.
+
+### Verification guides
+
+A verification record is only as good as the agent's sense of how to verify that part of the app. A verification guide gives every session the same method for one area: which paths it covers, how to verify a change there, and what can't be verified yet and why. Guides are optional; the `guides` key under the same table turns them on, naming the guides directory (relative to the repository root and below it: `.`, `..` and an absolute path are refused; there is no default, and nothing about guides runs without it):
+
+```toml
+[tool.fleet.verification]
+required = false
+guides = "docs/verification"   # one guide per area: docs/verification/<area>.md
+```
+
+A guide is `<guides>/<area>.md`, the file name being the area's name (lowercase letters, digits and `-`):
+
+```md
+# Settings
+
+The settings pages and the API behind them.
+
+## Paths
+
+- `src/app/settings/**`
+- `tests/test_settings.py`
+
+## How to verify
+
+- `make verify`, flow `settings-toggle`: the page at phone and desktop widths.
+- `tests/test_settings.py`: the API's validation and permission checks.
+
+## Not verifiable yet
+
+- The email sent on a change: no fake mail server; a fake under `tests/fakes/` would make it verifiable.
+```
+
+Line 1 is `# <Area>`, and prose may follow it; then `## Paths`, `## How to verify` and `## Not verifiable yet`, in that order, each once, with no other headings and no code fences, every line in a section a list item or an indented continuation of one. `## Paths` lists globs relative to the repository root, optionally in backticks (`*` and `?` within one directory, `**` a whole segment for any number of directories, a directory written `<dir>/**`; no spaces, brackets, braces, leading `/`, `./` or `!`). `## How to verify` lists steps, each naming a real command, flow, fake or test. `## Not verifiable yet` lists each gap with why and what would change it, or is the single item `Nothing`. The parser (`fleet_tools/verification_guides.py`) is text processing only: nothing in a guide is run, and globs are matched against path strings, the check's against `git ls-files`. Globs are matched segment by segment without regular expressions, in time linear in the pattern times the path, however the wildcards are arranged. A guide over 65,536 characters, a section over 200 items, or a glob over 1,000 characters or 64 segments is a parse error; a guide that is a link is refused.
+
+| Command | What it does | Exit |
+| --- | --- | --- |
+| `fleet verification guides [--json]` | Lists each area (its name, title and guide) with its globs; `--json` adds the steps and the gaps (`not_verifiable_yet` is empty for `Nothing`) | 0, 1 a guide doesn't parse, 2 `guides` unset or invalid |
+| `fleet verification areas [PATH...] [--stdin0] [--json]` | Names every area whose globs match one of the paths, with the paths each matched, then the paths no guide covers; pass both names of a renamed file. `--stdin0` also reads NUL-separated paths from stdin (up to 16 MiB), so `git diff -z --name-only --no-renames origin/main...HEAD \| fleet verification areas --json --stdin0` gives one result for the whole diff, however long; empty input is an empty result. Paths after `--` are paths even when they start with `-` | the same, and 2 for no paths at all or stdin over the limit |
+
+The check `verification-guides` runs where `guides` is set, in a git checkout: each guide parses, and each glob matches at least one tracked file; a glob that matches nothing means the guide is stale, and is a problem. With `--commits`, the changed paths (`git diff -z --name-only --no-renames`, so both names of a renamed file) that no guide covers, outside the guides directory, are one warning (exit 0), never a problem. The `fleet-verify-change` skill reads the guides for the changed paths (`fleet verification areas --stdin0`) before it verifies anything: it follows each area's "How to verify", records a listed gap as `not verified` with the guide's reason, and a dimension verified some other way says why in its How column. The `fleet-verification-guide` skill writes or updates a guide, for an area the user names or for the paths the warning listed; every step it writes has been run once in that session, and every gap has a reason. It doesn't replace or edit the app's feature map.
 
 ## Content sync: two pins, two bots
 

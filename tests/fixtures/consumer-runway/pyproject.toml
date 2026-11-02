@@ -28,3 +28,4 @@ fix = "make verify-skill"
 
 [tool.fleet.verification]
 required = false
+guides = "docs/verification"

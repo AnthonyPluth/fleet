@@ -14,6 +14,7 @@ from fleet_tools.checks import (
     skills,
     tests_removed,
     verification,
+    verification_guides,
     workflows,
 )
 from fleet_tools.checks.context import (
@@ -26,8 +27,8 @@ from fleet_tools.checks.context import (
 )
 
 HELP = ("the checks that replaced instructions: migrations, commit trailers, removed or skipped tests, workflow "
-        "conventions, images, skills and generated files, the verification record in a pull request's description, "
-        "and the app's own extra-checks")
+        "conventions, images, skills and generated files, the verification record in a pull request's description, the "
+        "verification guides and the app's own extra-checks")
 
 CHECKS: list[Check] = [
     migrations.CHECK,
@@ -38,6 +39,7 @@ CHECKS: list[Check] = [
     tests_removed.CHECK,
     images.CHECK,
     verification.CHECK,
+    verification_guides.CHECK,
     extra.CHECK,
 ]
 

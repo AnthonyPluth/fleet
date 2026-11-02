@@ -6,10 +6,12 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from fleet_tools import verification_guides
 from fleet_tools.agent_review import defuse
 
 HELP = ("the verification record in a pull request's description: `show` prints its dimensions, each verified or not, "
-        "from the pull request (--pr N, through gh) or a file (--body-file PATH, - for stdin)")
+        "from the pull request (--pr N, through gh) or a file (--body-file PATH, - for stdin); `guides` lists the "
+        "verification guides' areas and `areas PATH...` names the areas that cover those paths")
 
 BEGIN = "<!-- fleet-verification -->"
 END = "<!-- /fleet-verification -->"
@@ -227,9 +229,12 @@ def configure(parser: argparse.ArgumentParser) -> None:
     source.add_argument("--pr", type=int, metavar="N", help="read pull request N's description in the current repository (gh api)")
     source.add_argument("--body-file", metavar="PATH", help="read the description from this file (- for stdin)")
     show.add_argument("--json", action="store_true", help="print {\"pr\", \"dimensions\"} as JSON")
+    verification_guides.configure(actions)
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.action in verification_guides.ACTIONS:
+        return verification_guides.run(args)
     try:
         if args.pr is not None:
             body = fetch_body(args.pr)
