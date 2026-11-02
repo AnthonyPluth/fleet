@@ -351,7 +351,7 @@ def committed(item: Json | None) -> datetime | None:
     return parsed if parsed.tzinfo else None
 
 
-def harness(run: Run, branch: str, guides_dir: str | None, guide_files: list[str]) -> Json:
+def harness(run: Run, branch: str, guides_dir: str | None, guide_files: list[str], guides_known: bool = True) -> Json:
     found: dict[str, list[str] | None] = {}
     for key, path in (("context", CONTEXT), ("invariants", INVARIANTS), ("semgrep", SEMGREP)):
         try:
@@ -370,7 +370,7 @@ def harness(run: Run, branch: str, guides_dir: str | None, guide_files: list[str
             found["verification_guides"] = commits(run, branch, guides_dir)
         except (subprocess.CalledProcessError, Unreadable, ValueError) as error:
             run.lack(f"harness: commits touching {guides_dir}", error)
-    complete = all(value is not None for key, value in found.items() if key != "verification_guides" or guides_dir is not None)
+    complete = guides_known and all(value is not None for key, value in found.items() if key != "verification_guides" or guides_dir is not None)
     union = {sha for value in found.values() for sha in value or []}
     counts: Json = {key: (len(value) if value is not None else None)
                     for key, value in sorted(found.items())}
@@ -427,10 +427,12 @@ def collect(run: Run) -> Json:
                    "default_branch": None, "reviews": None, "verification": None, "report": None, "harness": None, "fleet": None}
     settings: tuple[str | None, list[verification_guides.Guide], bool] | None = None
     configured = True
+    guides_known = True
     try:
         settings = guide_settings(run)
         configured = settings is not None
     except config.ConfigError as error:
+        guides_known = False
         run.lack("verification: [tool.fleet.verification]", error)
     pulls: list[rm.Pull] | None = None
     try:
@@ -460,7 +462,7 @@ def collect(run: Run) -> Json:
     else:
         stats["default_branch"] = branch
         guides_dir, guides, _ = settings if settings is not None else (None, [], True)
-        stats["harness"] = harness(run, branch, guides_dir, [guide.source for guide in guides])
+        stats["harness"] = harness(run, branch, guides_dir, [guide.source for guide in guides], guides_known)
         stats["fleet"] = fleet_of(run, branch)
     stats["missing"] = list(run.missing)
     return stats
