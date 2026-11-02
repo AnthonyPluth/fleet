@@ -144,7 +144,7 @@ jobs:
   tasks:
     permissions:
       issues: write
-    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # vX.Y.Z
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v1.0.0
 ```
 
 Locally, with `gh` signed in and an event payload saved to a file: `python3 -E -s -m fleet_tools.cli mining-tasks --event event.json --repo owner/app --dry-run`.

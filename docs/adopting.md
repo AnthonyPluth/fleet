@@ -232,7 +232,7 @@ jobs:
   tasks:
     permissions:
       issues: write            # open the task issues and link the report's rows
-    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # vX.Y.Z
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v1.0.0
 ```
 
 | Input | Default | What |
