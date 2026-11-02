@@ -53,6 +53,25 @@ HEADLINE = (
     Measure("checked", "Mistakes items newly `checked:`", COUNT, ("harness", "checked_in_window")),
 )
 BY_KEY = {measure.key: measure for measure in HEADLINE}
+ANY = "any"
+LIST = "list"
+MAP = "map"
+GROUPS = ("reviews", "verification", "report", "harness", "fleet")
+SHAPE: Json = {
+    "schema": ANY, "repo": ANY, "generated": ANY, "since": ANY, "days": ANY, "default_branch": ANY, "missing": LIST,
+    "reviews": {"merged": ANY, "unread": ANY, "with_agent_review": ANY, "with_second_review": ANY, "findings": {
+        "raised": ANY, "by_severity": {"blocking": ANY, "advisory": ANY, "unknown": ANY}, "resolved": ANY, "dismissed": ANY,
+        "open": ANY, "resolved_share": ANY, "dismissed_share": ANY, "at_merge": ANY, "open_at_merge": ANY,
+        "open_at_merge_share": ANY, "indeterminate_at_merge": ANY}},
+    "verification": {"configured": ANY, "guides": ANY, "merged": ANY, "with_record": ANY, "without_record": ANY, "unparsed": ANY,
+                     "verified": ANY, "not_verified": ANY, "mean_not_verified": ANY, "uncovered_paths": ANY,
+                     "pulls_with_uncovered_paths": ANY, "unread_files": ANY, "uncovered_samples": LIST},
+    "report": {"issue": ANY, "rows": ANY, "ticked": ANY, "tasks_opened": ANY, "tasks_opened_in_window": ANY,
+               "tasks_closed_in_window": ANY},
+    "harness": {"commits": {"context": ANY, "invariants": ANY, "semgrep": ANY, "skills": ANY, "verification_guides": ANY,
+                            "total": ANY}, "checked_in_window": ANY, "checked_items": LIST, "days_since_change": MAP},
+    "fleet": {"version": ANY, "sync_open": ANY},
+}
 
 
 def valid_value(kind: str, value: object) -> bool:
@@ -95,6 +114,31 @@ def pick(stats: Json, path: tuple[str, ...]) -> object:
             return None
         node = node.get(name)
     return node
+
+
+def unconfigured(node: object) -> bool:
+    return isinstance(node, dict) and set(node) == {"configured"} and node["configured"] is False
+
+
+def shape_problem(node: object, shape: Json, where: str, top: bool = False) -> str:
+    if not isinstance(node, dict):
+        return f"{where} isn't an object"
+    absent = sorted(set(shape) - set(node))
+    if absent:
+        return f"{where} lacks {', '.join(f'`{key}`' for key in absent)}"
+    if set(node) - set(shape):
+        return f"{where} has fields loop-stats doesn't write"
+    for key, kind in shape.items():
+        value = node[key]
+        if (top and key in GROUPS and value is None) or (key == "verification" and unconfigured(value)):
+            continue
+        if isinstance(kind, dict):
+            problem = shape_problem(value, kind, f"`{key}`")
+            if problem:
+                return problem
+        elif (kind == LIST and not isinstance(value, list)) or (kind == MAP and not isinstance(value, dict)):
+            return f"`{key}` isn't a {'list' if kind == LIST else 'map'}"
+    return ""
 
 
 def headline(stats: Json) -> Json | None:
@@ -140,9 +184,12 @@ def read(path: Path) -> tuple[Json | None, str]:
         return None, "it isn't UTF-8 JSON"
     if not isinstance(stats, dict) or stats.get("schema") != SCHEMA or isinstance(stats.get("schema"), bool):
         return None, f"it isn't a schema {SCHEMA} loop-stats file"
+    problem = shape_problem(stats, SHAPE, "the file", top=True)
+    if problem:
+        return None, f"it isn't whole: {problem}"
     summary = headline(stats)
     if summary is None:
-        return None, "a headline number is missing or out of range"
+        return None, "a headline number is out of range"
     return summary, ""
 
 

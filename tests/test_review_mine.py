@@ -808,10 +808,16 @@ class SignalsTest(unittest.TestCase):
 
 
 def loop_stats(merged: int = 3, resolved: float | None = 0.4, when: str = NOW, days: int = 30) -> dict[str, Any]:
-    return {"schema": 1, "generated": when, "days": days, "reviews": {"merged": merged, "with_agent_review": 2, "with_second_review": 1,
-            "findings": {"raised": 5, "resolved_share": resolved, "dismissed_share": 0.2, "open_at_merge_share": None}},
-            "verification": {"configured": False}, "report": {"rows": 2, "ticked": 1, "tasks_opened": 1, "tasks_closed_in_window": 0},
-            "harness": {"commits": {"total": 4}, "checked_in_window": 1}}
+    findings = {"raised": 5, "by_severity": {"blocking": 1, "advisory": 3, "unknown": 1}, "resolved": 2, "dismissed": 1, "open": 2,
+                "resolved_share": resolved, "dismissed_share": 0.2, "at_merge": 0, "open_at_merge": 0, "open_at_merge_share": None,
+                "indeterminate_at_merge": 0}
+    return {"schema": 1, "repo": REPO, "generated": when, "since": SINCE, "days": days, "default_branch": "main", "missing": [],
+            "reviews": {"merged": merged, "unread": 0, "with_agent_review": 2, "with_second_review": 1, "findings": findings},
+            "verification": {"configured": False},
+            "report": {"issue": 60, "rows": 2, "ticked": 1, "tasks_opened": 1, "tasks_opened_in_window": 1, "tasks_closed_in_window": 0},
+            "harness": {"commits": {"context": 1, "invariants": 0, "semgrep": 0, "skills": 2, "verification_guides": None, "total": 4},
+                        "checked_in_window": 1, "checked_items": ["Layout"], "days_since_change": {"AGENTS.md": 3}},
+            "fleet": {"version": "v1.0.0", "sync_open": False}}
 
 
 class LoopHealthTest(unittest.TestCase):
@@ -896,7 +902,14 @@ class LoopHealthTest(unittest.TestCase):
 
     def test_this_run_s_numbers_unreadable_keeps_the_last_run_s(self) -> None:
         first = self.run_with(loop_stats(merged=2, when="2026-09-01T00:00:00Z"))
-        for broken in ("{not json", json.dumps({**loop_stats(), "schema": 2}), json.dumps(loop_stats(merged=-1))):
+        whole = loop_stats()
+        reviews = {k: v for k, v in whole["reviews"].items() if k != "findings"}
+        findings = {k: v for k, v in whole["reviews"]["findings"].items() if k != "resolved_share"}
+        truncated = [{k: v for k, v in whole.items() if k != "reviews"}, {**whole, "reviews": reviews},
+                     {**whole, "reviews": {**whole["reviews"], "findings": findings}}, {**whole, "extra": 1},
+                     {**whole, "verification": {"configured": 0}}, {**whole, "missing": None}]
+        for broken in ("{not json", json.dumps({**loop_stats(), "schema": 2}), json.dumps(loop_stats(merged=-1)),
+                       *(json.dumps(each) for each in truncated)):
             body = self.run_with(broken, previous=first)
             self.assertIn("review-mine: the loop stats in", self.result.stderr)
             self.assertIn("| Measure | Last run (2026-09-01) |", body)
@@ -907,6 +920,17 @@ class LoopHealthTest(unittest.TestCase):
         nothing = self.run_with("{", previous="old body")
         self.assertIn("this issue holds no earlier ones", nothing)
         self.assertFalse(nothing.splitlines()[1].startswith(loop_health.PREFIX))
+
+    def test_explicit_nulls_are_this_run_s_numbers(self) -> None:
+        first = self.run_with(loop_stats(merged=2, when="2026-09-01T00:00:00Z"))
+        unread = {**loop_stats(), "reviews": None, "harness": None, "missing": ["reviews: gh api failed (1)"]}
+        body = self.run_with(unread, previous=first)
+        self.assertIn("| Merged pull requests | 2 | n/a |", body)
+        self.assertNotIn("couldn't be read", body)
+        summary = loop_health.decode(body.splitlines()[1])
+        assert summary is not None
+        self.assertIsNone(summary["values"]["merged"])
+        self.assertEqual(summary["values"]["rows"], 2)
 
     def test_without_stats_the_report_is_unchanged(self) -> None:
         body = self.run_with(None, previous=f"{rm.MARKER}\n{loop_health.encode({'schema': 1, 'date': '2026-09-01', 'days': 30, 'values': {}})}\n")

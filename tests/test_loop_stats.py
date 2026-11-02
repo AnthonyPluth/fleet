@@ -223,6 +223,11 @@ class FixtureTest(unittest.TestCase):
         self.assertIn("Newly checked: **Layout**", text)
         self.assertNotIn("### Not read", text)
 
+    def test_review_mine_accepts_what_loop_stats_wrote(self) -> None:
+        summary, reason = loop_health.read(self.stats.json)
+        self.assertEqual(reason, "")
+        self.assertEqual(summary, loop_health.headline(self.value))
+
     def test_the_headline_round_trips_through_the_hidden_line(self) -> None:
         summary = loop_health.headline(self.value)
         assert summary is not None
@@ -252,8 +257,8 @@ class EdgeTest(unittest.TestCase):
         self.assertIn("| Resolved share | n/a |", text)
         self.assertIn("| Open at merge share | n/a |", text)
         self.assertIn("| `not verified` per record (mean) | n/a |", text)
-        summary = loop_health.headline(value)
-        assert summary is not None
+        summary, reason = loop_health.read(self.stats.json)
+        assert summary is not None, reason
         self.assertIsNone(summary["values"]["resolved_share"])
         self.assertIn("| … resolved | n/a |", "\n".join(loop_health.section(summary, None)))
 
@@ -266,6 +271,7 @@ class EdgeTest(unittest.TestCase):
         self.assertEqual(value["harness"]["commits"]["total"], 3)
         self.assertEqual(sorted(value["harness"]["days_since_change"]), sorted(["AGENTS.md", ls.CONTEXT, ls.INVARIANTS]))
         self.assertIn("Not configured", self.stats.markdown.read_text(encoding="utf-8"))
+        self.assertEqual(loop_health.read(self.stats.json)[1], "")
         self.assertIsNone(loop_health.headline(value)["values"]["records"])  # type: ignore[index]
 
     def test_an_item_already_checked_or_new_and_checked_isn_t_counted(self) -> None:
@@ -295,8 +301,8 @@ class EdgeTest(unittest.TestCase):
         text = self.stats.markdown.read_text(encoding="utf-8")
         self.assertIn("### Not read", text)
         self.assertEqual(text.count("Not read."), 4)
-        summary = loop_health.headline(value)
-        assert summary is not None
+        summary, reason = loop_health.read(self.stats.json)
+        assert summary is not None, reason
         self.assertIsNone(summary["values"]["merged"])
         self.assertEqual(summary["values"]["rows"], 3)
 
@@ -325,6 +331,7 @@ class EdgeTest(unittest.TestCase):
         self.assertIn(".fleet/version isn't a vX.Y.Z version", missing)
         self.assertIn("fleet/sync pull request is open", missing)
         self.assertEqual(value["reviews"]["merged"], 3)
+        self.assertEqual(loop_health.read(self.stats.json)[1], "")
 
     def test_a_missing_fleet_version_or_agents_md_is_none_not_an_error(self) -> None:
         data = fixture()
@@ -484,10 +491,29 @@ class HiddenLineTest(unittest.TestCase):
         self.assertLessEqual(len(line), loop_health.MAX_LINE)
         self.assertEqual(loop_health.decode(line), big)
 
+    def test_a_truncated_stats_file_isn_t_used(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "s.json"
+            whole = {"schema": 1, "repo": REPO, "generated": NOW, "since": SINCE, "days": 30, "default_branch": None, "missing": ["x"],
+                     "reviews": None, "verification": None, "report": None, "harness": None, "fleet": None}
+            path.write_text(json.dumps(whole), encoding="utf-8")
+            summary, reason = loop_health.read(path)
+            assert summary is not None, reason
+            self.assertEqual(set(summary["values"].values()), {None})
+            for broken, why in (({k: v for k, v in whole.items() if k != "reviews"}, "lacks `reviews`"),
+                                ({**whole, "report": {"rows": 1}}, "`report` lacks"),
+                                ({**whole, "fleet": {"version": None, "sync_open": None, "more": 1}}, "fields loop-stats doesn't write"),
+                                ({**whole, "missing": {}}, "`missing` isn't a list"),
+                                ({**whole, "reviews": []}, "`reviews` isn't an object")):
+                path.write_text(json.dumps(broken), encoding="utf-8")
+                summary, reason = loop_health.read(path)
+                self.assertIsNone(summary, broken)
+                self.assertIn(why, reason)
+
     def test_a_stats_file_that_isn_t_schema_1_isn_t_used(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "s.json"
-            for text, why in (("{", "UTF-8 JSON"), ('{"schema": 2}', "schema 1"), ('{"schema": 1, "days": 30}', "headline")):
+            for text, why in (("{", "UTF-8 JSON"), ('{"schema": 2}', "schema 1"), ('{"schema": 1, "days": 30}', "isn't whole")):
                 path.write_text(text, encoding="utf-8")
                 summary, reason = loop_health.read(path)
                 self.assertIsNone(summary)
