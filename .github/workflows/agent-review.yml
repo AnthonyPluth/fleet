@@ -9,9 +9,10 @@ name: Agent review
 #
 # The owner's decisions on models: the first review runs on Sonnet for every agent's pull request, fixed in the Review
 # step of the `review` job below (no input changes it; a change is a fleet pull request), so a first review never runs
-# on a costlier model. The second review (the `second-review` job, FLEET-SECOND-REVIEW) runs on claude-fable-5-1, fixed
-# the same way, on risky pull requests only, as its own "Second review" status. The most a review may spend is the
-# budget-usd input (3 US dollars, as Claude Code estimates a run's cost; second-review-budget-usd, 10, for the second),
+# on a costlier model. The second review (the `second-review` job, FLEET-SECOND-REVIEW) runs on claude-opus-5-5, fixed
+# the same way, on risky pull requests only, as its own "Second review" status. TEMPORARY owner exception: the second
+# review runs on Opus while Fable is rate-limited; reverting restores claude-fable-5-1 (docs/agent-review.md lists
+# where). The most a review may spend is the budget-usd input (3 US dollars, as Claude Code estimates a run's cost; second-review-budget-usd, 10, for the second),
 # the most round trips to the model max-turns (60; second-review-max-turns, 120); callers pass their
 # AGENT_REVIEW_BUDGET_USD and AGENT_REVIEW_MAX_TURNS variables. One that hits either fails as an error (never a pass),
 # and each run logs the turns and cost it took, to tune them by.
@@ -562,7 +563,7 @@ jobs:
 
   # The second review, on risky pull requests only (FLEET-SECOND-REVIEW): the same shape as `review`, isolated the same
   # way (read-only tools confined to its directory, no settings, hooks, plugins or MCP servers, a hosted runner, the
-  # secrets only in its Review step), on claude-fable-5-1 with its own budget and turns, its own comment (marker
+  # secrets only in its Review step), on claude-opus-5-5 with its own budget and turns, its own comment (marker
   # <!-- second-review -->, its own state and findings lines) and its own "Second review" status, posted by
   # second-report. It runs on label events too, which `review` ignores; an unlabeled event from anyone but the
   # repository owner never starts it. Its concurrency group is the job's and tells label events apart from pushes, so
@@ -751,7 +752,7 @@ jobs:
           npm ci --no-audit --no-fund
           node_modules/.bin/claude --version
 
-      # The second reviewer, on claude-fable-5-1 (fixed here: no input changes it), with the second review's budget and
+      # The second reviewer, on claude-opus-5-5 (fixed here: no input changes it), with the second review's budget and
       # turns, in review/ with fleet's script. The only step in this job that holds a secret; it runs nothing from the
       # pull request's checkout, and the script replaces an answer that quotes the secret with an error.
       - name: Review
@@ -761,7 +762,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE: ${{ runner.temp }}/claude-code/node_modules/.bin/claude
-          MODEL: claude-fable-5-1
+          MODEL: claude-opus-5-5
           BUDGET: ${{ inputs.second-review-budget-usd }}
           MAX_TURNS: ${{ inputs.second-review-max-turns }}
         run: |
@@ -780,7 +781,7 @@ jobs:
           ANTHROPIC_API_KEY: not-a-key-the-stub-reviewer-reads-none
           CLAUDE: ${{ github.workspace }}/.fleet/tests/fakes/claude
           FAKE_REVIEW: ${{ inputs.fake-review }}
-          MODEL: claude-fable-5-1
+          MODEL: claude-opus-5-5
           BUDGET: ${{ inputs.second-review-budget-usd }}
           MAX_TURNS: ${{ inputs.second-review-max-turns }}
         run: |
