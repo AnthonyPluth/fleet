@@ -423,14 +423,17 @@ def histories(repo: str, numbers: set[int]) -> tuple[dict[int, list[Json]], int]
     return per_pull, unread
 
 
-def edited_after(comment: Json, when: str) -> bool:
+def bears_outcomes(comment: Json) -> bool:
     user = comment.get("user")
-    body = comment.get("body")
-    if not isinstance(user, dict) or user.get("login") != BOT or not isinstance(body, str):
-        return False
-    if not any(body.startswith(review.marker) for review in REVIEWS):
-        return False
-    return str(comment.get("updated_at") or comment.get("created_at") or "~") > when
+    raw = comment.get("body")
+    body = raw if isinstance(raw, str) else ""
+    if isinstance(user, dict) and user.get("login") == BOT:
+        return any(body.startswith(review.marker) for review in REVIEWS)
+    return comment.get("author_association") in review_outcomes.DISMISSERS or "/fleet dismiss" in body
+
+
+def edited_after(comment: Json, when: str) -> bool:
+    return bears_outcomes(comment) and str(comment.get("updated_at") or comment.get("created_at") or "~") > when
 
 
 def at_merge(per_pull: dict[int, list[Json]], merged_at: dict[int, str]) -> tuple[dict[int, list[Json]], int]:
@@ -626,8 +629,8 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
         "Findings still open when their pull request merged in the window, per kind: the merge path let them through.",
         ("Kind", "Open at merge", "Pull requests"), signals.open_at_merge, "No finding was open at merge in the window.", kept)
     if signals.edited_after_merge:
-        lines += ["", f"{signals.edited_after_merge} merged pull request(s) whose review comments changed after the merge were "
-                      "skipped for Open at merge."]
+        lines += ["", f"{signals.edited_after_merge} merged pull request(s) whose review or dismissal comments changed after "
+                      "the merge were skipped for Open at merge."]
     if signals.unread_outcomes:
         lines += ["", f"{signals.unread_outcomes} pull request(s) whose comments couldn't be read in full (an error, or over "
                       f"{MAX_COMMENT_PAGES * PER_PAGE} comments) were skipped in these two tables; their findings still count "

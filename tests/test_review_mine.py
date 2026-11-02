@@ -452,7 +452,7 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.miner.body()
         self.assertIn(f"| **Layout** | 1 | [#2](https://github.com/{REPO}/pull/2) |", body)
-        self.assertIn("1 merged pull request(s) whose review comments changed after the merge were skipped for Open at merge.", body)
+        self.assertIn("1 merged pull request(s) whose review or dismissal comments changed after the merge were skipped for Open at merge.", body)
         self.assertNotIn("#1](", body.split("### Open at merge", 1)[1])
 
     def test_a_pull_request_reviewed_before_the_window_and_merged_in_it_is_open_at_merge(self) -> None:
@@ -465,6 +465,22 @@ class SignalsTest(unittest.TestCase):
         body = self.miner.body()
         self.assertIn(f"| **Failure paths** | 1 | [#5](https://github.com/{REPO}/pull/5) |", body)
         self.assertIn("Nothing came back on two or more pull requests in the window.", body)
+
+    def test_an_owner_comment_edited_after_the_merge_leaves_the_pull_request_out_of_open_at_merge(self) -> None:
+        merged = "2026-09-01T12:00:00Z"
+        comments = [outcomes_comment(n, [outcome("Layout", f"t{n}"), outcome("Failure paths", f"f{n}")]) for n in (1, 2, 3)]
+        edited = {**dismissal(1, "Layout", "t1", "not a finding on this page"), "created_at": "2026-09-01T06:00:00Z", "updated_at": "2026-09-02T00:00:00Z"}
+        unedited = {**dismissal(2, "Layout", "t2", "not a finding on this page"), "created_at": "2026-09-01T06:00:00Z", "updated_at": "2026-09-01T06:00:00Z"}
+        edited_out = {"user": {"login": "owner"}, "author_association": "OWNER", "body": "never mind", "html_url": "",
+                      "created_at": "2026-09-01T06:00:00Z", "updated_at": "2026-09-03T00:00:00Z",
+                      "issue_url": f"https://api.github.com/repos/{REPO}/issues/3"}
+        pulls = [pull(n, merged=merged) for n in (1, 2, 3)]
+        result = self.miner.run(answers(pulls, [*comments, edited, unedited, edited_out]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        section = self.miner.body().split("### Open at merge", 1)[1]
+        self.assertIn(f"| **Failure paths** | 1 | [#2](https://github.com/{REPO}/pull/2) |", section)
+        self.assertNotIn("**Layout**", section)
+        self.assertIn("2 merged pull request(s) whose review or dismissal comments changed after the merge were skipped for Open at merge.", section)
 
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
