@@ -22,12 +22,13 @@ AGENTS = Path("AGENTS.md")
 WORKFLOWS = Path(".github/workflows")
 UNRELEASED = "## [Unreleased]"
 PLACEHOLDER = "vX.Y.Z"
-VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
+VERSION_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 HEADING = re.compile(r"^## .*$", re.MULTILINE)
-RELEASED = re.compile(r"## \[(?P<version>\d+\.\d+\.\d+)\] - (?P<date>\d{4}-\d{2}-\d{2})")
+RELEASED = re.compile(r"## \[(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\] - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 SNIPPET_VERSION = re.compile(r"(?P<head>uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*|\"ref\":[ \t]*\"|fleet sync --to[ \t]+"
-                             r"|fleet:begin [a-z0-9-]+ |AnthonyPluth/fleet[@/]|echo[ \t]+)(?P<tag>v(?:\d+\.\d+\.\d+|X\.Y\.Z))\b")
+                             r"|fleet:begin [a-z0-9-]+ |AnthonyPluth/fleet[@/]|echo[ \t]+)(?P<tag>v(?:[0-9]+\.[0-9]+\.[0-9]+|X\.Y\.Z))\b")
 FLEET_REF_LINE = re.compile(r"^(  FLEET_REF:[ \t]+)(\S+)", re.MULTILINE)
 PLUGIN_VERSION = re.compile(r'^(\s*"version":\s*")([^"]*)(")', re.MULTILINE)
 PYPROJECT_VERSION = re.compile(r'^(version\s*=\s*")([^"]*)(")', re.MULTILINE)
@@ -45,9 +46,19 @@ class Section:
     end: int
 
 
+def is_date(text: str) -> bool:
+    if not DATE_PATTERN.fullmatch(text):
+        return False
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
 def parse_version(text: str) -> tuple[int, int, int]:
     if not VERSION_PATTERN.fullmatch(text):
-        raise ReleaseError(f"{text!r} isn't a version (MAJOR.MINOR.PATCH)")
+        raise ReleaseError(f"{text!r} isn't a version (MAJOR.MINOR.PATCH, ASCII digits, no leading zeros)")
     major, minor, patch = (int(part) for part in text.split("."))
     return major, minor, patch
 
@@ -79,6 +90,8 @@ def changelog_errors(text: str, version: str) -> list[str]:
         return [f"{name}: the section after Unreleased, {found[1].heading!r}, isn't `## [X.Y.Z] - YYYY-MM-DD`"]
     if top.group("version") != version:
         return [f"{name}: the newest released section is {top.group('version')}, but VERSION is {version}"]
+    if not is_date(top.group("date")):
+        return [f"{name}: the section for {version} has the impossible date {top.group('date')}"]
     return []
 
 
@@ -139,7 +152,19 @@ def check(root: Path, version: str) -> list[str]:
         errors.append(f"{ADOPTING.as_posix()}: missing")
     for doc in docs(root):
         errors.extend(adopting_errors((root / doc).read_text(encoding="utf-8"), version, doc))
+    agents = read(root, AGENTS)
+    if agents is not None:
+        errors.extend(agents_errors(agents, version))
     return errors
+
+
+def agents_errors(text: str, version: str) -> list[str]:
+    try:
+        found = agents_md.blocks(text)
+    except agents_md.MarkerError as error:
+        return [f"{AGENTS.as_posix()}: {error}"]
+    return [f"{AGENTS.as_posix()}: the {block.name} block's marker says {block.version}, but VERSION is {version}"
+            for block in found if block.version != f"v{version}"]
 
 
 def docs(root: Path) -> list[Path]:
@@ -204,7 +229,7 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
     current = current_text.strip()
     if parse_version(current) >= new:
         raise ReleaseError(f"{version} isn't newer than VERSION {current}")
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+    if not is_date(date):
         raise ReleaseError(f"{date!r} isn't a date (YYYY-MM-DD)")
     before = self_check.check(root)
     if before:

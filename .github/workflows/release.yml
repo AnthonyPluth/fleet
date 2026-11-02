@@ -2,7 +2,8 @@ name: Release
 
 # Tags fleet's release and publishes its notes (docs/release.md). A release pull request stamps every version
 # (`fleet release prepare X.Y.Z`); when it lands, the push to main changes VERSION and this tags that commit vX.Y.Z,
-# once: it fails if the tag exists, and never moves one. The notes are CHANGELOG.md's section for the version.
+# once: it fails if the tag exists on another commit, and never moves one. A re-run after a failed publish reuses the
+# tag on this commit and skips a release that already exists. The notes are CHANGELOG.md's section for the version.
 #
 # It runs only on a push to main, from main's own files, with a contents: write token and nothing else: no pull
 # request's content reaches it, and every value reaches the shell through env, never through an expression in a script.
@@ -41,12 +42,13 @@ jobs:
         id: version
         run: |
           version=$(cat VERSION)
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::VERSION isn't MAJOR.MINOR.PATCH"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::VERSION isn't MAJOR.MINOR.PATCH in ASCII digits without leading zeros"
             exit 1
           fi
           /usr/bin/python3 -E -s -m fleet_tools.cli release notes "$version" > "$RUNNER_TEMP/notes.md"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      # Re-runnable: a tag already on this commit (from a run whose publish failed) passes; one on any other commit fails.
       - name: Tag the commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,15 +56,24 @@ jobs:
           SHA: ${{ github.sha }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          if gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --silent 2>/dev/null; then
-            echo "::error::$TAG exists already: a release tag is never moved. Bump VERSION in a new release pull request."
-            exit 1
+          if existing=$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha' 2>/dev/null); then
+            if [[ "$existing" != "$SHA" ]]; then
+              echo "::error::$TAG exists already on $existing: a release tag is never moved. Bump VERSION in a new release pull request."
+              exit 1
+            fi
+            echo "$TAG is already on $SHA; not tagging again"
+          else
+            gh api "repos/$REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" --silent
+            echo "Tagged $SHA as $TAG"
           fi
-          gh api "repos/$REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" --silent
-          echo "Tagged $SHA as $TAG"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+        run: |
+          if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "The release $TAG exists already; not publishing again"
+          else
+            gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi

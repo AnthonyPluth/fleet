@@ -15,7 +15,7 @@ SELF_TEST = "self-test.yml"
 SELF_TEST_REF = "${{github.sha}}"
 FLEET_REPOSITORY = "AnthonyPluth/fleet"
 FLEET_CHECKOUT_REF = "${{inputs.fleet-ref||env.FLEET_REF}}"
-VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
+VERSION_PATTERN = release.VERSION_PATTERN
 KEY_PATTERN = re.compile(r"""^(?P<q>["']?)(?P<key>[^"':#][^"':]*)(?P=q)\s*:(?:\s+(?P<value>.*))?$""")
 
 Node: TypeAlias = "dict[str, Node] | list[Node] | str"
@@ -156,7 +156,7 @@ def check(root: Path) -> list[str]:
         return ["VERSION: missing"]
     version = version_file.read_text(encoding="utf-8").strip()
     if not VERSION_PATTERN.fullmatch(version):
-        return [f"VERSION: {version!r} isn't a version (MAJOR.MINOR.PATCH)"]
+        return [f"VERSION: {version!r} isn't a version (MAJOR.MINOR.PATCH, ASCII digits, no leading zeros)"]
     expected = expected_ref(version)
     directory = root / WORKFLOWS
     files = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
