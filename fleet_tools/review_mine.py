@@ -147,6 +147,7 @@ class Signals:
     open_at_merge: list[Signal] = field(default_factory=list)
     gaps: Gaps | None = None
     unread_outcomes: int = 0
+    edited_after_merge: int = 0
 
     def count(self) -> int:
         return len(self.dismissed) + len(self.open_at_merge) + (len(self.gaps.rows) if self.gaps else 0)
@@ -420,9 +421,29 @@ def histories(repo: str, numbers: set[int]) -> tuple[dict[int, list[Json]], int]
     return per_pull, unread
 
 
-def at_merge(per_pull: dict[int, list[Json]], merged_at: dict[int, str]) -> dict[int, list[Json]]:
-    return {number: [c for c in comments if str(c.get("created_at") or "~") <= merged_at[number]]
-            for number, comments in per_pull.items() if merged_at.get(number)}
+def edited_after(comment: Json, when: str) -> bool:
+    user = comment.get("user")
+    body = comment.get("body")
+    if not isinstance(user, dict) or user.get("login") != BOT or not isinstance(body, str):
+        return False
+    if not any(body.startswith(review.marker) for review in REVIEWS):
+        return False
+    return str(comment.get("updated_at") or comment.get("created_at") or "~") > when
+
+
+def at_merge(per_pull: dict[int, list[Json]], merged_at: dict[int, str]) -> tuple[dict[int, list[Json]], int]:
+    kept: dict[int, list[Json]] = {}
+    skipped = 0
+    for number, comments in per_pull.items():
+        when = merged_at.get(number)
+        if not when:
+            continue
+        before = [c for c in comments if str(c.get("created_at") or "~") <= when]
+        if any(edited_after(c, when) for c in before):
+            skipped += 1
+            continue
+        kept[number] = before
+    return kept, skipped
 
 
 def outcomes_from(repo: str, per_pull: dict[int, list[Json]]) -> dict[tuple[int, str], list[Json]]:
@@ -602,6 +623,9 @@ def render_signals(signals: Signals, kept: dict[str, tuple[bool, str]]) -> list[
         "Open at merge",
         "Findings still open when their pull request merged in the window, per kind: the merge path let them through.",
         ("Kind", "Open at merge", "Pull requests"), signals.open_at_merge, "No finding was open at merge in the window.", kept)
+    if signals.edited_after_merge:
+        lines += ["", f"{signals.edited_after_merge} merged pull request(s) whose review comments changed after the merge were "
+                      "skipped for Open at merge."]
     if signals.unread_outcomes:
         lines += ["", f"{signals.unread_outcomes} pull request(s) whose comments couldn't be read in full (an error, or over "
                       f"{MAX_COMMENT_PAGES * PER_PAGE} comments) were skipped in these two tables; their findings still count "
@@ -709,10 +733,11 @@ def mine(repo: str, days: int, agents_md: Path | None, now: datetime, dry_run: b
     records = newest_records(comments, set(numbers))
     per_pull, unread = histories(repo, {n for n, _ in records})
     outcomes = outcomes_from(repo, per_pull)
-    merge_time = outcomes_from(repo, at_merge(per_pull, merged))
+    snapshot, edited = at_merge(per_pull, merged)
+    merge_time = outcomes_from(repo, snapshot)
     rows = rows_of(groups_of(records, items, outcomes))
     signals = Signals(often_dismissed(repo, tallies(outcomes, items)), open_at_merge(repo, open_tallies(merge_time, items, set(merged))),
-                      unread_outcomes=unread)
+                      unread_outcomes=unread, edited_after_merge=edited)
     settings = verification_settings(app_root)
     if settings is not None:
         signals.gaps = verification_gaps(repo, pulls, *settings)

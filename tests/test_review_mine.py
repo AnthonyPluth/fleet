@@ -440,6 +440,19 @@ class SignalsTest(unittest.TestCase):
         self.miner.run(answers(pulls, late))
         self.assertNotIn("row:open-at-merge:layout", self.miner.body())
 
+    def test_a_review_comment_edited_after_the_merge_leaves_the_pull_request_out_of_open_at_merge(self) -> None:
+        merged = "2026-09-01T12:00:00Z"
+        edited = {**outcomes_comment(1, [outcome("Layout", "t1")]), "created_at": "2026-09-01T00:00:00Z", "updated_at": "2026-09-02T00:00:00Z"}
+        unedited = {**outcomes_comment(2, [outcome("Layout", "t2")]), "created_at": "2026-09-01T00:00:00Z", "updated_at": "2026-09-01T06:00:00Z"}
+        late = dismissal(2, "Layout", "t2", "dismissed once it had merged")
+        pulls = [pull(1, merged=merged), pull(2, merged=merged)]
+        result = self.miner.run(answers(pulls, [edited, unedited, late]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.miner.body()
+        self.assertIn(f"| **Layout** | 1 | [#2](https://github.com/{REPO}/pull/2) |", body)
+        self.assertIn("1 merged pull request(s) whose review comments changed after the merge were skipped for Open at merge.", body)
+        self.assertNotIn("#1](", body.split("### Open at merge", 1)[1])
+
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
