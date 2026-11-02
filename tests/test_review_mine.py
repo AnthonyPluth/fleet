@@ -452,7 +452,7 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.miner.body()
         self.assertIn(f"| **Layout** | 1 | [#2](https://github.com/{REPO}/pull/2) |", body)
-        self.assertIn("1 merged pull request(s) whose review or dismissal comments changed after the merge were skipped for Open at merge.", body)
+        self.assertIn("1 merged pull request(s) whose review or dismissal comments were posted or changed at or after the merge instant were skipped for Open at merge.", body)
         self.assertNotIn("#1](", body.split("### Open at merge", 1)[1])
 
     def test_a_pull_request_reviewed_before_the_window_and_merged_in_it_is_open_at_merge(self) -> None:
@@ -480,13 +480,27 @@ class SignalsTest(unittest.TestCase):
         section = self.miner.body().split("### Open at merge", 1)[1]
         self.assertIn(f"| **Failure paths** | 1 | [#2](https://github.com/{REPO}/pull/2) |", section)
         self.assertNotIn("**Layout**", section)
-        self.assertIn("2 merged pull request(s) whose review or dismissal comments changed after the merge were skipped for Open at merge.", section)
+        self.assertIn("2 merged pull request(s) whose review or dismissal comments were posted or changed at or after the merge instant were skipped for Open at merge.", section)
+
+    def test_a_dismissal_in_the_same_second_as_the_merge_is_indeterminate(self) -> None:
+        merged = "2026-09-01T12:00:00Z"
+        comments = [outcomes_comment(n, [outcome("Layout", f"t{n}"), outcome("Failure paths", f"f{n}")]) for n in (1, 2, 3)]
+        same = {**dismissal(1, "Layout", "t1", "not a finding on this page"), "created_at": merged, "updated_at": merged}
+        earlier = {**dismissal(2, "Layout", "t2", "not a finding on this page"), "created_at": "2026-09-01T11:59:59Z", "updated_at": "2026-09-01T11:59:59Z"}
+        touched = {**dismissal(3, "Layout", "t3", "not a finding on this page"), "created_at": "2026-09-01T11:59:59Z", "updated_at": merged}
+        pulls = [pull(n, merged=merged) for n in (1, 2, 3)]
+        result = self.miner.run(answers(pulls, [*comments, same, earlier, touched]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        section = self.miner.body().split("### Open at merge", 1)[1]
+        self.assertIn(f"| **Failure paths** | 1 | [#2](https://github.com/{REPO}/pull/2) |", section)
+        self.assertNotIn("**Layout**", section)
+        self.assertIn("2 merged pull request(s) whose review or dismissal comments were posted or changed at or after the merge instant were skipped", section)
 
     def test_a_dismissal_older_than_the_window_still_counts(self) -> None:
         old = {**dismissal(2, "Layout", "Overflows again", "the page is desktop-only by design"),
                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
         comments = [outcomes_comment(1, [outcome("Layout", "Overflows")]), outcomes_comment(2, [outcome("Layout", "Overflows again")])]
-        data = answers([pull(1), pull(2, merged="2026-09-01T00:00:00Z")], comments)
+        data = answers([pull(1), pull(2, merged="2026-09-01T12:00:00Z")], comments)
         data[history(2)].insert(0, old)
         result = self.miner.run(data, "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -496,7 +510,7 @@ class SignalsTest(unittest.TestCase):
 
     def long_history(self, extra: int) -> dict[str, Any]:
         comments = [outcomes_comment(n, [outcome("Layout", f"t{n}")]) for n in (1, 2)]
-        data = answers([pull(1, merged="2026-09-01T00:00:00Z"), pull(2, merged="2026-09-01T00:00:00Z")], comments)
+        data = answers([pull(1, merged="2026-09-01T12:00:00Z"), pull(2, merged="2026-09-01T12:00:00Z")], comments)
         filler = {"user": {"login": "someone"}, "author_association": "NONE", "body": "thanks", "created_at": "2026-08-01T00:00:00Z"}
         data[history(2, 1)] = [comments[1]] + [filler] * 99
         for page in range(2, rm.MAX_COMMENT_PAGES + 1):
@@ -574,7 +588,7 @@ class SignalsTest(unittest.TestCase):
         comments = [outcomes_comment(1, [outcome("Layout", "Overflows"), outcome("Failure paths", "Drops rows", "resolved")]),
                     outcomes_comment(2, [outcome("Layout", "Still open")]),
                     outcomes_comment(3, [outcome("Layout", "Open but merged before the window")])]
-        pulls = [pull(1, merged="2026-09-01T00:00:00Z"), pull(2), pull(3, merged="2026-01-01T00:00:00Z")]
+        pulls = [pull(1, merged="2026-09-01T12:00:00Z"), pull(2), pull(3, merged="2026-01-01T00:00:00Z")]
         self.miner.run(answers(pulls, comments))
         body = self.miner.body()
         self.assertIn(f"| **Layout** | 1 | [#1](https://github.com/{REPO}/pull/1) |", body)
@@ -585,7 +599,7 @@ class SignalsTest(unittest.TestCase):
         gap = ("Bank sync", "not verified", "no fake provider @octocat <!-- x -->", "-")
         done = ("Totals", "verified", "unit test", "tests/test_budget.py")
         pulls = [
-            pull(20, merged="2026-09-01T00:00:00Z", body=record(gap, done)),
+            pull(20, merged="2026-09-01T12:00:00Z", body=record(gap, done)),
             pull(21, merged="2026-09-02T00:00:00Z", body=record(("Chart colours", "not verified", "needs a screenshot flow", "-"))),
             pull(22, merged="2026-09-03T00:00:00Z", body="No record here."),
             pull(23, merged="2026-09-04T00:00:00Z", body="<!-- fleet-verification -->\n| broken | secret-text |\n<!-- /fleet-verification -->"),
@@ -678,7 +692,7 @@ class SignalsTest(unittest.TestCase):
 
         comments = [outcomes_comment(n, [outcome("layout", f"t{n}"), outcome("Other", f"Unused import {'!' * n}")]) for n in (1, 2, 3)]
         comments += [dismissal(n, "layout", f"t{n}", "desktop-only by design") for n in (1, 2, 3)]
-        pulls = [pull(n, merged="2026-09-01T00:00:00Z") for n in (1, 2, 3)]
+        pulls = [pull(n, merged="2026-09-01T12:00:00Z") for n in (1, 2, 3)]
         self.miner.run(answers(pulls, comments))
         first = self.miner.body()
         self.miner.run(answers(list(reversed(pulls)), list(reversed(comments))))
@@ -693,7 +707,7 @@ class SignalsTest(unittest.TestCase):
 
     def test_signals_alone_open_the_issue(self) -> None:
         comments = [outcomes_comment(1, [outcome("Layout", "Overflows")])]
-        result = self.miner.run(answers([pull(1, merged="2026-09-01T00:00:00Z")], comments), "--dry-run")
+        result = self.miner.run(answers([pull(1, merged="2026-09-01T12:00:00Z")], comments), "--dry-run")
         self.assertIn("would open:", result.stdout)
         self.assertIn("<!-- row:open-at-merge:layout -->", result.stdout)
 
