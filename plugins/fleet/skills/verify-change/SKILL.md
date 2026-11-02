@@ -55,8 +55,8 @@ The rules the parser holds:
 - Status is exactly `verified` or `not verified`;
 - a `verified` row has a non-empty How (the command, flow, test or manual step) and non-empty Evidence (a test name, a flow name, a screenshot path, a command's output summary); `-` and `—` count as empty;
 - a `not verified` row's How says why it couldn't be verified and what would make it verifiable;
-- a pipe inside a cell is written `\|`;
-- one block per description, and nothing else between the markers is read.
+- a pipe inside a cell is written `\|`; between the markers, every line with an unescaped `|` is read as a row (the leading pipe may be left off), so a note there escapes its pipes or stays outside;
+- one block per description; lines between the markers without a pipe are ignored.
 
 Every gap goes in as `not verified` with its reason, never left out: a reviewer who sees the gap can judge it, and one who doesn't can't. Keep "Testing" for what was run. `fleet verification show --pr N` prints the block as the tools read it.
 

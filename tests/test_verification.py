@@ -379,8 +379,9 @@ class Template(unittest.TestCase):
     def test_the_adopting_doc_gives_the_apps_the_same_section_and_the_keys(self) -> None:
         text = (ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
         for phrase in ("[tool.fleet.verification]", "required = false", "exempt-authors", BEGIN, END, HEADER, "types: [opened, synchronize, reopened, ready_for_review, edited]",
-                       "fleet verification show", "--pr-event"):
+                       "fleet verification show", "--pr-event", "every line with an unescaped `|` is a table row (the leading pipe may be left off)"):
             self.assertIn(phrase, text)
+        self.assertNotIn("other text between the markers, and everything outside them, is ignored", text)
 
 
 class Skill(unittest.TestCase):
@@ -388,8 +389,9 @@ class Skill(unittest.TestCase):
         text = (ROOT / "plugins" / "fleet" / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
         for phrase in ("name: verify-change", "[tool.fleet.verification]", HEADER, "`verified` or `not verified`", "\\|",
                        "Never mark a dimension `verified`", "Every gap goes in as `not verified`", "verify skill", "Testing",
-                       "fleet verification show --pr N"):
+                       "fleet verification show --pr N", "every line with an unescaped `|` is read as a row (the leading pipe may be left off)"):
             self.assertIn(phrase, text)
+        self.assertNotIn("nothing else between the markers is read", text)
         for word in ("Waypoint", "Runway", "Darkroom", "AnthonyPluth", "http"):
             self.assertNotIn(word, text)
         example = text.split("```md\n", 1)[1].split("```", 1)[0]
