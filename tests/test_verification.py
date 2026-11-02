@@ -101,14 +101,21 @@ class Parsing(unittest.TestCase):
     def test_a_fence_run_anywhere_but_a_plain_top_level_fence_line_is_an_error(self) -> None:
         real = record(GAP, before="")
         for line in (" ```", "    ```", "- ```", "- - ```md", "1. ```", "> ```", "> - ```", "-- ```", ">-```", "text ```",
-                     "`` ``` ``", "- ~~~"):
+                     "`` ``` ``", "- ~~~", "``` ```", "```a`b", "````md `x`"):
             with self.subTest(line=line):
                 for body in (line + "\n" + real, real + line + "\n", "```\n" + line + "\n```\n" + real):
                     with self.assertRaises(ParseError) as caught:
                         parse(body)
                     self.assertIn(AMBIGUOUS, caught.exception.rule)
-                    self.assertIn("code fence", caught.exception.rule)
+                    self.assertIn("fence", caught.exception.rule)
                 self.assertEqual(caught.exception.line, 2)
+        with self.assertRaises(ParseError) as caught:
+            parse("``` ```\n" + BEGIN + "\n" + HEADER + "\n| in an example | verified | a | b |\n" + END + "\n```\n" + real)
+        self.assertEqual((caught.exception.line, "info string" in caught.exception.rule), (1, True))
+        self.assertEqual([d.dimension for d in parse("~~~ `info`\n" + BEGIN + "\n~~~\n" + real)], ["Live sync"])
+        with self.assertRaises(ParseError) as caught:
+            parse("prose with ``` in it\n" + real)
+        self.assertIn("inline code with single backticks", caught.exception.rule)
 
     def test_an_indented_or_prefixed_marker_or_row_is_an_error(self) -> None:
         real = record(GAP, before="")

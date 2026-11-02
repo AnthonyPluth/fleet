@@ -97,9 +97,13 @@ def marker_lines(lines: list[str]) -> tuple[list[int], list[int]]:
     for index, line in enumerate(lines, start=1):
         found = fence_of(line)
         if found is None and has_fence_run(line):
-            raise ParseError(index, f"{AMBIGUOUS}: a code fence that isn't a plain top-level one (three or more backticks or "
-                                    "tildes at the start of the line; the closing one has nothing else on its line)")
+            raise ParseError(index, f"{AMBIGUOUS}: a line holds a run of three or more backticks or tildes that isn't a plain "
+                                    "top-level code fence; write fences at the first column (the closing one with nothing else "
+                                    "on its line) and put such text in inline code with single backticks")
         if found:
+            if found[0][0] == "`" and "`" in found[1]:
+                raise ParseError(index, f"{AMBIGUOUS}: a backtick fence whose info string holds a backtick isn't a fence on "
+                                        "GitHub; drop the backtick or use a tilde fence")
             if fence is None:
                 fence, opened = found, index
             elif closes(found, fence):
