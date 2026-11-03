@@ -6,7 +6,8 @@ name: Deep scan due
 # at the pinned fleet ref, the revision of the last scan (read from the last closed issue with that title) and the
 # number of commits on the default branch since. The caller schedules it (quarterly, or whenever the app decides) and
 # may run it by hand. The script is .github/scripts/deep_scan_due.py, fetched from fleet at the pinned ref. No secrets:
-# the workflow's own token, with `issues: write` only.
+# the workflow's own token, with `issues: write` and `contents: read` (the compare call that counts the commits; without
+# it the count is refused and the issue says it is unknown), which the caller must grant too.
 on:
   workflow_call:
     inputs:
@@ -35,7 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      issues: write
+      contents: read   # compare the last scan's revision with the default branch, for the commit count
+      issues: write    # read the earlier issues and open the reminder
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
