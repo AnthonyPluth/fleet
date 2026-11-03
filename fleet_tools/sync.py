@@ -54,11 +54,13 @@ def sync(root: Path, version: str, fleet: Path | None = None, commit: str | None
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     synced, changes = agents_md.sync(text, agents_md.sections(fleet), version)
     commit = resolve_commit(root, version, commit)
+    settings, moved = marketplace.plan(root, version)
     vendored = vendor.sync(root, version, None if fleet is None else vendor.render(vendor.working_tree(fleet), version))
     if synced != text:
         path.write_text(synced, encoding="utf-8")
     report = [f"{agents_md.AGENTS}: {change}" for change in changes] + vendored
-    report += marketplace.sync(root, version)
+    marketplace.write(root, settings)
+    report += moved
     version_file = root / agents_md.VERSION_FILE
     current = version_file.read_text(encoding="utf-8") if version_file.is_file() else None
     rendered = agents_md.render_version_file(version, commit)
@@ -85,7 +87,8 @@ def run(args: argparse.Namespace) -> int:
     try:
         root = (args.root or config.find_root(Path.cwd())).resolve()
         changes = sync(root, own, commit=args.commit)
-    except (config.ConfigError, agents_md.MarkerError, vendor.VendorError, SyncError) as error:
+    except (config.ConfigError, agents_md.MarkerError, vendor.VendorError, marketplace.MarketplaceError,
+            SyncError) as error:
         print(f"fleet sync: {error}", file=sys.stderr)
         return 2
     for change in changes:

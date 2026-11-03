@@ -52,10 +52,14 @@ def moved(text: str, settings: object, name: str, version: str) -> str | None:
     return None
 
 
-def sync(root: Path, version: str) -> list[str]:
+class MarketplaceError(Exception):
+    pass
+
+
+def plan(root: Path, version: str) -> tuple[str | None, list[str]]:
     loaded = load(root)
     if loaded is None:
-        return []
+        return None, []
     text, settings = loaded
     changes = []
     for name, ref in fleet_refs(settings).items():
@@ -63,13 +67,21 @@ def sync(root: Path, version: str) -> list[str]:
             continue
         updated = moved(text, settings, name, version)
         if updated is None:
-            changes.append(f"{SETTINGS.as_posix()}: can't move the {name} marketplace's ref from {ref!r} to {version}; "
-                           "set it by hand")
-            continue
+            raise MarketplaceError(f"{SETTINGS.as_posix()}: can't move fleet's marketplace `{name}` from ref {ref!r} to "
+                                   f"{version}; set its ref to {json.dumps(version)} by hand")
         text, settings = updated, json.loads(updated)
         changes.append(f"{SETTINGS.as_posix()}: the {name} marketplace's ref {ref!r} -> {version!r}")
-    if changes and text != loaded[0]:
+    return (text if changes else None), changes
+
+
+def write(root: Path, text: str | None) -> None:
+    if text is not None:
         (root / SETTINGS).write_text(text, encoding="utf-8")
+
+
+def sync(root: Path, version: str) -> list[str]:
+    text, changes = plan(root, version)
+    write(root, text)
     return changes
 
 

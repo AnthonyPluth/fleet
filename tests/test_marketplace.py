@@ -76,13 +76,22 @@ class Sync(unittest.TestCase):
                 self.assertEqual((root / SETTINGS).read_text(encoding="utf-8"), text)
         self.assertEqual(marketplace.sync(temporary(self), VERSION), [])
 
-    def test_a_ref_that_isnt_a_string_is_reported_not_rewritten(self) -> None:
-        root = temporary(self)
-        text = '{"extraKnownMarketplaces": {"fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": 2}}}}'
+    def test_a_ref_that_cant_be_moved_fails_the_sync_and_writes_nothing(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        stale(root)
+        text = (root / SETTINGS).read_text(encoding="utf-8").replace('"ref": "v1.0.0"', '"ref": 2')
         write(root, SETTINGS, text)
-        self.assertEqual(marketplace.sync(root, VERSION), [f"{SETTINGS}: can't move the fleet marketplace's ref from 2 to "
-                                                           f"{VERSION}; set it by hand"])
-        self.assertEqual((root / SETTINGS).read_text(encoding="utf-8"), text)
+        write(root, ".fleet/version", "v1.0.0\n" + "0" * 40 + "\n")
+        before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["sync", "--to", VERSION, "--root", str(root)]), 2)
+        self.assertEqual(err.getvalue(), f"fleet sync: {SETTINGS}: can't move fleet's marketplace `fleet` from ref 2 to "
+                                         f'{VERSION}; set its ref to "{VERSION}" by hand\n')
+        self.assertNotIn("is at fleet", out.getvalue())
+        self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+        with self.assertRaises(marketplace.MarketplaceError):
+            marketplace.sync(root, VERSION)
 
 
 class Drift(unittest.TestCase):
