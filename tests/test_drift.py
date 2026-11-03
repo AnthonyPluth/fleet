@@ -8,7 +8,7 @@ from unittest import mock
 
 from consumers import RUNWAY, WAYPOINT, commit, copy, git, temporary, write
 
-from fleet_tools import agents_md, cli, drift, vendor
+from fleet_tools import agents_md, cli, drift, marketplace, vendor
 from fleet_tools.release import FIXTURE_COMMIT
 
 VERSION = agents_md.own_version()
@@ -281,6 +281,7 @@ class OtherVersions(unittest.TestCase):
         path.write_text(agents_md.sync(path.read_text(encoding="utf-8"), old, "v0.0.5")[0], encoding="utf-8")
         write(root, ".fleet/version", f"v0.0.5\n{FIXTURE_COMMIT}\n")
         pin(root, "v0.0.5")
+        marketplace.sync(root, "v0.0.5")
         return root
 
     def test_blocks_at_an_older_tag_are_read_from_fleets_history(self) -> None:

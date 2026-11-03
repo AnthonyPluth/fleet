@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from consumers import WAYPOINT, commit, git
 
-from fleet_tools import agents_md, drift, release, vendor
+from fleet_tools import agents_md, drift, marketplace, release, vendor
 
 ROOT = Path(__file__).resolve().parent.parent
 KEY = re.compile(r"^(pins|content)=(v\d+\.\d+\.\d+)$")
@@ -51,7 +51,8 @@ def parse_spec(spec: str) -> dict[str, str]:
 
 def expected() -> list[str]:
     shipped = vendor.shipped_at(agents_md.own_version()) or {}
-    return sorted([agents_md.AGENTS, agents_md.VERSION_FILE.as_posix(), *(target.as_posix() for target in shipped)])
+    return sorted([agents_md.AGENTS, agents_md.VERSION_FILE.as_posix(), marketplace.SETTINGS.as_posix(),
+                   *(target.as_posix() for target in shipped)])
 
 
 def build(out: Path, pins: str, content: str, source: Path = WAYPOINT) -> Path:
@@ -70,6 +71,7 @@ def build(out: Path, pins: str, content: str, source: Path = WAYPOINT) -> Path:
         if vendored.executable:
             path.chmod(path.stat().st_mode | 0o755)
     (out / agents_md.VERSION_FILE).write_text(agents_md.render_version_file(content, release.FIXTURE_COMMIT), encoding="utf-8")
+    marketplace.sync(out, content)
     git(out, "init", "-q", "-b", "main")
     commit(out, "chore: the fixture consumer")
     return out

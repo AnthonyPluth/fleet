@@ -5,10 +5,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from fleet_tools import agents_md, config, vendor
+from fleet_tools import agents_md, config, marketplace, vendor
 
 HELP = ("check that the consumer's fleet content is fleet's: every AGENTS.md block byte-equal to fleet's at the version "
-        "in its marker, every vendored plugin file byte-equal to fleet's at .fleet/version, one version across the markers and "
+        "in its marker, every vendored plugin file byte-equal to fleet's at .fleet/version, fleet's marketplace in "
+        ".claude/settings.json (when it declares one) at that version's tag, one version across the markers and "
         ".fleet/version, that version within the workflow pins, and .fleet/version's commit (line 2, which tools/fleet "
         "runs) the one the pins at that version name")
 
@@ -128,6 +129,7 @@ def drift(root: Path) -> tuple[list[str], str]:
     if content:
         vendored, vendor_problems = vendor.check(root, content)
         problems += vendor_problems
+        problems += marketplace.check(root, content)
     pinned, pin_problems = pins(root)
     problems += pin_problems
     if content:
