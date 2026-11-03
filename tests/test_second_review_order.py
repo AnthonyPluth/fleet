@@ -20,6 +20,8 @@ REPO = "example/app"
 PR = "7"
 HEAD = "a" * 40
 NEWER = "b" * 40
+BASE = "c" * 40
+BRANCH = "agent/change"
 EARLIER = 100
 LATER = 200
 LATEST = 300
@@ -36,17 +38,20 @@ def status(state: str, run: int, description: str = "d", creator: str = ar.BOT, 
 
 
 def run_record(run: int, sha: str = HEAD, workflow: int = 1, event: str = "pull_request_target", pulls: tuple[int, ...] = (7,),
-               completed: bool = False) -> Json:
-    return {"id": run, "workflow_id": workflow, "event": event, "head_sha": sha, "pull_requests": [{"number": n} for n in pulls],
-            "status": "completed" if completed else "in_progress"}
+               completed: bool = False, branch: str = BRANCH, repository: str = REPO) -> Json:
+    return {"id": run, "workflow_id": workflow, "event": event, "status": "completed" if completed else "in_progress", "head_sha": sha,
+            "head_branch": branch, "path": ".github/workflows/agent-review-caller.yml", "display_title": "fix: a change",
+            "head_repository": {"full_name": repository}, "repository": {"full_name": REPO},
+            "pull_requests": [{"number": n, "head": {"sha": sha}, "base": {"sha": BASE}} for n in pulls]}
 
 
-FOREIGN = (run_record(500, workflow=2), run_record(501, pulls=(8,)), run_record(502, sha=NEWER), run_record(503, event="pull_request"))
+FOREIGN = (run_record(500, workflow=2), run_record(501, pulls=(8,)), run_record(502, sha=NEWER), run_record(503, event="pull_request"),
+           run_record(504, sha=BASE), run_record(505, pulls=(), branch="other"), run_record(506, repository="fork/app"))
 
 
 def run_line(record: Json) -> list[Any]:
-    return [record["id"], record["workflow_id"], record["event"], record["head_sha"], [p["number"] for p in record["pull_requests"]],
-            record["status"]]
+    return [record["id"], record["workflow_id"], record["event"], record["head_sha"], record["head_branch"],
+            record["head_repository"]["full_name"], [p["number"] for p in record["pull_requests"]], record["status"]]
 
 
 def step_script(job: str, prefix: str) -> str:
@@ -74,11 +79,12 @@ def entries(*statuses: list[str]) -> list[ar.Entry]:
 
 class Decisions(unittest.TestCase):
     def test_only_a_run_of_this_workflow_event_pull_request_and_head_is_trusted(self) -> None:
-        records = (run_record(EARLIER), run_record(LATER), *FOREIGN, run_record(505, pulls=()), run_record(506, completed=True))
+        records = (run_record(EARLIER), run_record(LATER), *FOREIGN, run_record(507, pulls=()), run_record(508, completed=True))
         runs = ar.read_runs([run_line(r) for r in records])
-        self.assertEqual(ar.trusted(runs, EARLIER, 7, HEAD), {EARLIER: False, LATER: False, 506: True})
+        self.assertEqual(ar.trusted(runs, EARLIER, 7, HEAD, BRANCH), {EARLIER: False, LATER: False, 507: False, 508: True})
+        self.assertEqual(ar.trusted(runs, EARLIER, 7, HEAD), {EARLIER: False, LATER: False, 508: True})
         self.assertEqual(ar.trusted({}, EARLIER, 7, HEAD), {EARLIER: False})
-        self.assertEqual(ar.read_runs([[1, 1, "e", HEAD, "not a list", "completed"], ["1", 1, "e", HEAD, [], "x"], [1]]), {})
+        self.assertEqual(ar.read_runs([[1, 1, "e", HEAD, "b", REPO, "not a list", "completed"], ["1", 1, "e", HEAD, "b", REPO, [], "x"], [1]]), {})
 
     def test_a_status_counts_for_its_run_only_with_this_repository_s_exact_run_link(self) -> None:
         found = entries(status("success", LATER), [ar.SECOND.context, "success", ar.BOT, "d", f"https://evil.example/{REPO}/actions/runs/{LATER}"],
@@ -196,7 +202,7 @@ class Decisions(unittest.TestCase):
             comments, runs = Path(tmp, "comments.jsonl"), Path(tmp, "runs.jsonl")
             comments.write_text(json.dumps([5, ar.render([], "", url(LATEST), HEAD, ar.SECOND, run=str(LATEST))]) + "\n", encoding="utf-8")
             runs.write_text("".join(json.dumps(run_line(run_record(r))) + "\n" for r in (EARLIER, LATER)), encoding="utf-8")
-            env = {**os.environ, "RUN_ID": str(EARLIER), "RUN_URL": url(EARLIER), "PR": PR, "DESCRIPTION": "p"}
+            env = {**os.environ, "RUN_ID": str(EARLIER), "RUN_URL": url(EARLIER), "PR": PR, "HEAD_REF": BRANCH, "DESCRIPTION": "p"}
 
             def command(*args: str, stdin: str = statuses) -> str:
                 return subprocess.run(["python3", "-I", str(SCRIPT), "second", *args], input=stdin, env=env, capture_output=True, text=True,
@@ -205,7 +211,7 @@ class Decisions(unittest.TestCase):
             self.assertEqual(command("settle", HEAD, str(runs)).splitlines(), ["failure", url(LATER) + ar.RESTORED, "two words here"])
             self.assertEqual(command("settle", HEAD, str(runs), stdin=json.dumps(status("failure", LATER)) + "\n"), "")
             self.assertEqual(command("publish", HEAD, str(runs), str(comments), "success").splitlines(),
-                             ["status=", "description=", f"decided_by={LATER}", "comment=patch 5"])
+                             ["status=", "description=", f"decided_by={LATER}", "comment=none"])
             self.assertNotEqual(subprocess.run(["python3", "-I", str(SCRIPT), "second", "settle"], env=env, input="",
                                                capture_output=True, text=True).returncode, 0)
 
@@ -224,7 +230,7 @@ class Runs(unittest.TestCase):
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
         self.steps = 0
         self.records: dict[str, Json] = {}
-        for record in (run_record(EARLIER), run_record(LATER), run_record(LATEST), *FOREIGN):
+        for record in (run_record(EARLIER - 1), run_record(EARLIER), run_record(LATER), run_record(LATEST), *FOREIGN):
             self.register(record)
 
     def register(self, record: Json) -> None:
@@ -233,7 +239,7 @@ class Runs(unittest.TestCase):
 
     def env(self, run: int, **more: str) -> dict[str, str]:
         return {"PATH": self.path, "HOME": os.environ.get("HOME", "/tmp"), "GH_TOKEN": "fake", "FAKE_GH_STATE": str(self.state),
-                "FAKE_GH_LOG": str(self.log), "REPO": REPO, "PR": PR, "RUN_ID": str(run), "RUN_URL": url(run),
+                "FAKE_GH_LOG": str(self.log), "REPO": REPO, "PR": PR, "HEAD_REF": BRANCH, "RUN_ID": str(run), "RUN_URL": url(run),
                 "MERGE_GATE": "merge-gate.yml", "DRY_RUN": "false", **more}
 
     def pending_env(self, run: int, sha: str = HEAD) -> dict[str, str]:
@@ -354,9 +360,22 @@ class Runs(unittest.TestCase):
         self.report(LATER, "pass", description=ar.NOT_RISKY)
         self.assertEqual(self.newest(), ("success", LATER))
         self.setUp()
+        self.report(EARLIER - 1, "pass")
         self.report(LATER, "pass", description=ar.NOT_RISKY)
-        self.report(EARLIER, "blocking")
+        out = self.report(EARLIER, "blocking")
+        self.assertIn("the comment stays as it is", out)
         self.assertEqual(self.newest(), ("success", LATER))
+        self.assertEqual(ar.comment_run(self.comment()), EARLIER - 1)
+        self.assertEqual(ar.previous([self.comment()], ar.SECOND)[:2], (HEAD, "pass"))
+        self.assertNotIn("Drops the last warning", self.comment())
+
+    def test_an_earlier_blocking_comment_is_still_written_while_the_later_run_is_pending(self) -> None:
+        self.pending(LATER)
+        self.report(EARLIER, "blocking")
+        self.assertEqual(self.newest(), ("pending", LATER))
+        self.assertEqual(ar.comment_run(self.comment()), EARLIER)
+        self.report(LATER, "pass")
+        self.assert_decided_by(LATER, "failure", "blocking", comment_run=EARLIER)
 
     def test_an_earlier_run_that_posts_between_the_later_run_s_check_and_post_is_put_back_under_it(self) -> None:
         out = self.report(EARLIER, "pass", hook=self.hook(REPORT, self.report_env(LATER, "blocking")))
@@ -370,6 +389,23 @@ class Runs(unittest.TestCase):
         self.assertEqual(self.newest(), ("pending", LATER))
         self.report(LATER, "blocking")
         self.assertEqual(self.newest(), ("failure", LATER))
+
+    def test_a_run_whose_pull_request_list_github_emptied_is_tied_by_its_head_and_branch(self) -> None:
+        self.register(run_record(LATER, pulls=()))
+        self.register(run_record(EARLIER, pulls=()))
+        self.pending(LATER)
+        self.report(LATER, "blocking")
+        self.report(EARLIER, "pass")
+        self.assert_decided_by(LATER, "failure", "blocking")
+
+    def test_the_order_holds_with_the_run_records_github_gives_a_pull_request_target_caller(self) -> None:
+        for record in (run_record(EARLIER), run_record(LATER)):
+            self.assertEqual(record["head_sha"], record["pull_requests"][0]["head"]["sha"])
+            self.assertNotEqual(record["head_sha"], BASE)
+        self.pending(LATER)
+        self.report(EARLIER, "pass")
+        self.report(LATER, "blocking")
+        self.assert_decided_by(LATER, "failure", "blocking")
 
     def test_a_push_run_s_verdict_clears_the_pending_of_a_label_run_that_was_cancelled(self) -> None:
         self.pending(LATER)
@@ -402,7 +438,7 @@ class Runs(unittest.TestCase):
 
     def test_a_forged_status_or_comment_never_stops_the_real_verdict_from_being_posted(self) -> None:
         for forged in (url(99999999999), f"https://evil.example/{REPO}/actions/runs/{LATER}", f"https://github.com/other/app/actions/runs/{LATER}",
-                       url(500), url(501), url(502), url(503)):
+                       url(500), url(501), url(502), url(503), url(504), url(505), url(506)):
             with self.subTest(forged=forged):
                 self.setUp()
                 for state in ("success", "pending"):

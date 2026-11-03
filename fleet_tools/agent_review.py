@@ -106,7 +106,8 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
                                                   look up (this run's, the statuses', the comment's)
   agent_review.py second publish SHA RUNS.jsonl COMMENTS.jsonl STATE
                                                   the statuses on stdin, the looked-up runs ([id, workflow_id, event,
-                                                  head_sha, [pull numbers], status] JSON lines), $PR, $DESCRIPTION:
+                                                  head_sha, head_branch, head repository, [pull numbers], status] JSON
+                                                  lines), $PR, $HEAD_REF, $DESCRIPTION:
                                                   status=, description= (empty: post nothing), decided_by=, comment=
   agent_review.py second settle SHA RUNS.jsonl    the statuses on stdin: the status to post again (state, target_url,
                                                   description, one per line) when the newest isn't the decided one"""
@@ -607,6 +608,8 @@ class Run(NamedTuple):
     workflow: object
     event: object
     head: object
+    branch: object
+    repository: object
     pulls: tuple[object, ...]
     completed: bool
 
@@ -640,19 +643,26 @@ def run_prefix(run_url: str) -> str:
 def read_runs(lines: Iterable[Sequence[object]]) -> dict[int, Run]:
     runs: dict[int, Run] = {}
     for line in lines:
-        if len(line) < 6 or not isinstance(line[0], int) or not isinstance(line[4], list):
+        if len(line) < 8 or not isinstance(line[0], int) or not isinstance(line[6], list):
             continue
-        runs[line[0]] = Run(line[1], line[2], line[3], tuple(line[4]), line[5] == "completed")
+        runs[line[0]] = Run(line[1], line[2], line[3], line[4], line[5], tuple(line[6]), line[7] == "completed")
     return runs
 
 
-def trusted(runs: dict[int, Run], mine: int, pr: int, sha: str) -> dict[int, bool]:
+def tied(run: Run, pr: int, sha: str, branch: str) -> bool:
+    if run.head != sha:
+        return False
+    return pr in run.pulls if run.pulls else bool(branch) and run.branch == branch
+
+
+def trusted(runs: dict[int, Run], mine: int, pr: int, sha: str, branch: str = "") -> dict[int, bool]:
     out = {mine: False}
     own = runs.get(mine)
     if own is None:
         return out
+    same = (own.workflow, own.event, own.repository)
     for number, run in runs.items():
-        if number != mine and (run.workflow, run.event) == (own.workflow, own.event) and run.head == sha and pr in run.pulls:
+        if number != mine and (run.workflow, run.event, run.repository) == same and tied(run, pr, sha, branch):
             out[number] = run.completed
     return out
 
@@ -695,6 +705,12 @@ def to_restore(found: Sequence[Entry], runs: dict[int, bool]) -> Entry | None:
     return None if (newest.state, newest.description, newest.run) == (decided.state, decided.description, decided.run) else decided
 
 
+def writes_comment(post: tuple[str, str] | None, state: str, description: str, decided: Entry | None, mine: int) -> bool:
+    if post != (state, description):
+        return False
+    return decided is None or decided.run == mine or decided.state == "pending"
+
+
 def comment_state(body: str, review: Review = SECOND) -> tuple[str, int]:
     lines = body.splitlines()
     for index in range(1, min(len(lines), HIDDEN_LINES)):
@@ -715,12 +731,12 @@ def own_comment(comments: Sequence[Sequence[object]], review: Review = SECOND) -
 
 
 def comment_action(comments: Sequence[Sequence[object]], runs: dict[int, Run], mine: int, pr: int, sha: str, decides: bool,
-                   review: Review = SECOND) -> str:
+                   review: Review = SECOND, branch: str = "") -> str:
     found = own_comment(comments, review)
     if found is None:
         return "post"
     written_sha, written = comment_state(found[1], review)
-    later = written > mine and written in trusted(runs, mine, pr, written_sha)
+    later = written > mine and written in trusted(runs, mine, pr, written_sha, branch)
     if later and (written_sha != sha or not decides):
         return f"keep {found[0]} {written}"
     return f"patch {found[0]}"
@@ -770,7 +786,8 @@ def order(argv: list[str], env: dict[str, str]) -> int:
     sha, pr = argv[1], int(env["PR"])
     with open(argv[2], encoding="utf-8") as f:
         runs = read_runs(json_lines(f))
-    found, verified = entries(statuses, prefix), trusted(runs, mine, pr, sha)
+    branch = env.get("HEAD_REF", "")
+    found, verified = entries(statuses, prefix), trusted(runs, mine, pr, sha, branch)
     if argv[0] == "settle":
         restore = to_restore(found, verified)
         if restore:
@@ -784,7 +801,8 @@ def order(argv: list[str], env: dict[str, str]) -> int:
         decided = decide(effective(found, verified) | {mine: Entry(state, description, mine, False)})
         print(f"decided_by={decided.run if decided else mine}")
         with open(argv[3], encoding="utf-8") as f:
-            print(f"comment={comment_action(json_lines(f), runs, mine, pr, sha, post == (state, description))}")
+            action = comment_action(json_lines(f), runs, mine, pr, sha, post == (state, description), branch=branch)
+        print(f"comment={action if writes_comment(post, state, description, decided, mine) else 'none'}")
         return 0
     print(USAGE, file=sys.stderr)
     return 2

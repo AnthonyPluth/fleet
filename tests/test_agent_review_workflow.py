@@ -100,8 +100,9 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(second["cancel-in-progress"], "true")
         self.assertTrue(second["group"].startswith("second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-"))
         self.assertIn("&& 'push' ||", second["group"])
-        self.assertIn("format(',{0},', inputs.second-review-labels), format(',{0},', github.event.label.name)) && 'label' || 'other-label'",
-                      second["group"])
+        for pattern in ("',{0},'", "', {0},'", "',{0} ,'", "', {0} ,'"):
+            self.assertIn(f"contains(format(',{{0}},', inputs.second-review-labels), format({pattern}, github.event.label.name))", second["group"])
+        self.assertIn(")) && 'label' || 'other-label' }}", second["group"])
         self.assertNotEqual(second["group"][:13], "agent-review-")
 
     def test_the_pull_request_checkout_keeps_no_credentials_and_every_checkout_says_so(self) -> None:
