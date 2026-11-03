@@ -22,12 +22,30 @@ EVENT_NAME_FILES = ("README.md", "docs/*.md", ".github/workflows/*.y*ml", "plugi
 KEY_PATTERN = re.compile(r"""^(?P<q>["']?)(?P<key>[^"':#][^"':]*)(?P=q)\s*:(?:\s+(?P<value>.*))?$""")
 
 Node: TypeAlias = "dict[str, Node] | list[Node] | str"
+Trail: TypeAlias = tuple[str | int, ...]
+Where: TypeAlias = dict[Trail, int]
+
+
+PROPERTIES = re.compile(r"^(?:[&!]\S*[ \t]*)+")
+
+
+class BlockScalar(str):
+    pass
+
+
+class Alias(str):
+    pass
+
+
+def without_properties(text: str) -> str:
+    return PROPERTIES.sub("", text, count=1)
 
 
 @dataclass(frozen=True)
 class Line:
     indent: int
     text: str
+    number: int = 0
 
 
 def strip_comment(text: str) -> str:
@@ -61,13 +79,15 @@ def lines_of(source: str) -> list[Line]:
         if not text.strip() or text.strip() == "---":
             continue
         indent = len(text) - len(text.lstrip(" "))
-        lines.append(Line(indent, text.strip()))
+        lines.append(Line(indent, text.strip(), index - 1))
         match = KEY_PATTERN.match(text.strip()) if not text.strip().startswith("- ") else None
         value = match.group("value") if match else None
         if value is None and text.strip().startswith("- "):
-            item = KEY_PATTERN.match(text.strip()[2:].strip())
+            item = KEY_PATTERN.match(without_properties(text.strip()[2:].strip()))
             value = item.group("value") if item else None
-        if value is not None and value[:1] in "|>":
+        if value is not None:
+            value = without_properties(value)
+        if value is not None and value[:1] in ("|", ">"):
             while index < len(raw) and (not raw[index].strip() or _indent(raw[index]) > indent):
                 index += 1
     return lines
@@ -77,64 +97,165 @@ def _indent(text: str) -> int:
     return len(text) - len(text.lstrip(" "))
 
 
-def parse(source: str) -> Node:
+def parse(source: str, where: Where | None = None) -> Node:
     lines = lines_of(source)
     if not lines:
         return {}
-    node, _ = _block(lines, 0, lines[0].indent)
+    node, _ = _block(lines, 0, lines[0].indent, (), where)
     return node
 
 
-def _block(lines: list[Line], index: int, indent: int) -> tuple[Node, int]:
+def _block(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
     if lines[index].text.startswith("-"):
-        return _sequence(lines, index, indent)
-    return _mapping(lines, index, indent)
+        return _sequence(lines, index, indent, path, where)
+    return _mapping(lines, index, indent, path, where)
 
 
-def _mapping(lines: list[Line], index: int, indent: int) -> tuple[Node, int]:
+def _mapping(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
     mapping: dict[str, Node] = {}
     while index < len(lines) and lines[index].indent == indent and not lines[index].text.startswith("- "):
         match = KEY_PATTERN.match(lines[index].text)
+        explicit = lines[index].text == "?" or lines[index].text.startswith("? ")
         index += 1
+        if explicit:
+            mapping["?"] = ""
+            while index < len(lines) and lines[index].indent > indent:
+                index += 1
         if match is None:
             continue
         key, value = match.group("key").strip(), match.group("value")
-        if value is not None and value[:1] not in "|>":
-            mapping[key] = unquote(value)
+        if value is not None:
+            value = without_properties(value)
+        here = (*path, key)
+        if where is not None:
+            where[here] = lines[index - 1].number
+        if value is not None and value[:1] in ("|", ">"):
+            mapping[key] = BlockScalar()
+        elif value:
+            mapping[key] = Alias(value) if value.startswith("*") else unquote(value)
             while index < len(lines) and lines[index].indent > indent:
                 index += 1
         elif index < len(lines) and lines[index].indent > indent:
-            mapping[key], index = _block(lines, index, lines[index].indent)
+            mapping[key], index = _block(lines, index, lines[index].indent, here, where)
         elif index < len(lines) and lines[index].indent == indent and lines[index].text.startswith("- "):
-            mapping[key], index = _sequence(lines, index, indent)
+            mapping[key], index = _sequence(lines, index, indent, here, where)
         else:
             mapping[key] = ""
     return mapping, index
 
 
-def _sequence(lines: list[Line], index: int, indent: int) -> tuple[Node, int]:
+def _sequence(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
     items: list[Node] = []
     while index < len(lines) and lines[index].indent == indent and lines[index].text.startswith("-"):
-        rest = lines[index].text[1:].strip()
+        rest = without_properties(lines[index].text[1:].strip())
         index += 1
+        here = (*path, len(items))
         if not rest:
             if index < len(lines) and lines[index].indent > indent:
-                item, index = _block(lines, index, lines[index].indent)
+                item, index = _block(lines, index, lines[index].indent, here, where)
                 items.append(item)
             else:
                 items.append("")
             continue
         if KEY_PATTERN.match(rest):
             inner = indent + 2
-            nested = [Line(inner, rest)]
+            nested = [Line(inner, rest, lines[index - 1].number)]
             while index < len(lines) and lines[index].indent > indent:
                 nested.append(lines[index])
                 index += 1
-            item, _ = _mapping(nested, 0, inner)
+            item, _ = _mapping(nested, 0, inner, here, where)
             items.append(item)
         else:
-            items.append(unquote(rest))
+            items.append(Alias(rest) if rest.startswith("*") else unquote(rest))
     return items, index
+
+
+def flow(text: str) -> "Node | None":
+    source = text.strip()
+    found = _flow_value(source, 0)
+    if found is None or source[found[1]:].strip():
+        return None
+    return found[0]
+
+
+def _skip(source: str, index: int) -> int:
+    while index < len(source) and source[index] in " \t":
+        index += 1
+    return index
+
+
+def _flow_value(source: str, index: int) -> "tuple[Node, int] | None":
+    index = _skip(source, index)
+    if source[index:index + 1] == "{":
+        return _flow_mapping(source, index + 1)
+    if source[index:index + 1] == "[":
+        return _flow_sequence(source, index + 1)
+    return _flow_scalar(source, index)
+
+
+def _flow_scalar(source: str, index: int) -> tuple[str, int] | None:
+    index = _skip(source, index)
+    quote = source[index:index + 1]
+    if quote in ("'", '"'):
+        end = index + 1
+        while end < len(source):
+            if source[end] == quote and not (quote == "'" and source[end + 1:end + 2] == "'"):
+                return source[index + 1:end].replace("''", "'") if quote == "'" else source[index + 1:end], end + 1
+            end += 2 if (source[end] == "\\" and quote == '"') or source[end] == quote else 1
+        return None
+    if quote in ("{", "["):
+        return None
+    end = index
+    while end < len(source) and source[end] not in ",]}":
+        if source[end] == ":" and source[end + 1:end + 2] in ("", " ", ",", "]", "}"):
+            break
+        end += 1
+    return source[index:end].strip(), end
+
+
+def _flow_mapping(source: str, index: int) -> "tuple[Node, int] | None":
+    mapping: dict[str, Node] = {}
+    while True:
+        index = _skip(source, index)
+        if source[index:index + 1] == "}":
+            return mapping, index + 1
+        key = _flow_scalar(source, index)
+        if key is None or not key[0]:
+            return None
+        name, index = key
+        index = _skip(source, index)
+        value: Node = ""
+        if source[index:index + 1] == ":":
+            index = _skip(source, index + 1)
+            if source[index:index + 1] not in (",", "}"):
+                found = _flow_value(source, index)
+                if found is None:
+                    return None
+                value, index = found
+            index = _skip(source, index)
+        mapping[name] = value
+        if source[index:index + 1] == ",":
+            index += 1
+        elif source[index:index + 1] != "}":
+            return None
+
+
+def _flow_sequence(source: str, index: int) -> "tuple[Node, int] | None":
+    items: list[Node] = []
+    while True:
+        index = _skip(source, index)
+        if source[index:index + 1] == "]":
+            return items, index + 1
+        found = _flow_value(source, index)
+        if found is None or found[0] == "":
+            return None
+        item, index = found
+        items.append(item)
+        index = _skip(source, index)
+        if source[index:index + 1] == ",":
+            index += 1
+        elif source[index:index + 1] != "]":
+            return None
 
 
 def is_reusable(workflow: Node) -> bool:
