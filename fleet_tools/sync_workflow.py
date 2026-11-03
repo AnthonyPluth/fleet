@@ -49,7 +49,7 @@ def content_version(root: Path) -> agents_md.Content:
         raise PlanError(f"{agents_md.VERSION_FILE.as_posix()} doesn't exist: adopt fleet's content by hand first "
                         "(`fleet sync --to <the pins' version>` from fleet at that version; docs/adopting.md)")
     try:
-        return agents_md.parse_version_file(path.read_text(encoding="utf-8"))
+        return agents_md.parse_version_file(path.read_bytes().decode("utf-8", errors="replace"))
     except ValueError as error:
         raise PlanError(str(error)) from error
 

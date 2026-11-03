@@ -10,6 +10,7 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ### Fixed
 
+- `fleet drift` and `fleet sync-plan` validate line 2 of `.fleet/version` unmodified, as `tools/fleet` does: a space before or after the commit, or a trailing carriage return, now fails `fleet drift` with a message naming the line (`.fleet/version line 2 holds ...`) instead of passing a file the shim then rejects (#56). What counts as a valid commit is unchanged. `tests/test_drift.py`.
 - `config.load` turns a `pyproject.toml` that isn't valid UTF-8 into `config.ConfigError` ("isn't valid UTF-8") instead of letting `UnicodeDecodeError` escape, so every command that reads the config reports a clean error, and `fleet loop-stats` writes both reports with `harness.commits.total` null and the cause in `missing` instead of aborting (#54). `tests/test_config.py`, `tests/test_checks_runner.py`, `tests/test_loop_stats.py`.
 - `fleet loop-stats` no longer undercounts findings that `review_outcomes.cap()` trimmed: a merged pull request whose outcomes record is at 200 entries or within 4 KiB of 16 KiB is counted in `reviews.unread` and named (by number) in `missing`, and its reviews and findings are left out, instead of being read as complete (#51). `tests/test_loop_stats.py`.
 

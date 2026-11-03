@@ -206,6 +206,15 @@ class Planner(unittest.TestCase):
         write(root, ".fleet/version", "v1.0.0\n")
         self.assertEqual(sync_workflow.plan(root).action, "sync")
 
+    def test_a_commit_with_whitespace_around_it_fails_like_the_shim(self) -> None:
+        root = consumer(self, "v1.1.0", "v1.0.0")
+        for line in (f" {'a' * 40}", f"{'a' * 40} ", f"{'a' * 40}\r"):
+            with self.subTest(line=line):
+                write(root, ".fleet/version", f"v1.0.0\n{line}\n")
+                with self.assertRaises(sync_workflow.PlanError) as raised:
+                    sync_workflow.plan(root)
+                self.assertTrue(str(raised.exception).startswith(f".fleet/version line 2 holds {line!r}: "))
+
     def test_content_newer_than_the_pins_fails(self) -> None:
         with self.assertRaises(sync_workflow.PlanError) as raised:
             sync_workflow.plan(consumer(self, "v1.0.0", "v1.1.0"))
