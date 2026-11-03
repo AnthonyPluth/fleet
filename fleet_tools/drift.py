@@ -112,7 +112,7 @@ def drift(root: Path) -> tuple[list[str], str]:
         problems.append(f"{agents_md.VERSION_FILE.as_posix()} doesn't exist (fleet sync writes it)")
     else:
         try:
-            parsed = agents_md.parse_version_file(version_file.read_text(encoding="utf-8"))
+            parsed = agents_md.parse_version_file(version_file.read_bytes().decode("utf-8", errors="replace"))
             content, commit = parsed.version, parsed.commit
         except ValueError as error:
             problems.append(f"{error}; run `fleet sync`")
