@@ -146,6 +146,24 @@ class Workflow(unittest.TestCase):
         text = GOOD + "      - run: |\n          uses: x/y@v1\n      - uses: x/z@v2\n"
         self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: x/z@v2 isn't pinned by its commit SHA"])
 
+    def test_a_key_after_a_block_scalar_in_the_same_item_is_still_checked(self) -> None:
+        for header in ("- if: >-\n", "- if: |\n", "- name: s\n        if: >-\n", "- &step if: >-\n"):
+            item = "      " + header + "          github.event_name == 'push'\n\n          && true\n        uses: x/y@v1\n"
+            pinned = item.replace("x/y@v1", "x/y@" + "a" * 40 + "   # v1.0.0")
+            with self.subTest(header=header):
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + item), ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + pinned), [])
+        inside = GOOD + "      - if: >-\n          uses: x/y@v1\n        run: echo ok\n"
+        self.assertEqual(wf.check_workflow("x.yml", inside), [])
+        unplaced = GOOD + "      - if: >-\n          uses: x/y@v1\n        run: |\n          uses: x/z@v2\n"
+        self.assertEqual(wf.check_workflow("x.yml", unplaced), ["x.yml: x/z@v2 isn't pinned by its commit SHA"])
+
+    def test_a_block_scalar_whose_end_cant_be_placed_is_not_masked(self) -> None:
+        for header in ("- run: |2\n", "- run: >-4\n"):
+            with self.subTest(header=header):
+                text = GOOD + "      " + header + "          uses: x/y@v1\n"
+                self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+
     def test_text_the_parser_cannot_place_is_still_checked(self) -> None:
         for block in ("- uses: >\n          x/y@v1\n", "- uses: |-\n          x/y@" + "a" * 40 + "\n"):
             with self.subTest(block=block):

@@ -21,6 +21,7 @@ BASH_DEFAULT = re.compile(r"^defaults:[ \t]*\n[ \t]+run:[ \t]*\n(?:[ \t]{4,}\S.*
                           re.MULTILINE)
 EARLY_ENV = re.compile(r"^( {0}| {4})env:[ \t]*\n((?:\1[ ]{2,}\S.*\n)+)", re.MULTILINE)
 STEP_ONLY_CONTEXT = re.compile(r"\$\{\{.*(?<![\w.])(runner|steps|job|env)\.")
+BLOCK_HEADER = re.compile(r"[|>][-+]?$")
 GH_API_LIST = re.compile(r"\bgh api\b[^\n]*per_page=")
 RUNS_ON = ("runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && "
            "(!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && "
@@ -81,11 +82,27 @@ def without_block_scalars(text: str, tree: Node, where: Where) -> str:
         if not isinstance(at(tree, trail), BlockScalar) or trail[:-1] == ("env",) or (
                 len(trail) == 4 and trail[0] == "jobs" and trail[2] == "env"):
             continue
+        header = source[start]
+        if not BLOCK_HEADER.search(strip_comment(header)):
+            continue
+        key = header.lstrip(" ")
+        column = len(header) - len(key)
+        while key.startswith("- "):
+            column += len(key) - len(key[1:].lstrip(" "))
+            key = key[1:].lstrip(" ")
+        index = start + 1
+        while index < len(source) and not source[index].strip():
+            index += 1
+        content = len(source[index]) - len(source[index].lstrip(" ")) if index < len(source) else 0
+        if content <= column:
+            continue
         index = start + 1
         while index < len(source) and index not in placed:
             line = source[index]
             if line.strip():
-                source[index] = line[:len(line) - len(line.lstrip())] + "#" + line[len(line.rstrip("\r\n")):]
+                if len(line) - len(line.lstrip(" ")) < content:
+                    break
+                source[index] = line[:content] + "#" + line[len(line.rstrip("\r\n")):]
             index += 1
     return "".join(source)
 
