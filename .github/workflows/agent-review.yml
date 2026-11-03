@@ -1,13 +1,17 @@
 name: Agent review
 
-# The reusable first review: an independent review of every pull request an AI agent wrote. A fresh Claude Code
-# session, with no access to the session that wrote it, reads the change against main's AGENTS.md and the app's
-# .github/agent-review/context.md and posts its findings as a comment. Its verdict is the "Agent review" commit status
-# on the pull request's head, which the merge gate requires (merge-gate.yml): a blocking finding fails it, and so does
-# a review that couldn't run. A new push reviews again. This is fleet's one copy of the workflow Waypoint and Runway
-# each carried; the parts that differed are inputs (docs/agent-review.md, docs/drift.md).
+# The reusable agent reviews. By default (the owner's policy) only the second review runs, on security-sensitive pull
+# requests (below), and every other pull request gets a passing "Second review" saying "Not a risky pull request";
+# Codex reviews every pull request, outside this workflow, and the merge gate fails on its open P1 and P2 threads.
+# With `first-review: true` an app also gets the first review: an independent review of every pull request an AI agent
+# wrote. A fresh Claude Code session, with no access to the session that wrote it, reads the change against main's
+# AGENTS.md and the app's .github/agent-review/context.md and posts its findings as a comment. Its verdict is the
+# "Agent review" commit status on the pull request's head, which a merge gate that lists it in required-statuses
+# requires (merge-gate.yml): a blocking finding fails it, and so does a review that couldn't run. A new push reviews
+# again. This is fleet's one copy of the workflow Waypoint and Runway each carried; the parts that differed are inputs
+# (docs/agent-review.md, docs/drift.md).
 #
-# The owner's decisions on models: the first review runs on Sonnet for every agent's pull request, fixed in the Review
+# The owner's decisions on models: the first review, where it is on, runs on Sonnet for every agent's pull request, fixed in the Review
 # step of the `review` job below (no input changes it; a change is a fleet pull request), so a first review never runs
 # on a costlier model. The second review (the `second-review` job, FLEET-SECOND-REVIEW) runs on claude-opus-5-5, fixed
 # the same way, on risky pull requests only, as its own "Second review" status. TEMPORARY owner exception: the second
@@ -104,9 +108,9 @@ on:
         type: string
         default: ""
       first-review:
-        description: Run the first review and post its "Agent review" status and comment. false posts neither (a consumer that keeps the first review off).
+        description: Run the first review and post its "Agent review" status and comment. false (the default, the owner's policy) posts neither; true turns it back on for an app that wants it.
         type: boolean
-        default: true
+        default: false
       verification:
         description: Give the reviews the pull request's verification record (the `fleet-verification` block of its description) as `verification.md`, to judge against the change. false (the default) leaves the reviews as they were.
         type: boolean

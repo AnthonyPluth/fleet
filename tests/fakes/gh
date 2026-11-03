@@ -5,7 +5,7 @@
 #   gh api [--paginate] [-X METHOD] [-f k=v]... PATH [--jq FILTER]
 #     A read (no -X) answers with the file for PATH, run through jq -r with FILTER when one is given, as `gh api --jq`
 #     prints raw strings. The file's name is PATH without its query string and its "repos/<owner>/<repo>/" prefix,
-#     with "/" as "__", a 40-digit commit hash as "SHA" and a pull request number as "N":
+#     with "/" as "__", a 40-digit commit hash as "SHA" and a pull request (or its issue) number as "N":
 #       pulls?state=open&base=main       -> pulls.json
 #       actions/runs?head_sha=...        -> actions__runs.json
 #       commits/<sha>/check-runs         -> commits__SHA__check-runs.json
@@ -13,6 +13,8 @@
 #       pulls/12                         -> pulls__N.json
 #       pulls/12/commits                 -> pulls__N__commits.json
 #       pulls/12/files                   -> pulls__N__files.json
+#       pulls/12/reviews                 -> pulls__N__reviews.json
+#       issues/12/comments               -> issues__N__comments.json
 #       graphql (the review threads)     -> graphql.json, the whole GraphQL reply
 #     An answer that changes between looks (CodeQL arriving while the gate polls) is a numbered series: the first read
 #     of a path answers <name>.1.json, the second <name>.2.json, and so on; the last file in the series answers every
@@ -50,7 +52,7 @@ done
 if [ "$method" != GET ]; then echo '{}'; exit 0; fi
 
 name=${path%%\?*}
-name=$(sed -E -e 's#^repos/[^/]+/[^/]+/##' -e 's#/#__#g' -e 's#[0-9a-f]{40}#SHA#g' -e 's#^pulls__[0-9]+#pulls__N#' <<< "$name")
+name=$(sed -E -e 's#^repos/[^/]+/[^/]+/##' -e 's#/#__#g' -e 's#[0-9a-f]{40}#SHA#g' -e 's#^(pulls|issues)__[0-9]+#\1__N#' <<< "$name")
 file="$FAKE_GH_DIR/$name.json"
 if [ ! -f "$file" ]; then
   counter="$FAKE_GH_DIR/.$name.reads"

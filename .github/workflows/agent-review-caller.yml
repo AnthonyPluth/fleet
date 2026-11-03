@@ -4,7 +4,9 @@ name: Agent review
 # can't, and passes the secrets by name. On pull_request_target the caller, and the local workflow it calls, are the
 # base branch's copies, so a pull request can't change how it is reviewed. The job grants what the called jobs ask
 # for (a called workflow can't be given more than its caller has). fleet has no merge gate caller yet, so none is
-# started after the status is set (merge-gate-workflow is empty); the apps keep the default, merge-gate.yml.
+# started after the status is set (merge-gate-workflow is empty); the apps keep the default, merge-gate.yml. It keeps
+# fleet's default review policy, as an app's caller does: no first review (first-review is left at false), and the
+# second review on every pull request that changes a path below or carries a security label.
 on:  # zizmor: ignore[dangerous-triggers] -- runs main's workflow; the pull request's code is only read, never run
   pull_request_target:
     branches: [main]
@@ -17,7 +19,7 @@ jobs:
     permissions:
       contents: read           # fleet, main's instructions and the pull request's code
       pull-requests: write     # the comment (and the pull request's commits and comments)
-      statuses: write          # the "Agent review" status (and the last review's)
+      statuses: write          # the "Second review" status (and the last review's; "Agent review" where it is on)
       actions: write           # start the merge gate
     uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
     with:

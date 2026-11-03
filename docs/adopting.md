@@ -118,7 +118,7 @@ Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `
 
 ## Agent review
 
-`.github/workflows/agent-review.yml` (`workflow_call`) is the independent first review of every agent's pull request: a fresh Claude Code session on Sonnet reads the change against main's `AGENTS.md` and the app's `.github/agent-review/context.md`, posts one comment and sets the "Agent review" status the merge gate requires. It also runs the second review, on `claude-opus-5-5` (temporarily, while Fable is rate-limited; normally `claude-fable-5-1`), of risky pull requests (labelled `safety-critical` or `security`, or changing `.github/**`, `.claude/**` or the paths in `second-review-paths`), as its own comment and "Second review" status; a pull request that isn't risky gets a passing "Second review" saying so, so the gate can require it on every pull request. The design, the re-review, the carried-forward verdict, the second review and the reviewer's isolation are in [agent-review.md](agent-review.md).
+`.github/workflows/agent-review.yml` (`workflow_call`) runs fleet's Claude reviews. By default (the owner's policy: Codex reviews every pull request, the Claude review only security-sensitive ones) it runs only the second review; with `first-review: true` it also runs the independent first review of every agent's pull request: a fresh Claude Code session on Sonnet reads the change against main's `AGENTS.md` and the app's `.github/agent-review/context.md`, posts one comment and sets the "Agent review" status, which the merge gate then requires when the app lists it in `required-statuses`. The second review runs on `claude-opus-5-5` (temporarily, while Fable is rate-limited; normally `claude-fable-5-1`), on risky pull requests (labelled `safety-critical` or `security`, or changing `.github/**`, `.claude/**` or the paths in `second-review-paths`), as its own comment and "Second review" status; a pull request that isn't risky gets a passing "Second review" saying so, so the gate can require it on every pull request. The design, the re-review, the carried-forward verdict, the second review and the reviewer's isolation are in [agent-review.md](agent-review.md).
 
 The caller keeps the triggers and passes the secrets by name (`secrets: inherit` would hand over every secret). It runs from main's copy (`pull_request_target`), so a pull request can't change how it is reviewed, and grants the permissions the called jobs ask for.
 
@@ -137,7 +137,7 @@ jobs:
     permissions:
       contents: read           # main's instructions and the pull request's code
       pull-requests: write     # the comment
-      statuses: write          # the "Agent review" status
+      statuses: write          # the "Second review" status ("Agent review" too, with first-review: true)
       actions: write           # start the merge gate
     uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # v1.1.0
     with:
@@ -165,7 +165,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | Input | Default | What |
 | --- | --- | --- |
 | `generated` | none | Paths left out of `diff.patch` (still listed for the reviewer), one per line. An entry wins over the rule that fixtures, demo and sample data are always read (Runway lists `tests/fixtures/forecast_golden.json`) |
-| `first-review` | `true` | `false` runs no review and posts no status or comment (a consumer that keeps the first review off) |
+| `first-review` | `false` | `true` turns the independent first review back on: the "Agent review" status and comment on every agent's pull request (list `Agent review` in the merge gate's `required-statuses` too). `false`, the default, runs no first review and posts no status or comment for it; the second review runs either way |
 | `verification` | `false` | `true` gives the reviews the description's [verification record](#verification-records) as `verification.md`, to judge against the change: every changed behaviour a dimension, every `verified` row's evidence real, every gap explained ([agent-review.md](agent-review.md#the-verification-record)). An app that sets `[tool.fleet.verification]` passes it |
 | `budget-usd` | `3` | The most a review may spend, in US dollars as Claude Code estimates it |
 | `max-turns` | `60` | The most round trips to the model a review may take |
@@ -377,11 +377,12 @@ Inputs, each with the default fleet's own gate uses:
 | `sha`, `pr` | | The head commit, or a pull request number; one of the two |
 | `required-workflows` | `Security scans`, `CodeQL` | Workflows that must have run, one per line. CodeQL isn't required on Dependabot's pull requests (its default setup skips them) |
 | `ignored-workflows` | none | Workflows whose runs don't count, as a regex alternation (`Preview\|Screenshot diff`). `Merge gate` and `Cancel runs on close` never count |
-| `required-statuses` | `Agent review`, `Second review` | Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests. An empty string requires none |
+| `required-statuses` | `Second review` | Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests. An empty string requires none. An app that turns the first review on passes `Agent review` and `Second review`. Any status that fails fails the gate, required or not |
 | `ignored-apps` | `codecov\|github-actions` | Apps whose check runs don't count (Codecov's are informational; Actions' runs are counted as workflows) |
 | `poll-seconds`, `poll-attempts` | 30, 20 | How long to look again for CodeQL, whose finishing starts no workflow |
 | `blocking-thread-badges` | `P1\|P2` | Badges on a review thread's first comment that fail the gate while the thread is open (Codex marks its findings `P1 Badge`, `P2 Badge`), as a regex alternation of letters and digits. An empty string turns the check off. An outdated thread counts until it is resolved. If the review threads can't be read, the gate stays pending |
 | `blocking-thread-authors` | `chatgpt-codex-connector` | Whose first comment counts toward `blocking-thread-badges`, as a regex alternation of letters, digits and `-` (a bot's login without `[bot]`). Anyone else's badge text is ignored; an empty string lets any author's count |
+| `require-codex-review` | `false` | `true` keeps the gate pending ("Codex review of this commit") until Codex (`chatgpt-codex-connector[bot]`) has reviewed the head commit: a pull request review on that commit, or Codex's comment whose "Reviewed commit" or review state names it (a review that finds nothing is a comment). A review of an older commit doesn't count; Dependabot's pull requests are exempt. Add `issue_comment` to the threads caller (below), since a comment starts no workflow the gate listens to |
 | `automerge-dependabot` | `true` | Merge Dependabot's pull requests once the gate passes (every commit Dependabot's own and verified, same repository, not a draft, no fleet reference changed) |
 | `after-merge-workflows` | `docker.yml security.yml` | Workflow files to start on `main` after such a merge, space-separated; a merge made with the token starts none by itself |
 | `dry-run` | `false` | Print the status posts, the merge and the workflow starts instead of doing them |
@@ -420,7 +421,28 @@ jobs:
 
 Upgrading changes behaviour: an app that adopts this version, or whose pin moves to it, fails its gate on an open P1 or P2 thread. Pass `blocking-thread-badges: ""` to keep the old behaviour.
 
-What each app passes today: Waypoint `required-workflows: Docker image, Security scans, CodeQL` and `required-statuses: ""` (its review is off); Runway the same workflows, `required-statuses: Agent review` and `ignored-workflows: Preview|Screenshot diff`. Both move to the default statuses when they adopt the reviews.
+With `require-codex-review: true` the gate also waits for Codex's review of the head, and a review that finds nothing arrives as a conversation comment, which none of the triggers above sees. Add a second job to the same caller for it (a comment's workflow runs with the base repository's token, so there is no fork to skip; only Codex's own comments on a pull request start it):
+
+```yaml
+on:
+  # …the triggers above, plus:
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  # …decide, as above, with `if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository`
+  codex-comment:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    permissions:
+      actions: write   # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v1.1.0
+    with:
+      pr: ${{ github.event.issue.number }}
+```
+
+The concurrency group then reads `merge-gate-threads-${{ github.event.pull_request.number || github.event.issue.number }}`.
+
+What each app passes today: Waypoint and Runway `required-workflows: Docker image, Security scans, CodeQL`, Runway also `ignored-workflows: Preview|Screenshot diff`, and each app `required-statuses: Second review` with `first-review: false` in its agent review caller (the owner's policy). Those two are the defaults now, so a caller drops them when its pin moves here; an app that wants the first review back passes `first-review: true` and `required-statuses` with both `Agent review` and `Second review`.
 
 ## AGENTS.md blocks
 

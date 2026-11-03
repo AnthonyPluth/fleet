@@ -32,10 +32,9 @@ on:
         type: string
         default: ""
       required-statuses:
-        description: Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests.
+        description: Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests. The default is the second review alone (the owner's policy); an app that turns the first review on adds "Agent review".
         type: string
         default: |
-          Agent review
           Second review
       ignored-apps:
         description: Apps whose check runs don't count, as a regex alternation.
@@ -57,6 +56,10 @@ on:
         description: Logins whose review comment counts toward blocking-thread-badges, as a regex alternation without the "[bot]" suffix (Codex's is chatgpt-codex-connector), so a stranger pasting a badge can't hold the gate. Empty lets any author's badge count.
         type: string
         default: chatgpt-codex-connector
+      require-codex-review:
+        description: Wait for a completed Codex review of the head commit (a review by chatgpt-codex-connector[bot] on it, or its "Reviewed commit" receipt or review summary naming it) before passing; Dependabot's pull requests are exempt. false (the default) asks for none. The caller's merge-gate-threads workflow should then also run on issue_comment, where Codex posts a review that found nothing.
+        type: boolean
+        default: false
       automerge-dependabot:
         description: Merge Dependabot's pull requests once the gate passes (never one that bumps a fleet reference).
         type: boolean
@@ -91,7 +94,7 @@ jobs:
     timeout-minutes: 15   # waiting for CodeQL takes up to 10 at the default poll settings (merge-gate.sh)
     permissions:
       contents: write          # merge Dependabot's pull requests
-      pull-requests: write     # merge them, read their commits and files, and read the review threads
+      pull-requests: write     # merge them, read their commits and files, the review threads and Codex's reviews
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
@@ -118,6 +121,7 @@ jobs:
           POLL_ATTEMPTS: ${{ inputs.poll-attempts }}
           BLOCKING_THREAD_BADGES: ${{ inputs.blocking-thread-badges }}
           BLOCKING_THREAD_AUTHORS: ${{ inputs.blocking-thread-authors }}
+          REQUIRE_CODEX_REVIEW: ${{ inputs.require-codex-review }}
           AUTOMERGE_DEPENDABOT: ${{ inputs.automerge-dependabot }}
           AFTER_MERGE_WORKFLOWS: ${{ inputs.after-merge-workflows }}
           DRY_RUN: ${{ inputs.dry-run }}

@@ -18,6 +18,8 @@ The decisions the backlog made before the extractions; each extraction issue rep
 | AGENTS "Git and PRs" | Open a PR for every change | Open a PR only when asked | Every change | Every push to `main` releases, so all work lands through PRs |
 | `docker.yml`, `tools/control`, verify-* skills | Own | Own | Stay per app (v2 candidates) | Hundreds of lines of app-specific drift |
 
+Since then the owner changed the review policy for every app: Codex reviews every pull request and the Claude review runs only on security-sensitive ones. fleet's defaults follow it: `agent-review.yml`'s `first-review` is `false`, `merge-gate.yml`'s `required-statuses` is `Second review` alone, and the gate fails on an open Codex P1 or P2 thread and on a blocking second review. The rows here record how the apps differed when fleet was extracted; `first-review: true` and `required-statuses` still give an app the first review back ([agent-review.md](agent-review.md#the-default-policy)).
+
 ## The fleet command (`FLEET-TOOLS`)
 
 `tools/fleet_checks.py` (Waypoint 443 lines, Runway 425) became `fleet checks`, split by concern under `fleet_tools/checks/`; each check runs only where the consumer's `[tool.fleet]` configures it ([adopting.md](adopting.md)).

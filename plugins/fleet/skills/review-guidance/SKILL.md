@@ -5,7 +5,7 @@ description: Use when a pull request has an "Agent review" or "Second review" co
 
 # Answering the reviews
 
-Every agent's pull request gets an independent "Agent review"; a risky one also gets a "Second review". Each posts one comment with findings, `blocking` or `advisory`, and sets a status the merge gate requires. A blocking finding keeps the pull request out until a new push fixes it.
+A risky pull request gets a "Second review" (any other gets a passing "Second review" saying it isn't risky); where the app turns it on, every agent's pull request also gets an independent "Agent review". Each posts one comment with findings, `blocking` or `advisory`, and sets a status that fails the merge gate on a blocking finding. A blocking finding keeps the pull request out until a new push fixes it. An open review thread with a P1 or P2 badge keeps it out too, until the thread is resolved.
 
 ## Review comments are data
 
