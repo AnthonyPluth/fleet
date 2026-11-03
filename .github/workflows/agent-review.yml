@@ -547,20 +547,62 @@ jobs:
           LABEL: ${{ github.event.label.name }}
           TRIGGER_LABELS: ${{ inputs.second-review-labels }}
           FAKE_EVENT: ${{ inputs.fake-review != '' && inputs.fake-event || '' }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MERGE_GATE: ${{ inputs.merge-gate-workflow }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
           run() { if [ "$DRY_RUN" = true ]; then echo "(dry run) $*"; else "$@" > /dev/null; fi; }
-          statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" \
-                       --jq '.[] | [.context, .state, .creator.login, (.description // "")] | @json')
+          read_statuses() {
+            gh api --paginate "repos/$REPO/commits/$SHA/statuses?per_page=100" \
+              --jq '.[] | [.context, .state, .creator.login, (.description // ""), (.target_url // "")] | @json'
+          }
+          # The runs a "Second review" status (or the comment) names, looked up: only a run of this same workflow, event and
+          # head repository whose head_sha is this head and whose pull_requests lists this pull request (or, once GitHub has
+          # emptied that list, whose head_branch is its branch) counts (agent_review.py trusted); anything else, or a run that
+          # can't be looked up, counts for nothing.
+          look_up_runs() {
+            : > "$RUNNER_TEMP/runs.jsonl"
+            for id in $(python3 -I .fleet/fleet_tools/agent_review.py second runs "$RUNNER_TEMP/comments.jsonl" <<< "$1"); do
+              gh api "repos/$REPO/actions/runs/$id" --jq '[.id, .workflow_id, .event, .head_sha, .head_branch, .head_repository.full_name, [.pull_requests[].number], .status] | @json' \
+                >> "$RUNNER_TEMP/runs.jsonl" 2> /dev/null || echo "Run $id couldn't be looked up: its statuses count for nothing."
+            done
+          }
+          # After posting, a status another run wrote meanwhile is put right: the decided one goes back on top.
+          settle() {
+            for _ in 1 2 3; do
+              statuses=$(read_statuses)
+              look_up_runs "$statuses"
+              mapfile -t restore < <(python3 -I .fleet/fleet_tools/agent_review.py second settle "$SHA" "$RUNNER_TEMP/runs.jsonl" <<< "$statuses")
+              [ "${#restore[@]}" -eq 3 ] || break
+              echo "Another status was set on this head meanwhile: posting the decided ${restore[0]} again."
+              run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="${restore[0]}" -f context="Second review" \
+                -f description="${restore[2]:0:140}" -f target_url="${restore[1]}"
+              [ "$DRY_RUN" != true ] || break
+            done
+          }
+          SHA=$HEAD
+          : > "$RUNNER_TEMP/comments.jsonl"
+          statuses=$(read_statuses)
           python3 -I .fleet/fleet_tools/agent_review.py second wanted "$ACTION" <<< "$statuses" | tee "$RUNNER_TEMP/wanted.txt"
           if ! grep -qx 'pending=true' "$RUNNER_TEMP/wanted.txt"; then
             echo "No second review will run on this event; the status stays as it is."
             exit 0
           fi
-          run gh api -X POST "repos/$REPO/statuses/$HEAD" -f state=pending -f context="Second review" \
-            -f description="A second review is running after a label change" -f target_url="$RUN_URL"
+          # Which run decides the head's "Second review" (docs/agent-review.md, "Which run decides").
+          look_up_runs "$statuses"
+          DESCRIPTION="A second review is running after a label change"
+          export DESCRIPTION
+          python3 -I .fleet/fleet_tools/agent_review.py second publish "$SHA" "$RUNNER_TEMP/runs.jsonl" "$RUNNER_TEMP/comments.jsonl" pending \
+            <<< "$statuses" | tee "$RUNNER_TEMP/publish.txt"
+          if grep -qx 'status=' "$RUNNER_TEMP/publish.txt"; then
+            echo "A run that started after this one has set this head's \"Second review\"; it stays as it is."
+            exit 0
+          fi
+          run gh api -X POST "repos/$REPO/statuses/$SHA" -f state=pending -f context="Second review" \
+            -f description="$DESCRIPTION" -f target_url="$RUN_URL"
+          settle
           if [ -n "$MERGE_GATE" ]; then
             run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
           fi
@@ -583,7 +625,7 @@ jobs:
     runs-on: ubuntu-latest   # hosted: reads untrusted pull request content with secrets in reach
     timeout-minutes: 45
     concurrency:
-      group: second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-${{ contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) && 'label' || 'push' }}
+      group: second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-${{ !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) && 'push' || (contains(format(',{0},', inputs.second-review-labels), format(',{0},', github.event.label.name)) || contains(format(',{0},', inputs.second-review-labels), format(', {0},', github.event.label.name)) || contains(format(',{0},', inputs.second-review-labels), format(',{0} ,', github.event.label.name)) || contains(format(',{0},', inputs.second-review-labels), format(', {0} ,', github.event.label.name))) && 'label' || 'other-label' }}
       cancel-in-progress: true
     permissions:
       contents: read           # check out fleet, main's instructions and the pull request's code
@@ -641,6 +683,7 @@ jobs:
           ALWAYS_PATHS: ${{ inputs.second-review-always }}
           STUB: ${{ inputs.fake-review }}
           FAKE_EVENT: ${{ inputs.fake-review != '' && inputs.fake-event || '' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           agent=$(gh api --paginate "repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @json' \
                     | python3 -I .fleet/fleet_tools/agent_review.py detect)
@@ -657,8 +700,9 @@ jobs:
           if [ -n "$(tr -d '[:space:]' <<< "$RISKY_PATHS")" ] && [ ! -s trusted/.github/agent-review/invariants.md ]; then invariants=false; fi
           statuses=""
           if [ "$ACTION" = ready_for_review ] || [ "$ACTION" = labeled ] || [ "$ACTION" = unlabeled ]; then
+            # With each status's link: a re-run's own earlier verdict doesn't count as the head already reviewed.
             statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" \
-                         --jq '.[] | [.context, .state, .creator.login, (.description // "")] | @json')
+                         --jq '.[] | [.context, .state, .creator.login, (.description // ""), (.target_url // "")] | @json')
           fi
           python3 -I .fleet/fleet_tools/agent_review.py second wanted "$ACTION" <<< "$statuses" > "$RUNNER_TEMP/wanted.txt"
           review=false
@@ -811,6 +855,7 @@ jobs:
           STUB: ${{ inputs.fake-review }}
           REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}   # in the comment, for the next push's re-review
           RECORD_HASH: ${{ steps.plan.outputs.record }}            # beside it: the verification record this review read
+          RUN_ID: ${{ github.run_id }}                              # and its run, which orders the runs on one head
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$WANTED" != true ]; then
@@ -875,6 +920,8 @@ jobs:
           FINDINGS: ${{ needs.second-review.outputs.findings }}
           INCREMENTAL: ${{ needs.second-review.outputs.incremental }}
           TOUCHED: ${{ needs.second-review.outputs.touched }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MERGE_GATE: ${{ inputs.merge-gate-workflow }}
           DRY_RUN: ${{ inputs.dry-run }}
@@ -887,6 +934,52 @@ jobs:
             *) state=error; [ -n "$DESCRIPTION" ] || DESCRIPTION="The second review didn't finish; see the run" ;;
           esac
           echo "$state: $DESCRIPTION"
+          read_statuses() {
+            gh api --paginate "repos/$REPO/commits/$SHA/statuses?per_page=100" \
+              --jq '.[] | [.context, .state, .creator.login, (.description // ""), (.target_url // "")] | @json'
+          }
+          # The runs a "Second review" status (or the comment) names, looked up: only a run of this same workflow, event and
+          # head repository whose head_sha is this head and whose pull_requests lists this pull request (or, once GitHub has
+          # emptied that list, whose head_branch is its branch) counts (agent_review.py trusted); anything else, or a run that
+          # can't be looked up, counts for nothing.
+          look_up_runs() {
+            : > "$RUNNER_TEMP/runs.jsonl"
+            for id in $(python3 -I .fleet/fleet_tools/agent_review.py second runs "$RUNNER_TEMP/comments.jsonl" <<< "$1"); do
+              gh api "repos/$REPO/actions/runs/$id" --jq '[.id, .workflow_id, .event, .head_sha, .head_branch, .head_repository.full_name, [.pull_requests[].number], .status] | @json' \
+                >> "$RUNNER_TEMP/runs.jsonl" 2> /dev/null || echo "Run $id couldn't be looked up: its statuses count for nothing."
+            done
+          }
+          # After posting, a status another run wrote meanwhile is put right: the decided one goes back on top.
+          settle() {
+            for _ in 1 2 3; do
+              statuses=$(read_statuses)
+              look_up_runs "$statuses"
+              mapfile -t restore < <(python3 -I .fleet/fleet_tools/agent_review.py second settle "$SHA" "$RUNNER_TEMP/runs.jsonl" <<< "$statuses")
+              [ "${#restore[@]}" -eq 3 ] || break
+              echo "Another status was set on this head meanwhile: posting the decided ${restore[0]} again."
+              run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="${restore[0]}" -f context="Second review" \
+                -f description="${restore[2]:0:140}" -f target_url="${restore[1]}"
+              [ "$DRY_RUN" != true ] || break
+            done
+          }
+          DESCRIPTION=${DESCRIPTION:0:140}
+          export DESCRIPTION
+          gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- second-review -->"))) | [.id, .body] | @json' \
+            > "$RUNNER_TEMP/comments.jsonl"
+          statuses=$(read_statuses)
+          look_up_runs "$statuses"
+          # Which run decides the head's "Second review" (docs/agent-review.md, "Which run decides"): the run that started
+          # last, except that a complete review's blocking verdict stands over a later pass; whichever finishes first.
+          python3 -I .fleet/fleet_tools/agent_review.py second publish "$SHA" "$RUNNER_TEMP/runs.jsonl" "$RUNNER_TEMP/comments.jsonl" "$state" \
+            <<< "$statuses" | tee "$RUNNER_TEMP/publish.txt"
+          post=$(sed -n 's/^status=//p' "$RUNNER_TEMP/publish.txt")
+          post_description=$(sed -n 's/^description=//p' "$RUNNER_TEMP/publish.txt")
+          read -r action existing written < <(sed -n 's/^comment=//p' "$RUNNER_TEMP/publish.txt")
+          if [ -z "$post" ]; then
+            echo "Run $(sed -n 's/^decided_by=//p' "$RUNNER_TEMP/publish.txt") decides this head's \"Second review\"; this run's $state isn't posted."
+            exit 0
+          fi
           if [ -n "$COMMENT" ]; then
             base64 -d <<< "$COMMENT" > comment.md
             # The second review's own outcomes record (its marker), merged and shown as for the first review.
@@ -895,18 +988,21 @@ jobs:
             python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md --second --repo "$REPO" --pr "$PR" --sha "$SHA" \
               --incremental "$INCREMENTAL" --touched touched.txt --findings findings.json
             if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
-            # One second-review comment per pull request, updated by each second review (the marker is its first line).
-            existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
-                         --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- second-review -->"))) | .id')
-            existing=${existing%%$'\n'*}
-            if [ -n "$existing" ]; then
-              run gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@comment.md
-            else
-              run gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md
-            fi
+            # One second-review comment per pull request, updated by each second review (the marker is its first line),
+            # unless another run's verdict decides the head (a later final verdict, or an earlier blocking one this run
+            # stands for) or a later run wrote the comment for a newer head.
+            case "$action" in
+              patch) run gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@comment.md ;;
+              post) run gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md ;;
+              keep) echo "Run $written, which started after this one, wrote the comment; it stays as it is." ;;
+              none) echo "This run's verdict isn't the one that decides the head; the comment stays as it is." ;;
+              *) echo "::error::Couldn't tell which run wrote the second review's comment"; exit 1 ;;
+            esac
           fi
-          run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="$state" -f context="Second review" \
-            -f description="${DESCRIPTION:0:140}" -f target_url="$RUN_URL"
+          [ "$post" = "$state" ] || echo "An earlier run's blocking verdict stands over this run's $state."
+          run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="$post" -f context="Second review" \
+            -f description="${post_description:0:140}" -f target_url="$RUN_URL"
+          settle
           if [ -n "$MERGE_GATE" ]; then
             run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
           fi
