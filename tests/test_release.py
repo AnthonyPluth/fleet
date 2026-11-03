@@ -136,10 +136,9 @@ class DisagreementTest(unittest.TestCase):
             self.assertEqual(self_check.check(self.root), [])
 
     def test_a_malformed_snippet_tag_fails(self) -> None:
-        for old, new, found in ((f"tools/fleet sync --to {DOC_TAG}\n", "tools/fleet sync --to v1.0\n", "v1.0"),
+        for old, new, found in ((f"fleet sync --to {DOC_TAG}\n", "fleet sync --to v1.0\n", "v1.0"),
                                 (f"security.yml@<commit>   # {DOC_TAG}", "security.yml@<commit>   # v1.0", "v1.0"),
                                 (f'"ref": "{DOC_TAG}"', '"ref": "1.0.0"', "1.0.0"),
-                                (f"echo {DOC_TAG} > .fleet/version", "echo latest > .fleet/version", "latest"),
                                 (f"<!-- fleet:begin mistakes v{CURRENT} -->", "<!-- fleet:begin mistakes v01.0.0 -->", "v01.0.0")):
             with self.subTest(new=new):
                 root = copy(self)
@@ -147,6 +146,19 @@ class DisagreementTest(unittest.TestCase):
                 errors = self_check.check(root)
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn(f"a snippet says {found}, but VERSION is {CURRENT}", errors[0])
+
+    def test_a_snippet_that_fetches_fleet_at_a_movable_ref_fails(self) -> None:
+        old = 'fleet@<commit>" fleet sync'
+        for ref in (DOC_TAG, "main"):
+            with self.subTest(ref=ref):
+                root = copy(self)
+                edit(root / release.ADOPTING, old, f'fleet@{ref}" fleet sync')
+                errors = self_check.check(root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"a snippet fetches fleet at {ref!r}, a ref that can move; name the commit (`@<commit>`)", errors[0])
+        root = copy(self)
+        edit(root / release.ADOPTING, old, f'fleet@{"a" * 40}" fleet sync')
+        self.assertEqual(self_check.check(root), [])
 
     def test_an_impossible_release_date_fails(self) -> None:
         self.assertEqual(release.changelog_errors("## [Unreleased]\n\n## [1.0.0] - 2026-02-31\n\n- x\n", "1.0.0"),
@@ -225,8 +237,7 @@ class PrepareTest(unittest.TestCase):
             self.assertEqual(re.findall(r"^  FLEET_REF: (\S+)", text, re.MULTILINE), [f"v{NEXT}"], workflow.name)
         adopting = (self.root / release.ADOPTING).read_text(encoding="utf-8")
         self.assertEqual({tag for _, tag in release.snippet_versions(adopting)}, {f"v{NEXT}"})
-        self.assertIn(f"   tools/fleet sync --to v{NEXT}\n", adopting)
-        self.assertIn(f"   echo v{NEXT} > .fleet/version\n", adopting)
+        self.assertIn(f'   uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to v{NEXT}\n', adopting)
         self.assertIn(f'"ref": "v{NEXT}"', adopting)
         self.assertIn(f"review-mining.yml@<commit>   # v{NEXT}", (self.root / "docs" / "review-mining.md").read_text(encoding="utf-8"))
         agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
@@ -240,7 +251,7 @@ class PrepareTest(unittest.TestCase):
         fixtures = self.root / "tests" / "fixtures"
         for consumer in sorted(fixtures.glob("consumer-*")):
             with self.subTest(consumer=consumer.name):
-                self.assertEqual((consumer / ".fleet/version").read_text(encoding="utf-8"), f"v{NEXT}\n")
+                self.assertEqual((consumer / ".fleet/version").read_text(encoding="utf-8"), f"v{NEXT}\n{release.FIXTURE_COMMIT}\n")
                 text = (consumer / "AGENTS.md").read_text(encoding="utf-8")
                 self.assertEqual({block.version for block in agents_md.blocks(text)}, {f"v{NEXT}"})
                 pins = re.findall(r"uses: AnthonyPluth/fleet/\S+@\S+\s+# (\S+)", "".join(
@@ -248,7 +259,7 @@ class PrepareTest(unittest.TestCase):
                 self.assertEqual(set(pins), {f"v{NEXT}"})
                 self.assertIn(f"vendored from fleet v{NEXT} ", (consumer / "tools/fleet").read_text(encoding="utf-8"))
         drifted = fixtures / "drifted"
-        self.assertEqual((drifted / ".fleet/version").read_text(encoding="utf-8"), f"v{NEXT}\n")
+        self.assertEqual((drifted / ".fleet/version").read_text(encoding="utf-8"), f"v{NEXT}\n{release.FIXTURE_COMMIT}\n")
         self.assertEqual({block.version for block in agents_md.blocks((drifted / "AGENTS.md").read_text(encoding="utf-8"))}, {f"v{NEXT}"})
 
     def test_prepare_refuses_a_version_file_with_extra_whitespace(self) -> None:
@@ -600,7 +611,7 @@ class AdoptingTest(unittest.TestCase):
             self.assertIn(f"      {name}: ${{{{ secrets.{name} }}}}", self.text)
 
     def test_the_adoption_steps(self) -> None:
-        for needle in (f"tools/fleet sync --to {DOC_TAG}", ".fleet/version", f'"ref": "{DOC_TAG}"', "Merge gate",
+        for needle in (f"fleet sync --to {DOC_TAG}", ".fleet/version", f'"ref": "{DOC_TAG}"', "Merge gate",
                        'patterns: ["AnthonyPluth/fleet/*"]', "cooldown: { default-days: 3 }", "guides =",
                        "safety-critical", "review-mining", "manual"):
             with self.subTest(needle=needle):

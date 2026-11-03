@@ -9,6 +9,8 @@ ORDER = ("starting-work", "working-in-a-container", "mistakes", "git-and-prs")
 AGENTS = "AGENTS.md"
 VERSION_FILE = Path(".fleet/version")
 VERSION = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+LAST_WITHOUT_COMMIT = "v1.0.0"
 BEGIN = re.compile(r"<!-- fleet:begin (?P<name>[a-z0-9-]+) (?P<version>v\d+\.\d+\.\d+) -->")
 END = re.compile(r"<!-- fleet:end (?P<name>[a-z0-9-]+) -->")
 MARKER = re.compile(r"<!-- fleet:(?:begin|end)\b")
@@ -38,11 +40,41 @@ class Block:
     body_end: int
 
 
+@dataclass(frozen=True)
+class Content:
+    version: str
+    commit: str | None
+
+
 def version_key(version: str) -> tuple[int, int, int]:
     found = VERSION.fullmatch(version)
     if not found:
         raise ValueError(f"{version!r} isn't a version (vX.Y.Z)")
     return int(found.group(1)), int(found.group(2)), int(found.group(3))
+
+
+def needs_commit(version: str) -> bool:
+    return version_key(version) > version_key(LAST_WITHOUT_COMMIT)
+
+
+def render_version_file(version: str, commit: str) -> str:
+    return f"{version}\n{commit}\n"
+
+
+def parse_version_file(text: str) -> Content:
+    name = VERSION_FILE.as_posix()
+    lines = text.removesuffix("\n").split("\n")
+    if len(lines) > 2:
+        raise ValueError(f"{name} has {len(lines)} lines; it holds the version (line 1) and the commit it is at (line 2)")
+    version = lines[0].strip()
+    if not VERSION.fullmatch(version):
+        raise ValueError(f"{name} holds {version[:40]!r}, not a version (vX.Y.Z)")
+    if len(lines) == 1:
+        return Content(version, None)
+    commit = lines[1].strip()
+    if not COMMIT.fullmatch(commit):
+        raise ValueError(f"{name} line 2 holds {commit[:40]!r}, not a commit (40 hex digits)")
+    return Content(version, commit)
 
 
 def parse_section(name: str, text: str) -> Section:

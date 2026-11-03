@@ -4,8 +4,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from fleet_tools import config
+from fleet_tools import config, release, sync
 from fleet_tools.checks import runner
 from fleet_tools.checks.context import Context
 
@@ -13,6 +14,8 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 WAYPOINT = FIXTURES / "consumer-waypoint"
 RUNWAY = FIXTURES / "consumer-runway"
 AGENT = "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_x\n"
+FIXTURE_COMMIT = release.FIXTURE_COMMIT
+OFFLINE_TAGS = mock.patch.object(sync, "ls_remote", side_effect=lambda version: FIXTURE_COMMIT)
 GIT_ENV = {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test",
            "GIT_COMMITTER_EMAIL": "test@example.com", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 

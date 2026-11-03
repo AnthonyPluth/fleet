@@ -9,7 +9,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from consumers import RUNWAY, WAYPOINT, commit, copy, git, temporary, write
+from consumers import (
+    FIXTURE_COMMIT,
+    OFFLINE_TAGS,
+    RUNWAY,
+    WAYPOINT,
+    commit,
+    copy,
+    git,
+    temporary,
+    write,
+)
 
 from fleet_tools import agents_md, cli, drift, vendor
 from fleet_tools.checks import skills
@@ -19,6 +29,14 @@ VERSION = agents_md.own_version()
 PLUGIN = ROOT / "plugins/fleet"
 BASE_SKILLS = {"fix-with-checks", "design-signoff", "agent-task", "review-guidance"}
 REGENERATE = "regenerate it with `poetry run fleet sync --to v$(cat VERSION) --root {}`"
+
+
+def setUpModule() -> None:
+    OFFLINE_TAGS.start()
+
+
+def tearDownModule() -> None:
+    OFFLINE_TAGS.stop()
 
 
 def shipped() -> dict[Path, vendor.Vendored]:
@@ -300,8 +318,10 @@ class OtherVersions(unittest.TestCase):
 
 
 class Shim(unittest.TestCase):
-    def run_shim(self, with_uvx: bool) -> tuple[subprocess.CompletedProcess[str], str]:
+    def run_shim(self, with_uvx: bool, version_file: str | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
         root = copy(self, RUNWAY, repository=False)
+        if version_file is not None:
+            write(root, ".fleet/version", version_file)
         base = temporary(self)
         bin_dir, home, log = base / "bin", base / "home", base / "calls.log"
         bin_dir.mkdir()
@@ -319,16 +339,25 @@ class Shim(unittest.TestCase):
             os.symlink(found, bin_dir / tool)
         done = subprocess.run([str(root / "tools/fleet"), "drift", "--root", "."], capture_output=True, text=True,
                               env={"PATH": str(bin_dir), "HOME": str(home), "LOG": str(log)}, check=False, timeout=30)
-        return done, log.read_text(encoding="utf-8")
+        return done, log.read_text(encoding="utf-8") if log.is_file() else ""
 
     def test_the_shim_runs_the_cli_at_the_consumers_version(self) -> None:
         done, calls = self.run_shim(with_uvx=True)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(calls, f"uvx --from git+https://github.com/AnthonyPluth/fleet@{VERSION} fleet drift --root .\n")
+        self.assertEqual(calls, f"uvx --from git+https://github.com/AnthonyPluth/fleet@{FIXTURE_COMMIT} fleet drift --root .\n")
+
+    def test_the_shim_refuses_a_version_file_without_a_commit(self) -> None:
+        for text in (f"{VERSION}\n", f"{VERSION}\n{FIXTURE_COMMIT[:39]}\n", f"{VERSION}\n{FIXTURE_COMMIT.upper()}\n", ""):
+            with self.subTest(text=text):
+                done, calls = self.run_shim(with_uvx=True, version_file=text)
+                self.assertEqual(done.returncode, 2, done.stderr)
+                self.assertEqual(calls, "")
+                self.assertIn(".fleet/version names no commit on its line 2", done.stderr)
+                self.assertIn('fleet@<the commit your fleet workflow pins name>" fleet sync --to', done.stderr)
 
     def test_the_shim_installs_uv_when_missing(self) -> None:
         done, calls = self.run_shim(with_uvx=False)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(calls.splitlines(), ["python3 -m pip install --quiet --user uv==0.12.21",
-                                              f"uvx --from git+https://github.com/AnthonyPluth/fleet@{VERSION} fleet "
+                                              f"uvx --from git+https://github.com/AnthonyPluth/fleet@{FIXTURE_COMMIT} fleet "
                                               "drift --root ."])

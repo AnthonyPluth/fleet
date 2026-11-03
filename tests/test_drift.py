@@ -9,6 +9,7 @@ from unittest import mock
 from consumers import RUNWAY, WAYPOINT, commit, copy, git, temporary, write
 
 from fleet_tools import agents_md, cli, drift, vendor
+from fleet_tools.release import FIXTURE_COMMIT
 
 VERSION = agents_md.own_version()
 PIN_FILE = ".github/workflows/merge-gate.yml"
@@ -45,8 +46,22 @@ class Clean(unittest.TestCase):
                 self.assertEqual((code, err), (0, ""))
                 vendored = len(vendor.shipped_at(VERSION) or {})
                 self.assertEqual(out, f"fleet drift: no drift: 4 AGENTS.md blocks, {vendored} vendored files and "
-                                      f".fleet/version at {VERSION}; "
+                                      f".fleet/version at {VERSION} (commit {FIXTURE_COMMIT}); "
                                       f"fleet workflow pins: {VERSION}.\n")
+
+    def test_content_from_before_the_commit_line_needs_none(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        write(root, ".fleet/version", f"{VERSION}\n")
+        problems, summary = drift.drift(root)
+        if agents_md.needs_commit(VERSION):
+            self.assertEqual(problems, [f".fleet/version names no commit for {VERSION} on its line 2, which tools/fleet runs "
+                                        f"fleet at; run `fleet sync --to {VERSION}` from fleet at {VERSION}, which writes it"])
+        else:
+            self.assertEqual(problems, [])
+            self.assertIn(f".fleet/version at {VERSION} (no commit: fleet {VERSION} wrote none)", summary)
+        self.assertFalse(agents_md.needs_commit("v1.0.0"))
+        self.assertTrue(agents_md.needs_commit("v1.0.1"))
+        self.assertTrue(agents_md.needs_commit("v1.1.0"))
 
     def test_any_edit_outside_the_blocks_passes(self) -> None:
         rng = random.Random(4)
@@ -107,7 +122,7 @@ class Drifted(unittest.TestCase):
 
     def test_a_marker_version_that_differs_from_the_version_file_fails(self) -> None:
         root = copy(self, RUNWAY, repository=False)
-        write(root, ".fleet/version", older(VERSION) + "\n")
+        write(root, ".fleet/version", f"{older(VERSION)}\n{FIXTURE_COMMIT}\n")
         problems = self.problems(root)
         self.assertIn(f"fleet content is at more than one version: .fleet/version {older(VERSION)}, AGENTS.md "
                       f"starting-work {VERSION}, working-in-a-container {VERSION}, mistakes {VERSION}, git-and-prs "
@@ -142,6 +157,39 @@ class Drifted(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8").replace(f"   # {VERSION}", ""), encoding="utf-8")
         self.assertEqual(self.problems(root), [f"{PIN_FILE}: the fleet pin @0123456789abcdef0123456789abcdef01234567 has "
                                                "no version in a comment (`# vX.Y.Z`)"])
+
+    def test_a_commit_that_differs_from_the_pins_fails(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        write(root, ".fleet/version", f"{VERSION}\n{'f' * 40}\n")
+        self.assertEqual(self.problems(root), [
+            f".fleet/version says fleet {VERSION} is commit {'f' * 40}, but the workflow pins at {VERSION} in {PIN_FILE} name "
+            f"{FIXTURE_COMMIT}; run `fleet sync --to {VERSION}`, which takes the pins' commit"])
+
+    def test_a_commit_is_compared_only_with_pins_at_the_contents_version(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        x, y, _ = agents_md.version_key(VERSION)
+        pin(root, f"v{x}.{y + 1}.0")
+        write(root, ".fleet/version", f"{VERSION}\n{'f' * 40}\n")
+        self.assertEqual(self.problems(root), [])
+
+    def test_pins_at_one_version_naming_two_commits_fail(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        write(root, ".github/workflows/other.yml", f"jobs:\n  x:\n    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@{'f' * 40}   # {VERSION}\n")
+        self.assertEqual(self.problems(root), [
+            f"the fleet pins at {VERSION} name more than one commit: {FIXTURE_COMMIT} in {PIN_FILE}; {'f' * 40} in "
+            ".github/workflows/other.yml; bump them together (Dependabot's fleet group does)"])
+
+    def test_a_malformed_version_file_fails_naming_the_line(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        for text, problem in ((f"{VERSION}\nabc\n", ".fleet/version line 2 holds 'abc', not a commit (40 hex digits)"),
+                              ("latest\n", ".fleet/version holds 'latest', not a version (vX.Y.Z)"),
+                              (f"{VERSION}\n{FIXTURE_COMMIT}\nmore\n", ".fleet/version has 3 lines; it holds the version (line 1) "
+                                                                        "and the commit it is at (line 2)")):
+            with self.subTest(text=text):
+                write(root, ".fleet/version", text)
+                problems = self.problems(root)
+                self.assertIn(f"{problem}; run `fleet sync`", problems)
+                self.assertEqual(len(problems), 1, problems)
 
     def test_a_missing_block_version_file_or_agents_md_fails(self) -> None:
         root = copy(self, RUNWAY, repository=False)
@@ -191,7 +239,7 @@ class OtherVersions(unittest.TestCase):
         assert old is not None
         path = root / "AGENTS.md"
         path.write_text(agents_md.sync(path.read_text(encoding="utf-8"), old, "v0.0.5")[0], encoding="utf-8")
-        write(root, ".fleet/version", "v0.0.5\n")
+        write(root, ".fleet/version", f"v0.0.5\n{FIXTURE_COMMIT}\n")
         pin(root, "v0.0.5")
         return root
 

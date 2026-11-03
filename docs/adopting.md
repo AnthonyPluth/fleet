@@ -9,14 +9,10 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 1. **Pick a release** and pin every fleet workflow at its commit, with the tag in the comment (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<commit>   # vX.Y.Z`). All the pins move together: `sync.yml` fails when they disagree.
 2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining) and [its tasks caller](#ticked-rows-become-agent-tasks), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
 3. **Set `[tool.fleet]`** in `pyproject.toml` ([`[tool.fleet]`](#toolfleet)), key by key: a check runs only where its key is set. Add `[tool.fleet.verification]` (with `guides` once the app has [verification guides](#verification-guides)) when the pull requests carry a [verification record](#verification-records).
-4. **Sync fleet's content** once by hand: `.fleet/version` names the release, the shim `tools/fleet` runs fleet at that version, and the first `tools/fleet sync` writes the `AGENTS.md` blocks and the vendored `.claude/` files. Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
+4. **Sync fleet's content** once by hand, from fleet at the pins' commit: `fleet sync` writes the `AGENTS.md` blocks, the vendored `.claude/` files, the shim `tools/fleet` and `.fleet/version` (the release on line 1, and on line 2 the commit the pins name, which `tools/fleet` runs fleet at, so a moved tag can't change what runs). Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
 
    ```sh
-   mkdir -p .fleet tools
-   echo v1.0.0 > .fleet/version
-   curl -fsSL -o tools/fleet https://raw.githubusercontent.com/AnthonyPluth/fleet/v1.0.0/shim/fleet
-   chmod +x tools/fleet
-   tools/fleet sync --to v1.0.0
+   uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to v1.1.0
    tools/fleet drift
    git add .fleet/version tools/fleet AGENTS.md .claude/
    ```
@@ -71,7 +67,7 @@ jobs:
       security-events: write   # the SARIF uploads
       actions: read            # Scorecard
       id-token: write          # Scorecard publishes its results
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@<commit>   # v1.1.0
     with:
       code-paths: ^(waypoint|frontend/src|\.semgrep)/
       semgrep-paths: waypoint run.py frontend/src
@@ -114,7 +110,7 @@ jobs:
   remind:
     permissions:
       issues: write
-    uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # v1.1.0
 ```
 
 Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `fleet-ref`.
@@ -143,7 +139,7 @@ jobs:
       pull-requests: write     # the comment
       statuses: write          # the "Agent review" status
       actions: write           # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # v1.1.0
     with:
       generated: |
         docs/openapi.json
@@ -206,7 +202,7 @@ jobs:
       contents: read           # AGENTS.md, and the default branch's commits for the loop stats
       issues: write            # the one issue
       pull-requests: read      # the pull requests in the window
-    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v1.1.0
 ```
 
 | Input | Default | What |
@@ -233,7 +229,7 @@ jobs:
   tasks:
     permissions:
       issues: write            # open the task issues and link the report's rows
-    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v1.1.0
 ```
 
 | Input | Default | What |
@@ -364,7 +360,7 @@ jobs:
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@<commit>   # v1.1.0
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
@@ -417,7 +413,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v1.1.0
     with:
       pr: ${{ github.event.pull_request.number }}
 ```
@@ -433,7 +429,7 @@ fleet ships the parts of `AGENTS.md` the apps share as blocks, one file each in 
 ```md
 ## Mistakes that keep coming back
 
-<!-- fleet:begin mistakes v1.0.0 -->
+<!-- fleet:begin mistakes v1.1.0 -->
 …fleet's text, verbatim…
 <!-- fleet:end mistakes -->
 
@@ -444,8 +440,8 @@ Inside the markers is fleet's file at the marker's version, byte for byte; every
 
 | Command | What it does | Exit codes |
 | --- | --- | --- |
-| `fleet sync --to vX.Y.Z` | Run from fleet at that version (the sections ship with the package; a different `--to` is refused). Replaces each marked block, inserts a missing one at the end of its heading (creating the heading at the end of the file if there is none), never changes a byte outside the markers, and writes `.fleet/version`. Running it twice changes nothing. | 0, 2 a marker error (an unclosed, nested, repeated or unknown block) or another version |
-| `fleet drift` | Every block byte-equal to fleet's at the version in its marker (read from this fleet, or from its git history for an older tag), every block fleet ships present, the markers and `.fleet/version` at one version, and that version not newer than any `uses: AnthonyPluth/fleet/…@<sha>   # vX.Y.Z` pin in `.github/workflows/` and in the same major (it may trail the pins while a sync pull request is open). With no fleet pin, there is no pin check. | 0, 1 drift (one problem per line on stderr, `::error::` on GitHub Actions), 2 no app root |
+| `fleet sync --to vX.Y.Z` | Run from fleet at that version (the sections ship with the package; a different `--to` is refused). Replaces each marked block, inserts a missing one at the end of its heading (creating the heading at the end of the file if there is none), never changes a byte outside the markers, and writes `.fleet/version`: the version on line 1 and, on line 2, the commit its tag points at, which `tools/fleet` runs. The commit comes from the workflow pins at that version (`@<commit>   # vX.Y.Z`; pins at that version naming two commits are refused), else from `git ls-remote` of the tag, or from `--commit <sha>`, which must match the pins. Running it twice changes nothing. | 0, 2 a marker error (an unclosed, nested, repeated or unknown block), another version, or no commit for the tag |
+| `fleet drift` | Every block byte-equal to fleet's at the version in its marker (read from this fleet, or from its git history for an older tag), every block fleet ships present, the markers and `.fleet/version` at one version, and that version not newer than any `uses: AnthonyPluth/fleet/…@<sha>   # vX.Y.Z` pin in `.github/workflows/` and in the same major (it may trail the pins while a sync pull request is open), and `.fleet/version`'s commit (line 2) the one the pins at that version name. A missing or malformed commit fails (from v1.1.0 on; v1.0.0 wrote none), and so do pins at one version that name two commits. With no fleet pin, there is no pin check. | 0, 1 drift (one problem per line on stderr, `::error::` on GitHub Actions), 2 no app root |
 
 To adopt: delete the app's copies of the shared bullets, put an empty pair of markers (`<!-- fleet:begin <section> v0.0.0 -->` and `<!-- fleet:end <section> -->` on the next line) where each block should go, above the app's own items under that heading, and run `fleet sync --to vX.Y.Z`. A section without markers is inserted at the end of its heading instead. A line that mentions a marker anywhere else is a marker error, so write about them without the `<!--` form. Commit `AGENTS.md` and `.fleet/version` together.
 
@@ -460,7 +456,7 @@ fleet's Claude Code plugin (`plugins/fleet/`, listed by the marketplace in `.cla
 | `.claude/skills/fleet-<name>/` (prefixed, so the app's own skills never clash) | `plugins/fleet/skills/<name>/` |
 | `.claude/agents/fleet-reviewer.md` | `plugins/fleet/agents/fleet-reviewer.md` |
 | `.claude/hooks/fleet-session-start.sh` (executable) | `plugins/fleet/hooks/session-start.sh` |
-| `tools/fleet` (executable) | `shim/fleet`: runs `uvx --from "git+https://github.com/AnthonyPluth/fleet@$(cat .fleet/version)" fleet "$@"`, installing uv first when it's missing |
+| `tools/fleet` (executable) | `shim/fleet`: runs `uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet "$@"` with the commit on `.fleet/version`'s line 2, installing uv first when it's missing; with no commit there it fails, naming the `fleet sync` that writes it, and never falls back to the tag |
 
 Each starts with a line (after the `#!` line or the front matter's opening `---`) saying it's vendored from fleet at that version and is edited in fleet. `fleet drift` fails when one is missing, differs by a byte from fleet's at `.fleet/version`, has lost its executable bit, or when a file under the `fleet-` names (`.claude/skills/fleet-*/`, `.claude/agents/fleet-*`, `.claude/hooks/fleet-*`) isn't one fleet ships; `fleet sync` replaces them and removes a vendored file a later fleet no longer ships, never the app's own. A fleet version from before the plugin vendors nothing. Commit the vendored files with `AGENTS.md` and `.fleet/version`.
 
@@ -499,12 +495,12 @@ NODE_CHECK="esrap/types/public.d.ts eslint-plugin-svelte"
     ]
   },
   "extraKnownMarketplaces": {
-    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "v1.0.0"}}
+    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "v1.1.0"}}
   }
 }
 ```
 
-The plugin isn't enabled: the vendored copies already give every session the skills, the agent and the hook, and enabling the plugin as well would load each skill twice in a local session (once as `fleet-<name>`, once as `fleet:<name>`) and run the hook twice. Declaring the marketplace lets someone browse or install it by hand. The app deletes its own `.claude/hooks/session-start.sh`; its own skills (`verify-waypoint`, say) stay.
+The plugin isn't enabled: the vendored copies already give every session the skills, the agent and the hook, and enabling the plugin as well would load each skill twice in a local session (once as `fleet-<name>`, once as `fleet:<name>`) and run the hook twice. Declaring the marketplace lets someone browse or install it by hand. The marketplace stays at the tag: Claude Code's marketplace `ref` is a branch or tag (it clones with `git clone --branch`), not a commit, and nothing a session runs comes from it. The app deletes its own `.claude/hooks/session-start.sh`; its own skills (`verify-waypoint`, say) stay.
 
 ## Checks
 
@@ -530,7 +526,7 @@ jobs:
   checks:
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # v1.1.0
     with:
       runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
 ```
@@ -629,7 +625,7 @@ The check `verification-guides` runs where `guides` is set, in a git checkout: e
 
 ## Content sync: two pins, two bots
 
-An app carries two kinds of fleet pin. The **workflow pins** (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<sha>   # vX.Y.Z`) are bumped by Dependabot, in one `fleet` group so they move together; the merge gate passes such a pull request but leaves it for the owner to merge. The **content** (the `AGENTS.md` blocks, the vendored `.claude/` files and `tools/fleet`, `.fleet/version`) is what `fleet sync` writes, and Dependabot can't edit it. `.github/workflows/sync.yml` (`workflow_call`) follows each bump: it reads every fleet pin in the app's workflows (they must agree; if they don't, it fails naming the files), compares with `.fleet/version` and, when the pins are newer in the same major, runs `fleet sync --to <pin>` from a plain clone of fleet at that tag (the planner validates the version first; the one fleet checkout by the action stays at the workflow's pinned ref) and opens, or updates, the pull request `chore: fleet content vX.Y.Z` from the branch `fleet/sync` (rewritten by each run until it merges), with the CHANGELOG entries in between in its body. Pins at a newer major open an issue instead, "fleet vN needs a migration: see CHANGELOG", with the entries to read and the `fleet sync` to run by hand. `fleet drift` lets the content trail the pins within one major, so the app's checks stay green while the sync pull request is open.
+An app carries two kinds of fleet pin. The **workflow pins** (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<sha>   # vX.Y.Z`) are bumped by Dependabot, in one `fleet` group so they move together; the merge gate passes such a pull request but leaves it for the owner to merge. The **content** (the `AGENTS.md` blocks, the vendored `.claude/` files and `tools/fleet`, `.fleet/version`) is what `fleet sync` writes, and Dependabot can't edit it. `.github/workflows/sync.yml` (`workflow_call`) follows each bump: it reads every fleet pin in the app's workflows (they must agree; if they don't, it fails naming the files), compares with `.fleet/version` and, when the pins are newer in the same major, runs `fleet sync --to <pin>` from a plain clone of fleet at that tag (the planner validates the version and the pins' commit first, and the clone must be at that commit, so a moved tag fails the run; the one fleet checkout by the action stays at the workflow's pinned ref), which writes the pins' commit into `.fleet/version`, and opens, or updates, the pull request `chore: fleet content vX.Y.Z` from the branch `fleet/sync` (rewritten by each run until it merges), with the CHANGELOG entries in between in its body. Pins at a newer major open an issue instead, "fleet vN needs a migration: see CHANGELOG", with the entries to read and the `fleet sync` to run by hand. `fleet drift` lets the content trail the pins within one major, so the app's checks stay green while the sync pull request is open.
 
 The second bot is the point: a pull request opened with a workflow's own `GITHUB_TOKEN` starts no workflows, so nothing would check it. The sync pushes and opens its pull request with the `fleet-bot` GitHub App's installation token instead (`FLEET-SETUP` created the App and installed it on the three repositories; the caller passes its `FLEET_BOT_APP_ID` variable as `app-id` and its `FLEET_BOT_PRIVATE_KEY` secret by name). The token is minted by `actions/create-github-app-token` for this repository alone, narrowed to contents and pull requests, used in one step after the content is written, and revoked when the job ends. The App has no Workflows permission, so it couldn't push a change under `.github/workflows/`; the workflow checks that the sync touched nothing there before it commits anyway. Nothing merges by itself: the merge gate and the owner decide. The migration issue uses the workflow's own token (`issues: write`). The sync always reads the default branch, whatever ref a manual run was started from. The caller runs it on a push to `main` that touches the workflows (a merged pin bump), weekly (a bump merged by hand, or a run that failed) and by hand.
 
@@ -660,7 +656,7 @@ jobs:
     permissions:
       contents: read           # the checkout; the pull request is pushed with the App token
       issues: write            # the migration issue
-    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # v1.1.0
     with:
       app-id: ${{ vars.FLEET_BOT_APP_ID }}
       dry-run: ${{ inputs.dry-run || false }}
@@ -675,7 +671,7 @@ jobs:
 | `fixture` | none | Self-test only: build a fixture consumer (`pins=v1.1.0 content=v1.0.0`) in place of the checkout; implies `dry-run` |
 | `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the planner from (fleet's self-test only) |
 
-Secret, passed by name: `FLEET_BOT_PRIVATE_KEY`. Outputs: `action` (`none`, `sync`, `migration`), `title`, `changed` (the sync commit's files, base64) and `body` (base64). `fleet sync-plan --root APP [--changelog CHANGELOG.md --body FILE]` is the planner (`fleet_tools/sync_workflow.py`): it prints the plan as `key=value` lines and exits 1 when the pins disagree, a pin has no version comment, `.fleet/version` is missing or the content is newer than the pins.
+Secret, passed by name: `FLEET_BOT_PRIVATE_KEY`. Outputs: `action` (`none`, `sync`, `migration`), `title`, `changed` (the sync commit's files, base64) and `body` (base64). `fleet sync-plan --root APP [--changelog CHANGELOG.md --body FILE]` is the planner (`fleet_tools/sync_workflow.py`): it prints the plan as `key=value` lines and exits 1 when the pins disagree, a pin has no version comment, the pins at one version name two commits or none (`@main`), `.fleet/version` is missing or malformed, or the content is newer than the pins. The plan's `commit` is the pins' commit.
 
 ## Verify (control smoke, verify flows)
 
@@ -704,7 +700,7 @@ jobs:
     name: Control smoke
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v1.1.0
     with:
       make-target: control-smoke
       timeout-minutes: 20
@@ -750,7 +746,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # v1.1.0
     with:
       dir: screenshots/
 ```
@@ -781,7 +777,7 @@ permissions: {}
 
 jobs:
   cancel:
-    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # v1.1.0
     with:
       groups: '["docker-image-refs/pull/{0}/merge", "security-refs/pull/{0}/merge", "verify-{0}"]'
 ```
@@ -824,7 +820,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # v1.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # v1.1.0
     with:
       image: waypoint
       versions: ${{ inputs.versions }}
