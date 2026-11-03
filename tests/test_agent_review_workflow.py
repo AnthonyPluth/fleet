@@ -56,7 +56,7 @@ class ReusableWorkflowTest(unittest.TestCase):
             "second-review-labels", "second-review-paths", "second-review-always", "second-review-budget-usd", "second-review-max-turns", "fake-event",
         ]))
         inputs = mapping(call["inputs"])
-        self.assertEqual(mapping(inputs["first-review"])["default"], "true")
+        self.assertEqual((mapping(inputs["first-review"])["type"], mapping(inputs["first-review"])["default"]), ("boolean", "false"))
         self.assertEqual((mapping(inputs["verification"])["type"], mapping(inputs["verification"])["default"]), ("boolean", "false"))
         self.assertEqual(mapping(inputs["budget-usd"])["default"], "3")
         self.assertEqual(mapping(inputs["max-turns"])["default"], "60")
@@ -394,6 +394,7 @@ class CallerTest(unittest.TestCase):
         inputs = mapping(job["with"])
         self.assertEqual(inputs["budget-usd"], "${{ vars.AGENT_REVIEW_BUDGET_USD || '3' }}")
         self.assertEqual(inputs["max-turns"], "${{ vars.AGENT_REVIEW_MAX_TURNS || '60' }}")
+        self.assertNotIn("first-review", inputs)
         self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "write", "statuses": "write", "actions": "write"})
         self.assertTrue((cli.ROOT / ".github" / "agent-review" / "context.md").is_file())
 
@@ -419,6 +420,7 @@ class SelfTestTest(unittest.TestCase):
                 self.assertNotIn("verification", inputs, name)
         for job in first.values():
             inputs = mapping(job["with"])
+            self.assertEqual(inputs["first-review"], "true")
             self.assertNotIn("fake-event", inputs)
             answers.append(inputs["fake-review"])
         self.assertEqual(sorted(answers), ["blocking", "malformed", "pass", "verification"])
@@ -439,7 +441,7 @@ class SelfTestTest(unittest.TestCase):
         events = {}
         for name, job in second.items():
             inputs = mapping(job["with"])
-            self.assertEqual(inputs["first-review"], "false")
+            self.assertNotIn("first-review", inputs, name)
             self.assertNotIn("second-review-labels", inputs)
             events[name] = {k: v for k, _, v in (token.partition("=") for token in inputs["fake-event"].split())}
         self.assertEqual(events["second-review-label"]["labels"], "security,docs")
