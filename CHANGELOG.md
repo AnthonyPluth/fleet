@@ -4,6 +4,8 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-03
+
 ### Changed
 
 - `fleet sync --to vX.Y.Z` now moves the `ref` of fleet's Claude Code marketplace in `.claude/settings.json` (an `extraKnownMarketplaces` entry whose `source` is `github` with `repo` `AnthonyPluth/fleet`) to `vX.Y.Z`, rewriting only that value, and `fleet drift` fails while that `ref` differs from `.fleet/version`'s version (#67). Settings without such an entry, or with one that has no `ref`, are left alone (`fleet_tools/marketplace.py`); a `ref` it can't rewrite (one that isn't a string) fails `fleet sync` with exit 2 before it writes anything. What apps do: nothing by hand; the sync pull request after the pin bump to the release that carries this (it runs that release's `fleet sync`) includes the `.claude/settings.json` change. An app whose ref already trails its content (set by hand to an older tag, or to `main`) fails `fleet drift` once its content reaches that release, until the sync moves the ref or it is set to the content's tag. `tests/test_marketplace.py`; the Waypoint fixture consumer declares the marketplace, so the release rehearsal moves it too.
