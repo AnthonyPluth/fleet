@@ -8,6 +8,7 @@ from fleet_tools.self_check import (
     Node,
     Where,
     flow,
+    lines_of,
     parse,
     strip_comment,
 )
@@ -41,17 +42,21 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     if resolves_elsewhere(tree):
         problems.append(f"{name}: the file uses YAML aliases, merge keys or explicit `?` keys, which this check can't resolve "
                         "(write the values out)")
-    if workflow and not only_calls(tree) and not BASH_DEFAULT.search(text):
+    structure = without_block_scalars(text, tree, where)
+    if workflow and not only_calls(tree) and not BASH_DEFAULT.search(structure):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
-    for found in USES.finditer(text):
+    for found in USES.finditer(structure):
         target, rest = found.group(1), found.group(2)
         if target.startswith(("./", "docker://")):
+            continue
+        if target[:1] in ("|", ">"):
+            problems.append(f"{name}: a `uses:` written as a block scalar can't be read (write it on one line)")
             continue
         if not PINNED.search(target):
             problems.append(f"{name}: {target} isn't pinned by its commit SHA")
         elif not re.search(r"#\s*v?\d", rest):
             problems.append(f"{name}: {target} has no version in a comment (`# v1.2.3`)")
-    for block in EARLY_ENV.finditer(text if workflow else ""):
+    for block in EARLY_ENV.finditer(structure if workflow else ""):
         for line in block.group(2).splitlines():
             if context := STEP_ONLY_CONTEXT.search(line):
                 problems.append(f"{name}: `{context.group(1)}` isn't available in a workflow's or job's `env:` (the file "
@@ -67,6 +72,34 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
             problems.append(f"{name}: `{event}` isn't a GitHub Actions event (the file would be invalid and never run)")
     problems += check_runners(name, text, tree, where)
     return problems
+
+
+def without_block_scalars(text: str, tree: Node, where: Where) -> str:
+    source = text.splitlines(keepends=True)
+    placed = {line.number for line in lines_of(text)}
+    for trail, start in where.items():
+        if not isinstance(at(tree, trail), BlockScalar) or trail[:-1] == ("env",) or (
+                len(trail) == 4 and trail[0] == "jobs" and trail[2] == "env"):
+            continue
+        index = start + 1
+        while index < len(source) and index not in placed:
+            line = source[index]
+            if line.strip():
+                source[index] = line[:len(line) - len(line.lstrip())] + "#" + line[len(line.rstrip("\r\n")):]
+            index += 1
+    return "".join(source)
+
+
+def at(node: Node, trail: tuple[str | int, ...]) -> "Node | None":
+    current: Node | None = node
+    for step in trail:
+        if isinstance(current, dict) and isinstance(step, str):
+            current = current.get(step)
+        elif isinstance(current, list) and isinstance(step, int):
+            current = current[step] if step < len(current) else None
+        else:
+            return None
+    return current
 
 
 def resolves_elsewhere(node: Node) -> bool:
