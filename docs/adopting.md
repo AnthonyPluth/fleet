@@ -12,7 +12,7 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 4. **Sync fleet's content** once by hand, from fleet at the pins' commit: `fleet sync` writes the `AGENTS.md` blocks, the vendored `.claude/` files, the shim `tools/fleet` and `.fleet/version` (the release on line 1, and on line 2 the commit the pins name, which `tools/fleet` runs fleet at, so a moved tag can't change what runs). Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
 
    ```sh
-   uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to v2.1.0
+   uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to v2.2.0
    tools/fleet drift
    git add .fleet/version tools/fleet AGENTS.md .claude/
    ```
@@ -67,7 +67,7 @@ jobs:
       security-events: write   # the SARIF uploads
       actions: read            # Scorecard
       id-token: write          # Scorecard publishes its results
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@<commit>   # v2.2.0
     with:
       code-paths: ^(waypoint|frontend/src|\.semgrep)/
       semgrep-paths: waypoint run.py frontend/src
@@ -111,7 +111,7 @@ jobs:
     permissions:
       contents: read   # count the commits since the last scan
       issues: write    # read the earlier issues and open the reminder
-    uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # v2.2.0
 ```
 
 Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `fleet-ref`.
@@ -140,7 +140,7 @@ jobs:
       pull-requests: write     # the comment
       statuses: write          # the "Second review" status ("Agent review" too, with first-review: true)
       actions: write           # start the merge gate, and look up the runs that set "Second review"
-    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # v2.2.0
     with:
       generated: |
         docs/openapi.json
@@ -203,7 +203,7 @@ jobs:
       contents: read           # AGENTS.md, and the default branch's commits for the loop stats
       issues: write            # the one issue
       pull-requests: read      # the pull requests in the window
-    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v2.2.0
 ```
 
 | Input | Default | What |
@@ -230,7 +230,7 @@ jobs:
   tasks:
     permissions:
       issues: write            # open the task issues and link the report's rows
-    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v2.2.0
 ```
 
 | Input | Default | What |
@@ -361,7 +361,7 @@ jobs:
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@<commit>   # v2.2.0
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
@@ -413,7 +413,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.2.0
     with:
       pr: ${{ github.event.pull_request.number }}
 ```
@@ -443,7 +443,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.2.0
     with:
       pr: ${{ github.event.pull_request.number }}
   codex-comment:
@@ -453,7 +453,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.2.0
     with:
       pr: ${{ github.event.issue.number }}
 ```
@@ -469,7 +469,7 @@ fleet ships the parts of `AGENTS.md` the apps share as blocks, one file each in 
 ```md
 ## Mistakes that keep coming back
 
-<!-- fleet:begin mistakes v2.1.0 -->
+<!-- fleet:begin mistakes v2.2.0 -->
 …fleet's text, verbatim…
 <!-- fleet:end mistakes -->
 
@@ -535,7 +535,7 @@ NODE_CHECK="esrap/types/public.d.ts eslint-plugin-svelte"
     ]
   },
   "extraKnownMarketplaces": {
-    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "v2.1.0"}}
+    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "v2.2.0"}}
   }
 }
 ```
@@ -566,7 +566,7 @@ jobs:
   checks:
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # v2.2.0
     with:
       runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
 ```
@@ -696,7 +696,7 @@ jobs:
     permissions:
       contents: read           # the checkout; the pull request is pushed with the App token
       issues: write            # the migration issue
-    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # v2.2.0
     with:
       app-id: ${{ vars.FLEET_BOT_APP_ID }}
       dry-run: ${{ inputs.dry-run || false }}
@@ -740,7 +740,7 @@ jobs:
     name: Control smoke
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v2.2.0
     with:
       make-target: control-smoke
       timeout-minutes: 20
@@ -786,7 +786,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # v2.2.0
     with:
       dir: screenshots/
 ```
@@ -817,7 +817,7 @@ permissions: {}
 
 jobs:
   cancel:
-    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # v2.2.0
     with:
       groups: '["docker-image-refs/pull/{0}/merge", "security-refs/pull/{0}/merge", "verify-{0}"]'
 ```
@@ -860,7 +860,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # v2.1.0
+    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # v2.2.0
     with:
       image: waypoint
       versions: ${{ inputs.versions }}
