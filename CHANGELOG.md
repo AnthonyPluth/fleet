@@ -4,6 +4,15 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the owner's review policy is now fleet's default, as #60 asked (the owner's decision), so an app's callers stop carrying it: `agent-review.yml`'s `first-review` defaults to `false` (no independent "Agent review" status or comment; the second review still runs on a security-sensitive pull request, by `second-review-labels`, `second-review-paths` or `second-review-always`, and passes any other with "Not a risky pull request"), and `merge-gate.yml`'s `required-statuses` defaults to `Second review` alone. The gate's default already fails on a blocking "Second review" and on any open Codex P1 or P2 thread; `tests/test_merge_gate.py` (`DefaultPolicyTest`) now pins exactly that. To change: an app that passes `first-review: false` and `required-statuses: Second review` drops both; one that wants the first review keeps or adds `first-review: true` and `required-statuses` listing `Agent review` and `Second review`. fleet's own caller and self-test follow the default (the self-test's first-review cases pass `first-review: true`).
+- **Breaking:** the shared `mistakes` and `git-and-prs` `AGENTS.md` blocks and the `review-guidance` skill no longer say the independent "Agent review" runs on, and is required for, every pull request: they name the "Second review", open P1 and P2 review threads, and the "Agent review" where the app turns it on, so an app with the first review off no longer contradicts its own blocks (fleet issue #58's first part). They reach an app on its next `fleet sync`.
+
+### Added
+
+- `merge-gate.yml` takes `require-codex-review` (default `false`, which changes nothing): `true` keeps the gate pending ("Codex review of this commit") until `chatgpt-codex-connector[bot]` has reviewed the head commit, by a pull request review on it or its own comment whose "Reviewed commit" (7 or more leading hex digits) or `codex-review-state` line names it; an older commit's review doesn't count, a read that fails stays pending, and Dependabot's pull requests are exempt. `docs/adopting.md` adds the `issue_comment` job a `merge-gate-threads` caller needs for it (fleet issue #58's second part). The fake `gh` serves `issues/<n>/…` paths.
+
 ## [1.1.0] - 2026-11-03
 
 ### Added

@@ -156,8 +156,9 @@ jobs:
       pr: ${{ github.event.pull_request.number }}
       dry-run: true
 
-  # The agent review on this pull request in dry run, with fleet's stub reviewer (tests/fakes/claude) in place of
-  # Claude Code, so the plumbing is tested without a secret: the detection, the last review's state, the checkout and
+  # The agent review on this pull request in dry run, with the first review turned on (`first-review: true`; it is off
+  # by default) and fleet's stub reviewer (tests/fakes/claude) in place of Claude Code, so the plumbing is tested
+  # without a secret: the detection, the last review's state, the checkout and
   # the gathering of the change, the runner script, the verdict and the report job, which prints the comment and the
   # status instead of posting them. Three answers: a pass, a blocking finding, and a malformed answer, which must be
   # an error, never a pass. The called jobs ask for the write permissions the real review needs, so the caller grants
@@ -173,6 +174,7 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
+      first-review: true
       fake-review: pass
       merge-gate-workflow: ""
 
@@ -187,6 +189,7 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
+      first-review: true
       fake-review: blocking
       merge-gate-workflow: ""
 
@@ -201,6 +204,7 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
+      first-review: true
       fake-review: malformed
       merge-gate-workflow: ""
 
@@ -219,6 +223,7 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
+      first-review: true
       fake-review: verification
       verification: true
       merge-gate-workflow: ""
@@ -414,7 +419,8 @@ jobs:
 
   # The second review on this pull request in dry run, with the stub reviewer and a faked event (fake-event, honoured
   # only with fake-review), one case each from FLEET-SECOND-REVIEW's acceptance criteria. The first review is off in
-  # these (first-review: false), and each case's inputs differ, so the calls land in distinct concurrency groups.
+  # these (they leave `first-review` at its default, false, as an app's caller does), and each case's inputs differ, so
+  # the calls land in distinct concurrency groups.
   second-review-label:
     name: Second review (dry run, risky by label, blocking)
     permissions:
@@ -426,7 +432,6 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
-      first-review: false
       fake-review: blocking
       fake-event: action=opened labels=security,docs files=README.md
       merge-gate-workflow: ""
@@ -442,7 +447,6 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
-      first-review: false
       fake-review: pass
       fake-event: action=opened labels=docs files=app/photos/delete.py,README.md
       second-review-paths: |
@@ -461,7 +465,6 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
-      first-review: false
       fake-review: pass
       fake-event: action=synchronize labels= files=.github/workflows/ci.yml
       merge-gate-workflow: ""
@@ -477,7 +480,6 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
-      first-review: false
       fake-review: pass
       fake-event: action=synchronize labels=docs files=README.md,app/app.py
       merge-gate-workflow: ""
@@ -493,7 +495,6 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
-      first-review: false
       fake-review: pass
       fake-event: action=unlabeled sender=octocat label=security labels= files=.github/workflows/ci.yml
       merge-gate-workflow: ""
@@ -509,7 +510,6 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       dry-run: true
-      first-review: false
       fake-review: pass
       fake-event: action=unlabeled sender=${{ github.repository_owner }} label=security labels= files=README.md
       merge-gate-workflow: ""

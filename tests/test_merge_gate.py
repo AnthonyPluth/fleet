@@ -108,7 +108,7 @@ class Gate:
         self.pulls([pull()])
         self.runs([run("Security scans"), codeql_run()])
         self.checks([check("github-code-scanning", "CodeQL"), check("codecov", "codecov/patch", conclusion="failure")])
-        self.statuses([status("Agent review"), status("Second review")])
+        self.statuses([status("Second review")])
         self.threads([])
 
     def record(self, name: str, answer: object) -> None:
@@ -138,6 +138,12 @@ class Gate:
 
     def files(self, files: list[Json]) -> None:
         self.record("pulls__N__files", files)
+
+    def reviews(self, reviews: list[Json]) -> None:
+        self.record("pulls__N__reviews", reviews)
+
+    def comments(self, comments: list[Json]) -> None:
+        self.record("issues__N__comments", comments)
 
     def dependabot(self, files: list[Json] | None = None) -> None:
         self.pulls([pull(author=DEPENDABOT)])
@@ -254,7 +260,7 @@ class DecisionTest(unittest.TestCase):
 
     def test_second_review_failing_is_failure(self) -> None:
         gate = Gate(self)
-        gate.statuses([status("Agent review"), status("Second review", "failure")])
+        gate.statuses([status("Second review", "failure")])
         result = gate.run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.posted, [("failure", "Failed: Second review (failure)")])
@@ -367,6 +373,141 @@ class PollingTest(unittest.TestCase):
         result = gate.run()
         self.assertEqual(result.reads_of("actions/runs"), 1)
         self.assertEqual(result.posted, [("pending", "Waiting for: CodeQL (not started), Second review (not started)")])
+
+
+NOT_RISKY = "Not a risky pull request"
+
+
+def described(context: str, state: str, description: str) -> Json:
+    return {**status(context, state), "description": description}
+
+
+class DefaultPolicyTest(unittest.TestCase):
+    def test_the_defaults_need_only_the_second_review_and_no_agent_review(self) -> None:
+        gate = Gate(self)
+        gate.statuses([described("Second review", "success", NOT_RISKY)])
+        result = gate.run(REQUIRED_STATUSES=None, BLOCKING_THREAD_BADGES=None, BLOCKING_THREAD_AUTHORS=None)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertIn("graphql", [call[2] for call in result.calls if call[1] == "api"])
+
+    def test_the_defaults_fail_on_a_blocking_second_review(self) -> None:
+        gate = Gate(self)
+        gate.statuses([described("Second review", "failure", "1 blocking finding(s); see the comment")])
+        result = gate.run(REQUIRED_STATUSES=None, BLOCKING_THREAD_BADGES=None, BLOCKING_THREAD_AUTHORS=None)
+        self.assertEqual(result.posted, [("failure", "Failed: Second review (failure)")])
+
+    def test_the_defaults_fail_on_any_open_codex_p1_or_p2_thread(self) -> None:
+        for badge in (P1, P2):
+            gate = Gate(self)
+            gate.statuses([described("Second review", "success", NOT_RISKY)])
+            gate.threads([thread(badge), thread(P1, resolved=True), thread(P3)])
+            result = gate.run(REQUIRED_STATUSES=None, BLOCKING_THREAD_BADGES=None, BLOCKING_THREAD_AUTHORS=None)
+            self.assertEqual(result.posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+
+    def test_the_defaults_fail_on_both_at_once(self) -> None:
+        gate = Gate(self)
+        gate.statuses([described("Second review", "failure", "2 blocking finding(s); see the comment")])
+        gate.threads([thread(P2)])
+        result = gate.run(REQUIRED_STATUSES=None, BLOCKING_THREAD_BADGES=None, BLOCKING_THREAD_AUTHORS=None)
+        self.assertEqual(result.posted, [("failure", "Failed: Second review (failure), 1 open P1|P2 review comment")])
+
+    def test_a_failing_agent_review_still_fails_where_an_app_turned_it_on(self) -> None:
+        gate = Gate(self)
+        gate.statuses([status("Agent review", "failure"), status("Second review")])
+        self.assertEqual(gate.run(REQUIRED_STATUSES=None).posted, [("failure", "Failed: Agent review (failure)")])
+
+    def test_the_reusable_workflow_and_the_script_share_the_default(self) -> None:
+        workflow = self_check.parse((cli.ROOT / ".github" / "workflows" / "merge-gate.yml").read_text(encoding="utf-8"))
+        assert isinstance(workflow, dict)
+        trigger = workflow["on"]
+        assert isinstance(trigger, dict)
+        call = trigger["workflow_call"]
+        assert isinstance(call, dict)
+        inputs = call["inputs"]
+        assert isinstance(inputs, dict)
+        text = (cli.ROOT / ".github" / "workflows" / "merge-gate.yml").read_text(encoding="utf-8")
+        self.assertIn("        default: |\n          Second review\n      ignored-apps:", text)
+        codex = inputs["require-codex-review"]
+        assert isinstance(codex, dict)
+        self.assertEqual((codex["type"], codex["default"]), ("boolean", "false"))
+        self.assertIn("required_statuses_text=${REQUIRED_STATUSES-Second review}", SCRIPT.read_text(encoding="utf-8"))
+
+
+CODEX = "chatgpt-codex-connector[bot]"
+
+
+def review(commit_id: str = SHA, author: str = CODEX) -> Json:
+    return {"user": {"login": author}, "commit_id": commit_id, "state": "COMMENTED", "body": "### Codex Review"}
+
+
+def comment(body: str, author: str = CODEX) -> Json:
+    return {"user": {"login": author}, "body": body}
+
+
+def summary(commit_sha: str = SHA, state: str = "completed") -> str:
+    record = {"code_review": {"commit_sha": commit_sha, "status": state}, "security_review": {"commit_sha": None, "status": None}}
+    return f"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {json.dumps(record)} -->\n\n## Codex Review Summary\n"
+
+
+def receipt(prefix: str = SHA[:10]) -> str:
+    return f"<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues.\n\n**Reviewed commit:** `{prefix}`\n"
+
+
+class CodexReviewTest(unittest.TestCase):
+    def gate(self, reviews: list[Json], comments: list[Json]) -> Gate:
+        gate = Gate(self)
+        gate.reviews(reviews)
+        gate.comments(comments)
+        return gate
+
+    def test_off_by_default_reads_nothing_of_codex(self) -> None:
+        result = Gate(self).run()
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertEqual(result.reads_of("/reviews"), 0)
+        self.assertEqual(result.reads_of("/comments"), 0)
+
+    def test_a_head_without_a_codex_review_waits(self) -> None:
+        gate = self.gate([], [comment("@codex review", author="octocat")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+
+    def test_a_review_of_an_older_commit_does_not_count(self) -> None:
+        older = "b" * 40
+        gate = self.gate([review(older)], [comment(summary(older)), comment(receipt(older[:10]))])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+
+    def test_only_codexs_own_reviews_and_comments_count(self) -> None:
+        gate = self.gate([review(author="octocat")], [comment(summary(), author="octocat"), comment(receipt(), author="hubot")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+
+    def test_a_running_review_or_a_short_prefix_does_not_count(self) -> None:
+        gate = self.gate([], [comment(summary(state="in_progress")), comment(receipt(SHA[:6]))])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+
+    def test_a_review_a_receipt_or_a_summary_of_the_head_passes(self) -> None:
+        for reviews, comments in (([review()], []), ([], [comment(receipt())]), ([], [comment(summary())])):
+            gate = self.gate(reviews, comments)
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("success", "Every check passed")])
+
+    def test_a_summary_that_is_not_json_is_ignored(self) -> None:
+        gate = self.gate([], [comment("<!-- codex-review-state:v1 {not json -->")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+
+    def test_reviews_that_cannot_be_read_leave_it_pending(self) -> None:
+        gate = Gate(self)
+        gate.comments([comment(receipt())])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review (couldn't be read)")])
+
+    def test_an_open_p1_still_fails_a_reviewed_head(self) -> None:
+        gate = self.gate([review()], [])
+        gate.threads([thread(P1)])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+
+    def test_dependabot_is_exempt(self) -> None:
+        gate = Gate(self)
+        gate.dependabot()
+        result = gate.run(REQUIRE_CODEX_REVIEW="true")
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertTrue(result.merged)
 
 
 class DependabotTest(unittest.TestCase):
@@ -529,10 +670,14 @@ class ConfigurationTest(unittest.TestCase):
         gate.runs([run("Docker image")])
         gate.statuses([])
         result = gate.run(REQUIRED_WORKFLOWS=None, IGNORED_WORKFLOWS=None, REQUIRED_STATUSES=None, IGNORED_APPS=None)
-        self.assertEqual(result.posted, [(
-            "pending",
-            "Waiting for: Security scans (not started), CodeQL (not started), Agent review (not started), Second review (not started)",
-        )])
+        self.assertEqual(result.posted, [("pending", "Waiting for: Security scans (not started), CodeQL (not started), Second review (not started)")])
+
+    def test_an_app_can_still_require_the_agent_review(self) -> None:
+        gate = Gate(self)
+        statuses = "Agent review\nSecond review\n"
+        self.assertEqual(gate.run(REQUIRED_STATUSES=statuses).posted, [("pending", "Waiting for: Agent review (not started)")])
+        gate.statuses([status("Agent review"), status("Second review")])
+        self.assertEqual(gate.run(REQUIRED_STATUSES=statuses).posted, [("success", "Every check passed")])
 
     def test_empty_configuration_requires_nothing(self) -> None:
         gate = Gate(self)
@@ -578,7 +723,8 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(inputs, dict)
         self.assertEqual(sorted(inputs), sorted([
             "sha", "pr", "required-workflows", "ignored-workflows", "required-statuses", "ignored-apps", "poll-seconds",
-            "poll-attempts", "blocking-thread-badges", "blocking-thread-authors", "automerge-dependabot", "after-merge-workflows", "dry-run", "fleet-ref",
+            "poll-attempts", "blocking-thread-badges", "blocking-thread-authors", "require-codex-review", "automerge-dependabot",
+            "after-merge-workflows", "dry-run", "fleet-ref",
         ]))
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)
@@ -596,7 +742,7 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(env, dict)
         for variable in [
             "REQUIRED_WORKFLOWS", "IGNORED_WORKFLOWS", "REQUIRED_STATUSES", "IGNORED_APPS", "POLL_SECONDS", "POLL_ATTEMPTS",
-            "BLOCKING_THREAD_BADGES", "BLOCKING_THREAD_AUTHORS", "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
+            "BLOCKING_THREAD_BADGES", "BLOCKING_THREAD_AUTHORS", "REQUIRE_CODEX_REVIEW", "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
         ]:
             self.assertIn(variable, env)
 

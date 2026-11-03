@@ -10,12 +10,16 @@
 #     REQUIRED_WORKFLOWS ran at all. CodeQL counts as one of them: GitHub's default setup runs it as a "dynamic" workflow
 #     (not a pull_request one), under the name "PR #<n>";
 #   - every other app's check run (CodeQL, Semgrep, Trivy, zizmor, ...) succeeded, and every commit status did, and the
-#     ones in REQUIRED_STATUSES were set at all: "Agent review" is the independent review, which fails on an agent's
-#     pull request with a blocking finding and passes on anyone else's; "Second review" is the second one, on risky
-#     pull requests. Each must be on the head commit itself: when a review copies a passing verdict forward (a push
-#     that only merged main in), it sets the status on the new head, and a head without one waits.
-#   - no review thread whose first comment has a blocking badge (P1 or P2 by default) is still open: resolving the thread
-#     clears it, and the caller's merge-gate-threads workflow runs the gate again when that happens.
+#     ones in REQUIRED_STATUSES were set at all. The default is "Second review" alone (the owner's policy): the second
+#     review fails on a risky pull request with a blocking finding and passes on any other saying "Not a risky pull
+#     request". "Agent review", the independent first review, is required only where an app turns it on and lists it;
+#     like any status it fails the gate when it fails, required or not. Each must be on the head commit itself: when a
+#     review copies a passing verdict forward (a push that only merged main in), it sets the status on the new head,
+#     and a head without one waits.
+#   - no review thread whose first comment has a blocking badge (P1 or P2 by default, from Codex by default) is still
+#     open: resolving the thread clears it, and the caller's merge-gate-threads workflow runs the gate again when that
+#     happens.
+#   - with REQUIRE_CODEX_REVIEW, Codex has reviewed the head commit itself (not an older one): it waits until then.
 # Anything still running makes it "pending". Workflows and apps that aren't about whether the change is sound are left
 # out (IGNORED_*). When it passes on one of Dependabot's pull requests, it merges it (see the end).
 #
@@ -28,13 +32,16 @@
 #   REQUIRED_WORKFLOWS   workflows that must have run, one per line        (default: Security scans, CodeQL)
 #   IGNORED_WORKFLOWS    workflow names to leave out, as a regex alternation ("Preview|Screenshot diff");
 #                        "Cancel runs on close" and "Merge gate" are always left out
-#   REQUIRED_STATUSES    commit statuses that must be set, one per line    (default: Agent review, Second review)
+#   REQUIRED_STATUSES    commit statuses that must be set, one per line    (default: Second review)
 #   IGNORED_APPS         apps whose check runs don't count, as a regex alternation (default: codecov|github-actions)
 #   POLL_SECONDS, POLL_ATTEMPTS   how long to wait for CodeQL             (default: 30, 20)
 #   BLOCKING_THREAD_BADGES badges on a review thread's first comment that block the merge while the thread is open,
 #                        as a regex alternation; empty turns the check off (default: P1|P2)
 #   BLOCKING_THREAD_AUTHORS logins whose first comment counts, as a regex alternation without a "[bot]" suffix; empty
 #                        lets any author's badge count (default: chatgpt-codex-connector)
+#   REQUIRE_CODEX_REVIEW wait for a completed Codex review of the head (not on Dependabot's pull requests): a review
+#                        by chatgpt-codex-connector[bot] on the head commit, or its comment whose "Reviewed commit" or
+#                        review state names it (default: false)
 #   AUTOMERGE_DEPENDABOT merge Dependabot's pull requests once the gate passes (default: true)
 #   AFTER_MERGE_WORKFLOWS workflow files to start on main after such a merge, space-separated
 #                        (default: docker.yml security.yml)
@@ -43,7 +50,7 @@ set -euo pipefail
 
 CONTEXT="Merge gate"
 required_workflows_text=${REQUIRED_WORKFLOWS-$'Security scans\nCodeQL'}   # take CodeQL out if its default setup is turned off
-required_statuses_text=${REQUIRED_STATUSES-$'Agent review\nSecond review'}   # Dependabot's pull requests aren't reviewed (below)
+required_statuses_text=${REQUIRED_STATUSES-Second review}   # Dependabot's pull requests aren't reviewed (below)
 IGNORED_WORKFLOWS="^(Cancel runs on close|Merge gate${IGNORED_WORKFLOWS:+|$IGNORED_WORKFLOWS})$"
 IGNORED_APPS="^(${IGNORED_APPS-codecov|github-actions})$"   # Codecov's statuses are informational; Actions' runs are counted above
 IGNORED_STATUSES="^(${CONTEXT}|codecov/.*)$"
@@ -59,6 +66,8 @@ OPEN_BADGED_THREADS='.data.repository.pullRequest.reviewThreads.nodes[]
   | select(.isResolved | not)
   | select(("'"$BLOCKING_THREAD_AUTHORS"'" == "") or ((.comments.nodes[0].author.login // "" | sub("\\[bot\\]$"; "")) | test("^('"$BLOCKING_THREAD_AUTHORS"')$")))
   | select((.comments.nodes[0].body // "") | test("!\\[('"$BLOCKING_THREAD_BADGES"') Badge\\]")) | "open"'
+REQUIRE_CODEX_REVIEW=${REQUIRE_CODEX_REVIEW:-false}
+CODEX='chatgpt-codex-connector[bot]'
 AUTOMERGE_DEPENDABOT=${AUTOMERGE_DEPENDABOT:-true}
 AFTER_MERGE_WORKFLOWS=${AFTER_MERGE_WORKFLOWS-docker.yml security.yml}
 FLEET_REFERENCE='AnthonyPluth/fleet/'
@@ -88,6 +97,11 @@ if [ "$(wc -l <<< "$prs")" -gt 1 ]; then
   exit 1
 fi
 IFS=$'\t' read -r number author head_repo draft <<< "$prs"
+CODEX_REVIEWED_HEAD='.[] | select(.user.login == "'"$CODEX"'" and .commit_id == "'"$SHA"'") | "reviewed"'
+CODEX_COMMENTED_HEAD='.[] | select(.user.login == "'"$CODEX"'") | (.body // "") | (
+  (capture("<!-- codex-review-state:v1 (?<s>[^\n]*) -->") | .s | fromjson? | .code_review?
+     | select(.status == "completed" and .commit_sha == "'"$SHA"'") | "reviewed"),
+  (capture("Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`") | .c | select(. as $c | "'"$SHA"'" | startswith($c)) | "reviewed"))'
 echo "Pull request #$number by $author at $SHA"
 # CodeQL's default setup doesn't analyse Dependabot's pull requests (its check says the configurations "were not found"),
 # so none of its runs ever comes: waiting for one would keep the gate pending, and the merge below, forever. A run that
@@ -97,6 +111,7 @@ if [ "$author" = "dependabot[bot]" ]; then
   required=(); for w in "${required_workflows[@]}"; do [ "$w" = CodeQL ] || required+=("$w"); done
   required_workflows=("${required[@]}")
   required_statuses=()
+  REQUIRE_CODEX_REVIEW=false
 fi
 
 list() { local out="" x; for x in "$@"; do out+="${out:+, }$x"; done; echo "$out"; }
@@ -161,6 +176,19 @@ evaluate() {
       [ "$blocking" -eq 0 ] || failing+=("$blocking open $BLOCKING_THREAD_BADGES review comment$([ "$blocking" -eq 1 ] || echo s)")
     else
       pending+=("review threads (couldn't be read)")
+    fi
+  fi
+
+  # 5. With REQUIRE_CODEX_REVIEW, a finished Codex review of this very commit: a pull request review on it (Codex posts
+  # one when it has findings), or Codex's own comment naming it, by the full hash in its review state line or by at
+  # least 7 leading digits after "Reviewed commit:" (a review that found nothing is a comment, not a review). Only
+  # Codex's login counts. A review of an older commit doesn't: the head waits for its own.
+  if [ "$REQUIRE_CODEX_REVIEW" = true ]; then
+    if codex_reviews=$(gh api --paginate "repos/$REPO/pulls/$number/reviews?per_page=100" --jq "$CODEX_REVIEWED_HEAD") &&
+       codex_comments=$(gh api --paginate "repos/$REPO/issues/$number/comments?per_page=100" --jq "$CODEX_COMMENTED_HEAD"); then
+      grep -q reviewed <<< "$codex_reviews$codex_comments" || pending+=("Codex review of this commit")
+    else
+      pending+=("Codex review (couldn't be read)")
     fi
   fi
 
