@@ -555,6 +555,25 @@ class DependabotTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_a_dependabot_pull_request_bumping_a_fleet_reference_merges_when_fleet_bumps_are_on(self) -> None:
+        gate = Gate(self)
+        gate.dependabot([
+            changed_file(
+                ".github/workflows/merge-gate.yml",
+                "-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # v1.0.0\n"
+                "+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb   # v1.1.0\n",
+            ),
+        ])
+        result = gate.run(AUTOMERGE_FLEET_BUMPS="true", AFTER_MERGE_WORKFLOWS="docker.yml fleet-sync.yml")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertTrue(result.merged)
+        self.assertIn(["gh", "pr", "merge", str(NUMBER), "--repo", REPO, "--squash", "--match-head-commit", SHA], result.calls)
+        self.assertIn(["gh", "workflow", "run", "fleet-sync.yml", "--repo", REPO, "--ref", "main"], result.calls)
+        self.assertNotIn("leaving it for the owner", result.stdout)
+        self.assertFalse(gate.run(AUTOMERGE_FLEET_BUMPS="false").merged)
+        self.assertFalse(gate.run(AUTOMERGE_FLEET_BUMPS="true", AUTOMERGE_DEPENDABOT="false").merged)
+
     def test_a_fleet_reference_only_in_unchanged_context_lines_still_merges(self) -> None:
         gate = Gate(self)
         gate.dependabot([
@@ -724,7 +743,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(sorted(inputs), sorted([
             "sha", "pr", "required-workflows", "ignored-workflows", "required-statuses", "ignored-apps", "poll-seconds",
             "poll-attempts", "blocking-thread-badges", "blocking-thread-authors", "require-codex-review", "automerge-dependabot",
-            "after-merge-workflows", "dry-run", "fleet-ref",
+            "automerge-fleet-bumps", "after-merge-workflows", "dry-run", "fleet-ref",
         ]))
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)
@@ -742,7 +761,7 @@ class WorkflowTest(unittest.TestCase):
         assert isinstance(env, dict)
         for variable in [
             "REQUIRED_WORKFLOWS", "IGNORED_WORKFLOWS", "REQUIRED_STATUSES", "IGNORED_APPS", "POLL_SECONDS", "POLL_ATTEMPTS",
-            "BLOCKING_THREAD_BADGES", "BLOCKING_THREAD_AUTHORS", "REQUIRE_CODEX_REVIEW", "AUTOMERGE_DEPENDABOT", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
+            "BLOCKING_THREAD_BADGES", "BLOCKING_THREAD_AUTHORS", "REQUIRE_CODEX_REVIEW", "AUTOMERGE_DEPENDABOT", "AUTOMERGE_FLEET_BUMPS", "AFTER_MERGE_WORKFLOWS", "DRY_RUN", "SHA", "PR", "REPO", "GH_TOKEN", "RUN_URL",
         ]:
             self.assertIn(variable, env)
 
