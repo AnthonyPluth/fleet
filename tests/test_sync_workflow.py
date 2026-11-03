@@ -401,9 +401,10 @@ class Fixture(unittest.TestCase):
 
     def test_the_drifted_fixture_drifts_and_passes_the_checks(self) -> None:
         problems, _ = drift.drift(DRIFTED)
-        self.assertIn(f"AGENTS.md: the mistakes block differs from fleet's at {VERSION}; edit it in fleet "
-                      "(agents-md/sections/mistakes.md), not here, or run `fleet sync`", problems,
-                      "regenerate tests/fixtures/drifted at this VERSION: fleet's blocks with one line added inside mistakes")
+        self.assertEqual([problem for problem in problems if problem.startswith("AGENTS.md")],
+                         [f"AGENTS.md: the mistakes block differs from fleet's at {VERSION}; edit it in fleet "
+                          "(agents-md/sections/mistakes.md), not here, or run `fleet sync`"],
+                         "regenerate tests/fixtures/drifted at this VERSION: fleet's blocks with one line added inside mistakes")
         self.assertEqual((DRIFTED / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{release.FIXTURE_COMMIT}\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
