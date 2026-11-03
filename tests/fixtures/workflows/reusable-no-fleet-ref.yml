@@ -10,4 +10,4 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "FLEET_REF: main"
+      - run: 'echo "FLEET_REF: main"'

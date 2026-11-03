@@ -272,7 +272,15 @@ def reusable_workflows(root: Path) -> list[Path]:
 
     directory = root / WORKFLOWS
     paths = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
-    return [path for path in paths if self_check.is_reusable(self_check.parse(path.read_text(encoding="utf-8")))]
+    found = []
+    for path in paths:
+        try:
+            workflow = self_check.parse(path.read_text(encoding="utf-8"))
+        except self_check.Unreadable as error:
+            raise ReleaseError(self_check.unreadable(path.relative_to(root).as_posix(), error)) from error
+        if self_check.is_reusable(workflow):
+            found.append(path)
+    return found
 
 
 def consumers(root: Path) -> list[Path]:

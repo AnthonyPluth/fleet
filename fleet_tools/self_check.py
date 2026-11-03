@@ -27,14 +27,37 @@ Where: TypeAlias = dict[Trail, int]
 
 
 PROPERTIES = re.compile(r"^(?:[&!]\S*[ \t]*)+")
+HEADER = re.compile(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?")
+WRITE = "write it as block mappings, lists and one-line values"
+ELSEWHERE = "the file uses YAML aliases, merge keys or explicit `?` keys, which this check can't resolve (write the values out)"
+TAB = f"indentation with a tab can't be read (indent with spaces; {WRITE})"
+DOCUMENT = "a YAML document marker other than one `---` at the top can't be read (keep one document per file)"
+DIRECTIVE = "a YAML directive (`%...`) can't be read (remove it)"
+NO_KEY = f"a line that is neither `key: value` nor a list item can't be read ({WRITE})"
+CONTINUED = f"a value that goes on to the next line can't be read ({WRITE}, or as a `|` block)"
+QUOTED = f"a quoted value that doesn't close on its line, or has text after it, can't be read ({WRITE})"
+FLOW = f"a `[...]` or `{{...}}` value that doesn't close on its line can't be read ({WRITE})"
+COMPLEX_KEY = "a `[...]` or `{...}` mapping key can't be read (use a plain or quoted key)"
+NESTED_LIST = "a list item that starts another list on the same line can't be read (put the inner list under a key)"
+BAD_HEADER = "a block scalar header other than `|` or `>` with `-`, `+` or an indentation digit can't be read"
+PLAIN_COLON = "an unquoted value with `: ` in it can't be read (YAML reads it as a mapping; quote the value)"
+DUPLICATE = "a key given twice in one mapping can't be read (keep one)"
+MISPLACED = f"a line indented to none of the levels above it can't be read ({WRITE})"
 
 
 class BlockScalar(str):
     pass
 
 
-class Alias(str):
-    pass
+class Unreadable(ValueError):
+    def __init__(self, number: int, reason: str) -> None:
+        super().__init__(f"line {number + 1}: {reason}")
+        self.number = number
+        self.reason = reason
+
+
+def unreadable(name: str, error: Unreadable) -> str:
+    return f"{name}: {error}"
 
 
 def without_properties(text: str) -> str:
@@ -48,49 +71,75 @@ class Line:
     number: int = 0
 
 
+def escaped(text: str, index: int, quote: str) -> bool:
+    return text[index] == "\\" if quote == '"' else text[index:index + 2] == "''"
+
+
 def strip_comment(text: str) -> str:
     quote = ""
-    for index, char in enumerate(text):
+    index = 0
+    while index < len(text):
+        char = text[index]
         if quote:
-            if char == quote:
+            if escaped(text, index, quote):
+                index += 1
+            elif char == quote:
                 quote = ""
         elif char in "\"'" and (index == 0 or text[index - 1] in " :[{,-"):
             quote = char
         elif char == "#" and (index == 0 or text[index - 1] in " \t"):
             return text[:index].rstrip()
+        index += 1
     return text.rstrip()
 
 
-def unquote(text: str) -> str:
-    text = text.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1]
-    return text
+def is_item(text: str) -> bool:
+    return text == "-" or text.startswith(("- ", "-\t"))
+
+
+def is_explicit(text: str) -> bool:
+    return text == "?" or text.startswith(("? ", "?\t"))
 
 
 def lines_of(source: str) -> list[Line]:
-    lines = []
+    lines: list[Line] = []
     raw = source.splitlines()
     index = 0
+    started = False
     while index < len(raw):
-        line = raw[index]
+        number = index
+        text = strip_comment(raw[index])
         index += 1
-        text = strip_comment(line)
-        if not text.strip() or text.strip() == "---":
+        stripped = text.strip()
+        if not stripped:
             continue
-        indent = len(text) - len(text.lstrip(" "))
-        lines.append(Line(indent, text.strip(), index - 1))
-        match = KEY_PATTERN.match(text.strip()) if not text.strip().startswith("- ") else None
-        value = match.group("value") if match else None
-        if value is None and text.strip().startswith("- "):
-            item = KEY_PATTERN.match(without_properties(text.strip()[2:].strip()))
-            value = item.group("value") if item else None
-        if value is not None:
-            value = without_properties(value)
+        indent = _indent(text)
+        if "\t" in text[:len(text) - len(text.lstrip(" \t"))]:
+            raise Unreadable(number, TAB)
+        if indent == 0 and stripped == "---" and not lines and not started:
+            started = True
+            continue
+        if indent == 0 and (stripped in ("---", "...") or stripped.startswith(("--- ", "---\t", "... ", "...\t"))):
+            raise Unreadable(number, DOCUMENT)
+        if indent == 0 and stripped.startswith("%"):
+            raise Unreadable(number, DIRECTIVE)
+        lines.append(Line(indent, stripped, number))
+        value = _inline_value(stripped)
         if value is not None and value[:1] in ("|", ">"):
             while index < len(raw) and (not raw[index].strip() or _indent(raw[index]) > indent):
                 index += 1
     return lines
+
+
+def _inline_value(text: str) -> str | None:
+    if is_item(text):
+        rest = without_properties(text[1:].strip())
+        item = KEY_PATTERN.match(rest)
+        value = item.group("value") if item else rest
+    else:
+        match = KEY_PATTERN.match(text)
+        value = match.group("value") if match else None
+    return None if value is None else without_properties(value)
 
 
 def _indent(text: str) -> int:
@@ -101,43 +150,92 @@ def parse(source: str, where: Where | None = None) -> Node:
     lines = lines_of(source)
     if not lines:
         return {}
-    node, _ = _block(lines, 0, lines[0].indent, (), where)
+    node, index = _block(lines, 0, lines[0].indent, (), where)
+    if index < len(lines):
+        raise Unreadable(lines[index].number, MISPLACED)
     return node
 
 
 def _block(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
-    if lines[index].text.startswith("-"):
+    if is_item(lines[index].text):
         return _sequence(lines, index, indent, path, where)
     return _mapping(lines, index, indent, path, where)
 
 
+def _key(line: Line) -> tuple[str, str | None]:
+    text = without_properties(line.text)
+    if is_explicit(line.text) or is_explicit(text) or text.startswith("*"):
+        raise Unreadable(line.number, ELSEWHERE)
+    if text[:1] in ("[", "{"):
+        raise Unreadable(line.number, COMPLEX_KEY)
+    match = KEY_PATTERN.match(text)
+    if match is None:
+        raise Unreadable(line.number, NO_KEY)
+    key, value = match.group("key").strip(), match.group("value")
+    if key == "<<":
+        raise Unreadable(line.number, ELSEWHERE)
+    return key, None if value is None else without_properties(value)
+
+
+def _scalar(text: str, number: int) -> Node:
+    if text[:1] == "|" or text[:1] == ">":
+        if not HEADER.fullmatch(text):
+            raise Unreadable(number, BAD_HEADER)
+        return BlockScalar()
+    if text.startswith("*"):
+        raise Unreadable(number, ELSEWHERE)
+    if text[:1] in ("'", '"'):
+        found = _flow_scalar(text, 0)
+        if found is None or found[1] != len(text):
+            raise Unreadable(number, QUOTED)
+        return found[0]
+    if text[:1] in ("[", "{"):
+        if not _closes(text):
+            raise Unreadable(number, FLOW)
+    elif re.search(r":(?:[ \t]|$)", text):
+        raise Unreadable(number, PLAIN_COLON)
+    return text
+
+
+def _closes(text: str) -> bool:
+    depth = 0
+    quote = ""
+    index = -1
+    while index + 1 < len(text):
+        index += 1
+        char = text[index]
+        if quote:
+            if escaped(text, index, quote):
+                index += 1
+            elif char == quote:
+                quote = ""
+        elif char in "\"'" and text[index - 1:index] in ("", " ", "[", "{", ",", ":"):
+            quote = char
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+    return depth <= 0 and not quote
+
+
 def _mapping(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
     mapping: dict[str, Node] = {}
-    while index < len(lines) and lines[index].indent == indent and not lines[index].text.startswith("- "):
-        match = KEY_PATTERN.match(lines[index].text)
-        explicit = lines[index].text == "?" or lines[index].text.startswith("? ")
+    while index < len(lines) and lines[index].indent == indent and not is_item(lines[index].text):
+        line = lines[index]
         index += 1
-        if explicit:
-            mapping["?"] = ""
-            while index < len(lines) and lines[index].indent > indent:
-                index += 1
-        if match is None:
-            continue
-        key, value = match.group("key").strip(), match.group("value")
-        if value is not None:
-            value = without_properties(value)
+        key, value = _key(line)
+        if key in mapping:
+            raise Unreadable(line.number, DUPLICATE)
         here = (*path, key)
         if where is not None:
-            where[here] = lines[index - 1].number
-        if value is not None and value[:1] in ("|", ">"):
-            mapping[key] = BlockScalar()
-        elif value:
-            mapping[key] = Alias(value) if value.startswith("*") else unquote(value)
-            while index < len(lines) and lines[index].indent > indent:
-                index += 1
+            where[here] = line.number
+        if value:
+            mapping[key] = _scalar(value, line.number)
+            if index < len(lines) and lines[index].indent > indent:
+                raise Unreadable(lines[index].number, CONTINUED)
         elif index < len(lines) and lines[index].indent > indent:
             mapping[key], index = _block(lines, index, lines[index].indent, here, where)
-        elif index < len(lines) and lines[index].indent == indent and lines[index].text.startswith("- "):
+        elif index < len(lines) and lines[index].indent == indent and is_item(lines[index].text):
             mapping[key], index = _sequence(lines, index, indent, here, where)
         else:
             mapping[key] = ""
@@ -146,8 +244,10 @@ def _mapping(lines: list[Line], index: int, indent: int, path: Trail, where: Whe
 
 def _sequence(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
     items: list[Node] = []
-    while index < len(lines) and lines[index].indent == indent and lines[index].text.startswith("-"):
-        rest = without_properties(lines[index].text[1:].strip())
+    while index < len(lines) and lines[index].indent == indent and is_item(lines[index].text):
+        line = lines[index]
+        written = line.text[1:].strip()
+        rest = without_properties(written)
         index += 1
         here = (*path, len(items))
         if not rest:
@@ -157,16 +257,28 @@ def _sequence(lines: list[Line], index: int, indent: int, path: Trail, where: Wh
             else:
                 items.append("")
             continue
-        if KEY_PATTERN.match(rest):
-            inner = indent + 2
-            nested = [Line(inner, rest, lines[index - 1].number)]
+        if is_explicit(rest):
+            raise Unreadable(line.number, ELSEWHERE)
+        if is_item(rest):
+            raise Unreadable(line.number, NESTED_LIST)
+        if rest == ":" or rest.startswith((": ", ":\t")):
+            raise Unreadable(line.number, NO_KEY)
+        if rest[:1] not in ("[", "{") and KEY_PATTERN.match(rest):
+            inner = indent + len(line.text) - len(line.text[1:].lstrip(" \t"))
+            nested = [Line(inner, written, line.number)]
             while index < len(lines) and lines[index].indent > indent:
                 nested.append(lines[index])
                 index += 1
-            item, _ = _mapping(nested, 0, inner, here, where)
+            item, used = _mapping(nested, 0, inner, here, where)
+            if used < len(nested):
+                raise Unreadable(nested[used].number, MISPLACED)
             items.append(item)
         else:
-            items.append(Alias(rest) if rest.startswith("*") else unquote(rest))
+            items.append(_scalar(rest, line.number))
+            if where is not None and isinstance(items[-1], BlockScalar):
+                where[here] = line.number
+            if index < len(lines) and lines[index].indent > indent:
+                raise Unreadable(lines[index].number, CONTINUED)
     return items, index
 
 
@@ -282,9 +394,15 @@ def check(root: Path) -> list[str]:
     expected = expected_ref(version)
     directory = root / WORKFLOWS
     files = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
+    trees: dict[str, Node] = {}
     for path in files:
         name = path.relative_to(root).as_posix()
-        workflow = parse(path.read_text(encoding="utf-8"))
+        try:
+            workflow = parse(path.read_text(encoding="utf-8"))
+        except Unreadable as error:
+            errors.append(unreadable(name, error))
+            continue
+        trees[path.name] = workflow
         if not is_reusable(workflow) or not isinstance(workflow, dict):
             continue
         env = workflow.get("env")
@@ -297,8 +415,8 @@ def check(root: Path) -> list[str]:
     self_test = directory / SELF_TEST
     if not self_test.is_file():
         errors.append(f"{(WORKFLOWS / SELF_TEST).as_posix()}: missing")
-    else:
-        errors.extend(check_self_test(self_test.relative_to(root).as_posix(), parse(self_test.read_text("utf-8"))))
+    elif SELF_TEST in trees:
+        errors.extend(check_self_test(self_test.relative_to(root).as_posix(), trees[SELF_TEST]))
     errors.extend(check_event_names(root))
     errors.extend(release.check(root, version))
     return errors
