@@ -4,6 +4,8 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-03
+
 ### Changed
 
 - `docs/adopting.md`'s Dependabot step now runs the `github-actions` entry daily and keeps a 7-day cooldown for every action, fleet's pins included, in place of a weekly Monday entry with a 3-day cooldown; the `fleet` group's `patterns` list `AnthonyPluth/fleet` beside `AnthonyPluth/fleet/*`, since Dependabot may name a reusable workflow by its repository alone. The cooldown counts from the release date, so a release's pin bump now opens on the first daily run once it is 7 days old (a Tuesday release, the next Tuesday). A weekly Monday entry waits for the first Monday after that: up to about 10 days with the 3-day cooldown the snippet used to suggest, and 13 or 14 days with the 7-day one the apps set (v2.1.0, out on a Tuesday, is 6 days old on the next Monday and would have waited until the second, 13 days). The cooldown stays for fleet because the bump pull request's CI runs the new fleet code as soon as it opens; the merge gate still leaves fleet bumps for the owner to merge. `docs/release.md` step 6 says the same. What apps do: the same change in their `.github/dependabot.yml`.
