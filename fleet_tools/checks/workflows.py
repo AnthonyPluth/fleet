@@ -47,7 +47,10 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     for line in text.splitlines():
         if GH_API_LIST.search(line) and "--paginate" not in line:
             problems.append(f"{name}: `gh api ... per_page=` without --paginate reads only the first page: {line.strip()[:80]}")
-    for event in events(text) if workflow else []:
+    named = events(text) if workflow else []
+    if named is None:
+        problems.append(f"{name}: the events under `on:` can't be read (write them as a block mapping or a list)")
+    for event in named or []:
         if event not in EVENTS:
             problems.append(f"{name}: `{event}` isn't a GitHub Actions event (the file would be invalid and never run)")
     for found in RUNS_ON_LINE.finditer(text):
@@ -69,14 +72,48 @@ def only_calls(text: str) -> bool:
                for job in jobs.values())
 
 
-def events(text: str) -> list[str]:
+def events(text: str) -> list[str] | None:
     workflow = parse(text)
     trigger = workflow.get("on", "") if isinstance(workflow, dict) else ""
     if isinstance(trigger, dict):
         return list(trigger)
     if isinstance(trigger, list):
         return [item for item in trigger if isinstance(item, str)]
-    return [] if trigger.startswith("{") else re.findall(r"[A-Za-z_]+", trigger)
+    if trigger.startswith("{"):
+        return flow_keys(trigger)
+    return re.findall(r"[A-Za-z_]+", trigger)
+
+
+def flow_keys(text: str) -> list[str] | None:
+    keys: list[str] = []
+    depth, token, quote = 0, "", ""
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = ""
+            elif depth == 1:
+                token += char
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "{[":
+            depth += 1
+            token = ""
+        elif char in "}]":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 1 and char == ",":
+            token = ""
+        elif depth == 1 and char == ":":
+            key = token.strip()
+            if not re.fullmatch(r"[A-Za-z_]+", key):
+                return None
+            keys.append(key)
+            token = "\0"
+        elif depth == 1 and token != "\0":
+            token += char
+    return keys if depth == 0 and keys else None
 
 
 def parent_key(text: str, offset: int) -> str | None:

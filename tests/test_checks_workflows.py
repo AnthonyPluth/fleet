@@ -83,15 +83,25 @@ class Workflow(unittest.TestCase):
 
     def test_an_event_outside_the_ones_actions_has_fails(self) -> None:
         for bad in ("on:\n  pull_request_review_thread:\n    types: [resolved]\n", "on: [push, pull_request_review_thread]\n",
-                    "on: pull_request_review_thread\n"):
+                    "on: pull_request_review_thread\n", "on: {push: null, pull_request_review_thread: null}\n",
+                    "on: {push: {branches: [main]}, 'pull_request_review_thread': {types: [resolved]}}\n"):
             with self.subTest(bad=bad):
                 text = re.sub(r"^on:\n(?:  .*\n)+", bad, CALLER, flags=re.MULTILINE)
                 self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: `pull_request_review_thread` isn't a GitHub "
                                                                     "Actions event (the file would be invalid and never run)"])
-        for fine in ("on: [push, pull_request]\n", "on: workflow_dispatch\n", '"on":\n  schedule:\n    - cron: "1 2 * * *"\n'):
+        for fine in ("on: [push, pull_request]\n", "on: workflow_dispatch\n", '"on":\n  schedule:\n    - cron: "1 2 * * *"\n',
+                     "on: {push: null, workflow_dispatch: null}\n",
+                     'on: {push: {branches: [main]}, "schedule": [{cron: "1 2 * * *"}], pull_request: }\n'):
             with self.subTest(fine=fine):
                 text = re.sub(r"^on:\n(?:  .*\n)+", fine, CALLER, flags=re.MULTILINE)
                 self.assertEqual(wf.check_workflow("x.yml", text), [])
+
+    def test_an_on_value_that_cant_be_read_is_reported_not_accepted(self) -> None:
+        for unreadable in ("on: {push: null\n", "on: {}\n", "on: {push, pull_request}\n", "on: {push: {a: b}}}\n"):
+            with self.subTest(unreadable=unreadable):
+                text = re.sub(r"^on:\n(?:  .*\n)+", unreadable, CALLER, flags=re.MULTILINE)
+                self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: the events under `on:` can't be read (write "
+                                                                    "them as a block mapping or a list)"])
 
     def test_fleets_documented_callers_pass(self) -> None:
         found = snippets()
