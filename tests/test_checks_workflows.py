@@ -134,6 +134,58 @@ class Workflow(unittest.TestCase):
         text = GOOD + "      - run: |\n          echo on: {nope}\n          runs-on: nope\n"
         self.assertEqual(wf.check_workflow("x.yml", text), [])
 
+    def test_a_uses_line_inside_a_block_scalar_is_text_not_a_step(self) -> None:
+        for block in ("- run: |\n          uses: x/y@v1\n", "- run: >\n          uses: x/y@v1\n",
+                      "- run: |-\n\n          - uses: x/y@v1   # v1\n          echo done\n",
+                      "- name: s\n        run: >-\n          uses: x/y@v1\n",
+                      "- uses: ./.github/actions/local\n        with:\n          script: |\n            uses: x/y@v1\n"):
+            with self.subTest(block=block):
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + "      " + block), [])
+
+    def test_a_real_unpinned_step_is_still_flagged_after_a_block_scalar(self) -> None:
+        text = GOOD + "      - run: |\n          uses: x/y@v1\n      - uses: x/z@v2\n"
+        self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: x/z@v2 isn't pinned by its commit SHA"])
+
+    def test_a_key_after_a_block_scalar_in_the_same_item_is_still_checked(self) -> None:
+        for header in ("- if: >-\n", "- if: |\n", "- name: s\n        if: >-\n", "- &step if: >-\n"):
+            item = "      " + header + "          github.event_name == 'push'\n\n          && true\n        uses: x/y@v1\n"
+            pinned = item.replace("x/y@v1", "x/y@" + "a" * 40 + "   # v1.0.0")
+            with self.subTest(header=header):
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + item), ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + pinned), [])
+        inside = GOOD + "      - if: >-\n          uses: x/y@v1\n        run: echo ok\n"
+        self.assertEqual(wf.check_workflow("x.yml", inside), [])
+        unplaced = GOOD + "      - if: >-\n          uses: x/y@v1\n        run: |\n          uses: x/z@v2\n"
+        self.assertEqual(wf.check_workflow("x.yml", unplaced), ["x.yml: x/z@v2 isn't pinned by its commit SHA"])
+
+    def test_a_block_scalar_whose_end_cant_be_placed_is_not_masked(self) -> None:
+        for header in ("- run: |2\n", "- run: >-4\n"):
+            with self.subTest(header=header):
+                text = GOOD + "      " + header + "          uses: x/y@v1\n"
+                self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+
+    def test_text_the_parser_cannot_place_is_still_checked(self) -> None:
+        for block in ("- uses: >\n          x/y@v1\n", "- uses: |-\n          x/y@" + "a" * 40 + "\n"):
+            with self.subTest(block=block):
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + "      " + block),
+                                 ["x.yml: a `uses:` written as a block scalar can't be read (write it on one line)"])
+        listed = GOOD + "      - uses: ./.github/actions/local\n        with:\n          args:\n            - |\n" \
+                        "              uses: x/y@v1\n"
+        self.assertEqual(wf.check_workflow("x.yml", listed), ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+
+    def test_a_block_scalar_under_env_is_still_read_as_its_value(self) -> None:
+        self.assertIn("`runner` isn't available", wf.check_workflow("x.yml", job_env("|\n        ${{ runner.temp }}/x"))[0])
+        top = GOOD.replace("jobs:\n", "env:\n  A: >-\n    ${{ steps.s.outputs.o }}\njobs:\n")
+        self.assertIn("`steps` isn't available", wf.check_workflow("x.yml", top)[0])
+
+    def test_a_shell_line_inside_a_block_scalar_is_not_the_bash_default(self) -> None:
+        text = GOOD.replace("defaults:\n  run:\n    shell: bash\n", "defaults:\n  run:\n    note: |\n      shell: bash\n")
+        self.assertIn("no top-level `defaults: run: shell: bash`", wf.check_workflow("x.yml", text)[0])
+
+    def test_a_list_read_inside_a_run_block_is_still_checked(self) -> None:
+        text = GOOD + "      - run: |\n          gh api \"repos/$R/pulls?per_page=100\"\n"
+        self.assertIn("without --paginate", wf.check_workflow("x.yml", text)[0])
+
     def test_a_job_is_told_from_an_input_by_its_place_not_its_name(self) -> None:
         def jobs(body: str) -> str:
             return "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n" + body

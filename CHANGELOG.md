@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Fixed
+
+- `fleet checks`' workflow conventions no longer read the text inside a block scalar (`run: |`, `run: >`, a `script: |` input) as workflow structure (#71): a `uses: x/y@v1` line in a shell script is no longer reported as an unpinned action, and a `shell: bash` line inside a block scalar under `defaults: run:` no longer passes as the bash default. Only lines the parser in `fleet_tools/self_check.py` places inside a block scalar, down to where the scalar's own indentation ends, are left out, so a key after a block scalar in the same step (`- if: >-` then `uses:`) is still checked, and a block scalar with an explicit indentation indicator (`|2`) is read as before (Codex on #77); a real `uses:` step after a run block is still checked, a `uses:` whose value is itself a block scalar is reported as unreadable, a block-scalar value in a workflow's or job's `env:` is still checked for step-only contexts, and the `gh api` pagination rule still reads run blocks (that is where `gh api` runs). Apps change nothing but the pin. Tests in `tests/test_checks_workflows.py`.
+
 ## [2.1.0] - 2026-11-03
 
 ### Changed
