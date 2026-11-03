@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 from fleet_tools.checks.context import Check, Context
-from fleet_tools.self_check import parse
+from fleet_tools.self_check import BlockScalar, Node, Where, flow, parse, strip_comment
 
 WORKFLOWS = ".github/workflows"
 ACTIONS = ".github/actions"
@@ -16,7 +16,6 @@ GH_API_LIST = re.compile(r"\bgh api\b[^\n]*per_page=")
 RUNS_ON = ("runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && "
            "(!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && "
            "github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '\"ubuntu-latest\"') }}")
-RUNS_ON_LINE = re.compile(r"^[ \t]*runs-on:.*$", re.MULTILINE)
 HOSTED = re.compile(r"^runs-on: ubuntu-latest[ \t]+# hosted: \S")
 EVENTS = frozenset({
     "branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment", "deployment_status",
@@ -29,7 +28,9 @@ EVENTS = frozenset({
 
 def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     problems = []
-    if workflow and not only_calls(text) and not BASH_DEFAULT.search(text):
+    where: Where = {}
+    tree = parse(text, where)
+    if workflow and not only_calls(tree) and not BASH_DEFAULT.search(text):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
     for found in USES.finditer(text):
         target, rest = found.group(1), found.group(2)
@@ -47,24 +48,39 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     for line in text.splitlines():
         if GH_API_LIST.search(line) and "--paginate" not in line:
             problems.append(f"{name}: `gh api ... per_page=` without --paginate reads only the first page: {line.strip()[:80]}")
-    named = events(text) if workflow else []
+    named = events(tree) if workflow else []
     if named is None:
         problems.append(f"{name}: the events under `on:` can't be read (write them as a block mapping or a list)")
     for event in named or []:
         if event not in EVENTS:
             problems.append(f"{name}: `{event}` isn't a GitHub Actions event (the file would be invalid and never run)")
-    for found in RUNS_ON_LINE.finditer(text):
-        line = found.group(0).strip()
-        if parent_key(text, found.start()) == "with":
+    problems += check_runners(name, text, tree, where)
+    return problems
+
+
+def check_runners(name: str, text: str, tree: Node, where: Where) -> list[str]:
+    jobs = tree.get("jobs") if isinstance(tree, dict) else None
+    if isinstance(jobs, str) and (jobs or isinstance(jobs, BlockScalar)):
+        return [f"{name}: the jobs under `jobs:` can't be read (write them as a block mapping)"]
+    if not isinstance(jobs, dict):
+        return []
+    source = text.splitlines()
+    problems = []
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict) or "runs-on" not in job:
             continue
+        raw = source[where[("jobs", job_id, "runs-on")]].strip()
+        runner = job["runs-on"]
+        line = raw
+        if isinstance(runner, str) and not isinstance(runner, BlockScalar):
+            line = f"runs-on: {runner}{raw[len(strip_comment(raw)):]}"
         if line != RUNS_ON and not HOSTED.match(line):
             problems.append(f"{name}: `{line[:60]}` should be fleet's RUNS_ON line (fleet_tools/checks/workflows.py), "
                             "or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`")
     return problems
 
 
-def only_calls(text: str) -> bool:
-    workflow = parse(text)
+def only_calls(workflow: Node) -> bool:
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
     if not isinstance(jobs, dict) or not jobs:
         return False
@@ -72,62 +88,17 @@ def only_calls(text: str) -> bool:
                for job in jobs.values())
 
 
-def events(text: str) -> list[str] | None:
-    workflow = parse(text)
+def events(workflow: Node) -> list[str] | None:
     trigger = workflow.get("on", "") if isinstance(workflow, dict) else ""
-    if isinstance(trigger, dict):
-        return list(trigger)
-    if isinstance(trigger, list):
-        return [item for item in trigger if isinstance(item, str)]
-    if trigger.startswith("{"):
-        return flow_keys(trigger)
-    return re.findall(r"[A-Za-z_]+", trigger)
-
-
-def flow_keys(text: str) -> list[str] | None:
-    keys: list[str] = []
-    depth, token, quote = 0, "", ""
-    for char in text:
-        if quote:
-            if char == quote:
-                quote = ""
-            elif depth == 1:
-                token += char
-            continue
-        if char in "\"'":
-            quote = char
-        elif char in "{[":
-            depth += 1
-            token = ""
-        elif char in "}]":
-            depth -= 1
-            if depth < 0:
-                return None
-        elif depth == 1 and char == ",":
-            token = ""
-        elif depth == 1 and char == ":":
-            key = token.strip()
-            if not re.fullmatch(r"[A-Za-z_]+", key):
-                return None
-            keys.append(key)
-            token = "\0"
-        elif depth == 1 and token != "\0":
-            token += char
-    return keys if depth == 0 and keys else None
-
-
-def parent_key(text: str, offset: int) -> str | None:
-    before = text[:offset].splitlines()
-    line = text[offset:].split("\n", 1)[0]
-    indent = len(line) - len(line.lstrip(" "))
-    for previous in reversed(before):
-        stripped = previous.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if len(previous) - len(previous.lstrip(" ")) < indent:
-            key = re.match(r"(?:-[ \t]+)?([\w.-]+):", stripped)
-            return key.group(1) if key else None
-    return None
+    if isinstance(trigger, BlockScalar):
+        return None
+    parsed = flow(trigger) if isinstance(trigger, str) and trigger[:1] in ("{", "[") else trigger
+    if isinstance(parsed, dict):
+        return list(parsed) or None
+    if isinstance(parsed, list):
+        names = [item for item in parsed if isinstance(item, str)]
+        return names if names and len(names) == len(parsed) else None
+    return None if parsed is None else [parsed] if parsed else []
 
 
 def check_workflows(root: Path) -> list[str]:

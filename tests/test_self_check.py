@@ -230,6 +230,26 @@ class ParseTest(unittest.TestCase):
         self.assertFalse(self_check.is_reusable(self_check.parse("- workflow_call\n")))
         self.assertEqual(self_check.parse(""), {})
 
+    def test_a_block_scalar_is_marked_not_read(self) -> None:
+        tree = self_check.parse("a: |\n  x\nb: >-\n  y\nc: ''\nd:\n")
+        self.assertEqual(tree, {"a": "", "b": "", "c": "", "d": ""})
+        assert isinstance(tree, dict)
+        self.assertEqual([isinstance(tree[key], self_check.BlockScalar) for key in "abcd"], [True, True, False, False])
+
+    def test_where_names_the_line_of_each_key_by_its_path(self) -> None:
+        where: self_check.Where = {}
+        self_check.parse("jobs:\n  with:\n    runs-on: x\n  b:\n    steps:\n      - run: y\n        with:\n          runs-on: z\n", where)
+        self.assertEqual(where[("jobs", "with", "runs-on")], 2)
+        self.assertEqual(where[("jobs", "b", "steps", 0, "with", "runs-on")], 7)
+
+    def test_flow_reads_collections_and_refuses_what_it_cannot(self) -> None:
+        self.assertEqual(self_check.flow("{a, 'b': [c, \"d,e\"], f: {g: 1}, h: }"),
+                         {"a": "", "b": ["c", "d,e"], "f": {"g": "1"}, "h": ""})
+        self.assertEqual(self_check.flow("[a, b: c]"), None)
+        for refused in ("{a: b", "{a: b}}", "[a,,b]", "{: a}", "[a", "{'a: b}", "{{a: b}: c}", "{a b c d}x"):
+            with self.subTest(refused=refused):
+                self.assertIsNone(self_check.flow(refused))
+
 
 if __name__ == "__main__":
     unittest.main()

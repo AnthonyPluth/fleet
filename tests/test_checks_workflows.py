@@ -28,6 +28,10 @@ def snippets() -> list[tuple[str, str]]:
     return found
 
 
+def with_on(value: str) -> str:
+    return re.sub(r"^on:\n(?:  .*\n)+", lambda _: value, CALLER, flags=re.MULTILINE)
+
+
 def job_env(expression: str) -> str:
     return GOOD.replace("  a:\n", "  a:\n    env:\n      X: " + expression + "\n")
 
@@ -90,18 +94,80 @@ class Workflow(unittest.TestCase):
                 self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: `pull_request_review_thread` isn't a GitHub "
                                                                     "Actions event (the file would be invalid and never run)"])
         for fine in ("on: [push, pull_request]\n", "on: workflow_dispatch\n", '"on":\n  schedule:\n    - cron: "1 2 * * *"\n',
-                     "on: {push: null, workflow_dispatch: null}\n",
+                     "on: {push: null, workflow_dispatch: null}\n", "on: {push, pull_request}\n",
+                     "on: {push, 'pull_request': {types: [opened]}, workflow_dispatch}\n",
+                     'on: {"push": {branches: ["a,b", \'c}\']}, \'schedule\': [{cron: "1 2 * * *"}]}\n',
+                     "on: image_version\n", "on:\n  image_version:\n    names: [X]\n",
                      'on: {push: {branches: [main]}, "schedule": [{cron: "1 2 * * *"}], pull_request: }\n'):
             with self.subTest(fine=fine):
                 text = re.sub(r"^on:\n(?:  .*\n)+", fine, CALLER, flags=re.MULTILINE)
                 self.assertEqual(wf.check_workflow("x.yml", text), [])
 
     def test_an_on_value_that_cant_be_read_is_reported_not_accepted(self) -> None:
-        for unreadable in ("on: {push: null\n", "on: {}\n", "on: {push, pull_request}\n", "on: {push: {a: b}}}\n"):
+        for unreadable in ("on: {push: null\n", "on: {}\n", "on: []\n", "on: {push: {a: b}}}\n", "on: {push,, pull_request}\n",
+                           "on: [push, {pull_request: null}]\n", "on: [push,,pull_request]\n", "on: {: push}\n",
+                           "on: {push: [a}\n", "on: [push, pull_request\n", "on: {push\n}\n", "on: {'push: null}\n",
+                           "on: >-\n  pull_request_review_thread\n", "on: >\n  push\n", "on: |\n  push\n",
+                           "on: |-\n  push\n  pull_request\n", "on:\n  - push: null\n"):
             with self.subTest(unreadable=unreadable):
-                text = re.sub(r"^on:\n(?:  .*\n)+", unreadable, CALLER, flags=re.MULTILINE)
-                self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: the events under `on:` can't be read (write "
-                                                                    "them as a block mapping or a list)"])
+                self.assertEqual(wf.check_workflow("x.yml", with_on(unreadable)), [
+                    "x.yml: the events under `on:` can't be read (write them as a block mapping or a list)"])
+
+    def test_a_bare_key_in_a_flow_mapping_is_an_event_too(self) -> None:
+        for bad in ("on: {unsupported, push: null}\n", "on: {push: null, unsupported}\n", "on: {push, unsupported: }\n"):
+            with self.subTest(bad=bad):
+                self.assertEqual(wf.check_workflow("x.yml", with_on(bad)), ["x.yml: `unsupported` isn't a GitHub Actions "
+                                                                           "event (the file would be invalid and never run)"])
+
+    def test_the_events_are_the_ones_githubs_documentation_lists(self) -> None:
+        documented = {
+            "branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment", "deployment_status",
+            "discussion", "discussion_comment", "fork", "gollum", "image_version", "issue_comment", "issues", "label",
+            "merge_group", "milestone", "page_build", "public", "pull_request", "pull_request_review",
+            "pull_request_review_comment", "pull_request_target", "push", "registry_package", "release",
+            "repository_dispatch", "schedule", "status", "watch", "workflow_call", "workflow_dispatch", "workflow_run"}
+        self.assertEqual(set(wf.EVENTS), documented)
+        for gone in ("pull_request_review_thread", "projects", "repository_import", "team_add", "member", "star"):
+            self.assertNotIn(gone, wf.EVENTS)
+
+    def test_a_block_scalar_that_is_not_the_on_value_is_no_problem(self) -> None:
+        text = GOOD + "      - run: |\n          echo on: {nope}\n          runs-on: nope\n"
+        self.assertEqual(wf.check_workflow("x.yml", text), [])
+
+    def test_a_job_is_told_from_an_input_by_its_place_not_its_name(self) -> None:
+        def jobs(body: str) -> str:
+            return "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n" + body
+
+        step = "    steps:\n      - run: true\n"
+        bare = wf.check_workflow("x.yml", jobs("  with:\n    runs-on: windows-latest\n" + step))
+        self.assertEqual(len(bare), 1)
+        self.assertIn("x.yml: `runs-on: windows-latest` should be fleet's RUNS_ON line", bare[0])
+        self.assertEqual(wf.check_workflow("x.yml", jobs("  with:\n    " + wf.RUNS_ON + "\n" + step)), [])
+        for key in ("with", '"with"', "'with'"):
+            call = "  a:\n    uses: ./.github/workflows/x.yml\n    " + key + ":\n      runs-on: windows-latest\n"
+            with self.subTest(key=key):
+                self.assertEqual(wf.check_workflow("x.yml", jobs(call)), [])
+        step_input = "  a:\n    " + wf.RUNS_ON + "\n    steps:\n      - uses: ./x\n        with:\n          runs-on: windows-latest\n"
+        self.assertEqual(wf.check_workflow("x.yml", jobs(step_input)), [])
+        for key in ('"runs-on"', "'runs-on'", "runs-on"):
+            own = "  with:\n    " + key + ": windows-latest\n    uses: ./.github/workflows/x.yml\n    with:\n      runs-on: x\n"
+            with self.subTest(own=key):
+                self.assertEqual(len(wf.check_workflow("x.yml", jobs(own))), 1)
+        quoted_fleet = "  a:\n    " + wf.RUNS_ON.replace("runs-on:", '"runs-on":') + "\n" + step
+        self.assertEqual(wf.check_workflow("x.yml", jobs(quoted_fleet)), [])
+        hosted = "  a:\n    'runs-on': ubuntu-latest  # hosted: publishes\n" + step
+        self.assertEqual(wf.check_workflow("x.yml", jobs(hosted)), [])
+        block = "  a:\n    runs-on:\n      group: big\n" + step
+        self.assertEqual(len(wf.check_workflow("x.yml", jobs(block))), 1)
+        scalar = "  a:\n    runs-on: >-\n      ubuntu-latest\n" + step
+        self.assertEqual(len(wf.check_workflow("x.yml", jobs(scalar))), 1)
+
+    def test_jobs_that_cant_be_read_are_reported_not_accepted(self) -> None:
+        for unreadable in ("{a: {runs-on: windows-latest, steps: []}}", ">-\n  a: b", "|\n  a: b"):
+            with self.subTest(unreadable=unreadable):
+                text = "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs: " + unreadable + "\n"
+                self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: the jobs under `jobs:` can't be read (write "
+                                                                    "them as a block mapping)"])
 
     def test_fleets_documented_callers_pass(self) -> None:
         found = snippets()
