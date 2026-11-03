@@ -104,14 +104,19 @@ class Workflow(unittest.TestCase):
                 self.assertEqual(wf.check_workflow("x.yml", text), [])
 
     def test_an_on_value_that_cant_be_read_is_reported_not_accepted(self) -> None:
-        for unreadable in ("on: {push: null\n", "on: {}\n", "on: []\n", "on: {push: {a: b}}}\n", "on: {push,, pull_request}\n",
+        for unreadable in ("on: {}\n", "on: []\n", "on: {push: {a: b}}}\n", "on: {push,, pull_request}\n",
                            "on: [push, {pull_request: null}]\n", "on: [push,,pull_request]\n", "on: {: push}\n",
-                           "on: {push: [a}\n", "on: [push, pull_request\n", "on: {push\n}\n", "on: {'push: null}\n",
                            "on: >-\n  pull_request_review_thread\n", "on: >\n  push\n", "on: |\n  push\n",
                            "on: |-\n  push\n  pull_request\n", "on:\n  - push: null\n"):
             with self.subTest(unreadable=unreadable):
                 self.assertEqual(wf.check_workflow("x.yml", with_on(unreadable)), [
                     "x.yml: the events under `on:` can't be read (write them as a block mapping or a list)"])
+        for unclosed in ("on: {push: null\n", "on: {push: [a}\n", "on: [push, pull_request\n", "on: {push\n}\n",
+                         "on: {'push: null}\n"):
+            with self.subTest(unclosed=unclosed):
+                self.assertEqual(wf.check_workflow("x.yml", with_on(unclosed)), [
+                    "x.yml: line 2: a `[...]` or `{...}` value that doesn't close on its line can't be read (write it as "
+                    "block mappings, lists and one-line values)"])
 
     def test_a_bare_key_in_a_flow_mapping_is_an_event_too(self) -> None:
         for bad in ("on: {unsupported, push: null}\n", "on: {push: null, unsupported}\n", "on: {push, unsupported: }\n"):
@@ -229,6 +234,35 @@ class Workflow(unittest.TestCase):
                 self.assertEqual(wf.check_workflow("x.yml", jobs(good)), [])
         anchored_steps = "  a:\n    " + wf.RUNS_ON + "\n    steps: &s\n      - run: true\n"
         self.assertEqual(wf.check_workflow("x.yml", jobs(anchored_steps)), [])
+
+    def test_a_node_property_on_the_jobs_key_does_not_hide_the_jobs(self) -> None:
+        head = "name: X\non: push\ndefaults:\n  run:\n    shell: bash\n"
+        step = "    steps:\n      - run: true\n"
+        for key in ("&job-map jobs:", "!!map jobs:", "&j !!str jobs:"):
+            with self.subTest(key=key):
+                found = wf.check_workflow("x.yml", head + key + "\n  build:\n    runs-on: windows-latest\n" + step)
+                self.assertEqual(len(found), 1)
+                self.assertIn("`runs-on: windows-latest` should be fleet's RUNS_ON line", found[0])
+                self.assertEqual(wf.check_workflow("x.yml", head + key + "\n  build:\n    " + wf.RUNS_ON + "\n" + step), [])
+
+    def test_yaml_outside_the_subset_reports_the_file_unreadable(self) -> None:
+        bad = "    runs-on: windows-latest\n"
+        cases = (
+            (GOOD + "      - ? uses\n        : x/y@v1\n", 13, "explicit `?` keys"),
+            (GOOD + "      - run: true\n        uses\n", 14, "neither `key: value` nor a list item"),
+            (GOOD + "      - run: echo one\n          uses: x/y@v1\n", 14, "goes on to the next line"),
+            (GOOD + "      - with: {a: b,\n          uses: x/y@v1}\n", 13, "doesn't close on its line"),
+            (GOOD + "---\njobs:\n  b:\n" + bad, 13, "document marker"),
+            (GOOD + "...\n", 13, "document marker"),
+            (GOOD.replace("jobs:\n  a:\n", "jobs:\n  a:\n" + bad.replace("    ", "      ", 1)), 9, "indented to none"),
+            (GOOD + "  a:\n" + bad, 13, "a key given twice"),
+        )
+        for text, line, reason in cases:
+            with self.subTest(text=text):
+                found = wf.check_workflow("x.yml", text)
+                self.assertEqual(len(found), 1, found)
+                self.assertTrue(found[0].startswith(f"x.yml: line {line}: "), found[0])
+                self.assertIn(reason, found[0])
 
     def test_an_alias_or_a_merge_key_is_reported_not_accepted(self) -> None:
         def jobs(body: str) -> str:

@@ -131,6 +131,19 @@ class EventNamesTest(unittest.TestCase):
         self.assertEqual(self_check.check(repo.root), [])
 
 
+class UnreadableTest(unittest.TestCase):
+    def test_a_workflow_outside_the_yaml_subset_is_reported_not_skipped(self) -> None:
+        repo = Repo(self)
+        (repo.workflows / "two.yml").write_text("on: workflow_call\n---\nenv:\n  FLEET_REF: main\n", encoding="utf-8")
+        self.assertEqual(self_check.check(repo.root), [f".github/workflows/two.yml: line 2: {self_check.DOCUMENT}"])
+
+    def test_a_self_test_outside_the_yaml_subset_is_reported(self) -> None:
+        repo = Repo(self)
+        (repo.workflows / "self-test.yml").write_text("jobs:\n  a:\n    uses: ./.github/workflows/x.yml\n    with:\n"
+                                                      "      fleet-ref: ${{ github.sha }\n        }\n", encoding="utf-8")
+        self.assertEqual(self_check.check(repo.root), [f".github/workflows/self-test.yml: line 6: {self_check.CONTINUED}"])
+
+
 class SelfTestCallsTest(unittest.TestCase):
     def test_calls_without_the_head_commit_as_fleet_ref_fail(self) -> None:
         repo = Repo(self)
@@ -241,6 +254,69 @@ class ParseTest(unittest.TestCase):
         self_check.parse("jobs:\n  with:\n    runs-on: x\n  b:\n    steps:\n      - run: y\n        with:\n          runs-on: z\n", where)
         self.assertEqual(where[("jobs", "with", "runs-on")], 2)
         self.assertEqual(where[("jobs", "b", "steps", 0, "with", "runs-on")], 7)
+
+    def assert_unreadable(self, text: str, line: int, reason: str) -> None:
+        with self.subTest(text=text):
+            with self.assertRaises(self_check.Unreadable) as raised:
+                self_check.parse(text)
+            self.assertEqual((raised.exception.number + 1, raised.exception.reason), (line, reason))
+
+    def test_a_node_property_on_a_mapping_key_is_read_past(self) -> None:
+        self.assertEqual(self_check.parse("&job-map jobs:\n  build:\n    runs-on: x\n"), {"jobs": {"build": {"runs-on": "x"}}})
+        self.assertEqual(self_check.parse("on: push\n!!str jobs:\n  &b build:\n    - &s !!map run: x\n"),
+                         {"on": "push", "jobs": {"build": [{"run": "x"}]}})
+
+    def test_an_explicit_key_in_a_list_item_is_unreadable(self) -> None:
+        for text in ("steps:\n  - ? a\n    : b\n", "steps:\n  - ?\n", "steps:\n  - &a ? b\n"):
+            self.assert_unreadable(text, 2, self_check.ELSEWHERE)
+
+    def test_a_mapping_line_without_a_colon_is_unreadable(self) -> None:
+        for text in ("a: 1\nb\n", "jobs:\n  build\n", "a: 1\nkey:value\n", "l:\n  - : x\n"):
+            self.assert_unreadable(text, 2, self_check.NO_KEY)
+        self.assert_unreadable("a:\n  b: 1\n  c\n", 3, self_check.NO_KEY)
+
+    def test_a_multi_line_plain_scalar_is_unreadable(self) -> None:
+        self.assert_unreadable("a: one\n  two\n", 2, self_check.CONTINUED)
+        self.assert_unreadable("a: one\ntwo\n", 2, self_check.NO_KEY)
+        self.assert_unreadable("l:\n  - one\n    two\n", 3, self_check.CONTINUED)
+        self.assert_unreadable("a: 'one\n  two'\n", 1, self_check.QUOTED)
+        self.assert_unreadable('a: "one" two\n', 1, self_check.QUOTED)
+        self.assert_unreadable("run: echo a: b\n", 1, self_check.PLAIN_COLON)
+        self.assertEqual(self_check.parse("a: 'it''s: fine'\nb: x:y\n"), {"a": "it's: fine", "b": "x:y"})
+
+    def test_a_multi_line_flow_collection_is_unreadable(self) -> None:
+        self.assert_unreadable("with: {a: b,\n  c: d}\n", 1, self_check.FLOW)
+        self.assert_unreadable("needs: [a,\n  b]\n", 1, self_check.FLOW)
+        self.assert_unreadable("steps:\n  - {run: x,\n     shell: bash}\n", 2, self_check.FLOW)
+        self.assert_unreadable("needs: ['a,\n  b']\n", 1, self_check.FLOW)
+        self.assertEqual(self_check.parse("needs: [a, 'b]']\nsteps:\n  - {run: x}\n"),
+                         {"needs": "[a, 'b]']", "steps": ["{run: x}"]})
+
+    def test_a_document_after_the_first_is_unreadable(self) -> None:
+        for text, line in (("a: 1\n---\nb: 2\n", 2), ("---\na: 1\n...\n", 3), ("---\n---\na: 1\n", 2), ("--- a: 1\n", 1),
+                           ("a: 1\n--- # second\njobs: {}\n", 2)):
+            self.assert_unreadable(text, line, self_check.DOCUMENT)
+        self.assert_unreadable("%YAML 1.2\n---\na: 1\n", 1, self_check.DIRECTIVE)
+        self.assertEqual(self_check.parse("# a comment\n---\na: |\n  ---\n  ...\n"), {"a": ""})
+
+    def test_other_shapes_outside_the_subset_are_unreadable(self) -> None:
+        self.assert_unreadable("a:\n    b: 1\n  c: 2\n", 3, self_check.MISPLACED)
+        self.assert_unreadable("l:\n  - a: 1\n   b: 2\n", 3, self_check.MISPLACED)
+        self.assert_unreadable("a:\n  - x\n  b: y\n", 3, self_check.MISPLACED)
+        self.assert_unreadable("a:\n\tb: 1\n", 2, self_check.TAB)
+        self.assert_unreadable("jobs: x\njobs: y\n", 2, self_check.DUPLICATE)
+        self.assert_unreadable("l:\n  - - a\n", 2, self_check.NESTED_LIST)
+        self.assert_unreadable("a: |x\n  t\n", 1, self_check.BAD_HEADER)
+        self.assert_unreadable("[a]: b\n", 1, self_check.COMPLEX_KEY)
+        for text in ("a: *x\n", "<<: *x\n", "*x : 1\n", "- *x\n", "? a\n"):
+            self.assert_unreadable(text, 1, self_check.ELSEWHERE)
+
+    def test_a_block_scalar_list_item_is_marked_and_its_text_skipped(self) -> None:
+        tree = self_check.parse("l:\n  - |\n    x: y\n    - z\n  - >-2\n    w\n  - v\n")
+        self.assertEqual(tree, {"l": ["", "", "v"]})
+        assert isinstance(tree, dict) and isinstance(tree["l"], list)
+        self.assertEqual([isinstance(item, self_check.BlockScalar) for item in tree["l"]], [True, True, False])
+        self.assertEqual(self_check.parse("-foo: bar\n"), {"-foo": "bar"})
 
     def test_flow_reads_collections_and_refuses_what_it_cannot(self) -> None:
         self.assertEqual(self_check.flow("{a, 'b': [c, \"d,e\"], f: {g: 1}, h: }"),

@@ -3,14 +3,15 @@ from pathlib import Path
 
 from fleet_tools.checks.context import Check, Context
 from fleet_tools.self_check import (
-    Alias,
     BlockScalar,
     Node,
+    Unreadable,
     Where,
     flow,
     lines_of,
     parse,
     strip_comment,
+    unreadable,
 )
 
 WORKFLOWS = ".github/workflows"
@@ -39,10 +40,10 @@ EVENTS = frozenset({
 def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     problems = []
     where: Where = {}
-    tree = parse(text, where)
-    if resolves_elsewhere(tree):
-        problems.append(f"{name}: the file uses YAML aliases, merge keys or explicit `?` keys, which this check can't resolve "
-                        "(write the values out)")
+    try:
+        tree = parse(text, where)
+    except Unreadable as error:
+        return [unreadable(name, error)]
     structure = without_block_scalars(text, tree, where)
     if workflow and not only_calls(tree) and not BASH_DEFAULT.search(structure):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
@@ -117,16 +118,6 @@ def at(node: Node, trail: tuple[str | int, ...]) -> "Node | None":
         else:
             return None
     return current
-
-
-def resolves_elsewhere(node: Node) -> bool:
-    if isinstance(node, Alias):
-        return True
-    if isinstance(node, dict):
-        return "<<" in node or "?" in node or any(resolves_elsewhere(child) for child in node.values())
-    if isinstance(node, list):
-        return any(resolves_elsewhere(child) for child in node)
-    return False
 
 
 def check_runners(name: str, text: str, tree: Node, where: Where) -> list[str]:
