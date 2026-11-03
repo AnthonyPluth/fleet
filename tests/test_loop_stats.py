@@ -346,6 +346,26 @@ class EdgeTest(unittest.TestCase):
         self.assertEqual(value["harness"]["checked_in_window"], 0)
         self.assertEqual(value["missing"], [])
 
+    def test_the_version_is_read_from_a_one_or_two_line_version_file(self) -> None:
+        commit = "0123456789abcdef0123456789abcdef01234567"
+        for text, version, problem in (("v1.0.0\n", "v1.0.0", None),
+                                       (f"v1.1.0\n{commit}\n", "v1.1.0", None),
+                                       ("v1.1.0\nnot-a-commit\n", None, "line 2 holds 'not-a-commit', not a commit"),
+                                       (f"v1.1.0\n{commit}\nmore\n", None, "has 3 lines")):
+            with self.subTest(text=text):
+                data = fixture()
+                data[contents(".fleet/version", "main")] = blob(text)
+                result = self.stats.run(data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = self.stats.stats()
+                self.assertEqual(value["fleet"]["version"], version)
+                missing = "\n".join(value["missing"])
+                if problem is None:
+                    self.assertEqual(value["missing"], [])
+                else:
+                    self.assertIn(".fleet/version isn't a vX.Y.Z version with an optional commit line", missing)
+                    self.assertIn(problem, missing)
+
     def test_no_commit_before_the_window_leaves_the_checked_count_unknown(self) -> None:
         data = fixture()
         data[newest(BEFORE)] = []

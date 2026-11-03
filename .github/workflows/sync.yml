@@ -3,10 +3,11 @@ name: Sync fleet content
 # The consumer-side sync (FLEET-SYNC). Each app carries two kinds of pin: the workflow pins
 # (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<sha>   # vX.Y.Z`), which Dependabot bumps, and the content
 # (the AGENTS.md blocks, the vendored .claude/ files and tools/fleet, .fleet/version), which Dependabot can't edit. This
-# reads every fleet pin in the caller's workflows (they must agree; if not, it fails naming the files), compares with
-# .fleet/version and, when the pins are newer in the same major, runs `fleet sync --to <pin>` from fleet at that
-# version and opens or updates the pull request `chore: fleet content vX.Y.Z` from the branch fleet/sync, with the
-# CHANGELOG entries in between in its body. Pins at a newer major open an issue instead ("fleet vN needs a migration:
+# reads every fleet pin in the caller's workflows (they must agree on the version and the commit; if not, it fails
+# naming the files), compares with .fleet/version and, when the pins are newer in the same major, runs
+# `fleet sync --to <pin>` from fleet at that version (which writes the pins' commit into .fleet/version, so tools/fleet
+# runs that commit) and opens or updates the pull request `chore: fleet content vX.Y.Z` from the branch fleet/sync, with
+# the CHANGELOG entries in between in its body. Pins at a newer major open an issue instead ("fleet vN needs a migration:
 # see CHANGELOG"), because a major release changes something the app must adapt to first. fleet_tools/sync_workflow.py
 # (`fleet sync-plan`) decides all of it; the workflow only moves files and calls the API.
 #
@@ -135,17 +136,23 @@ jobs:
 
       # fleet at the pins' version, in .fleet-pin/: `fleet sync --to <pin>` must run from the fleet that ships that
       # version's content, and the CHANGELOG there lists what changed. A plain clone of the public repository at the
-      # tag the planner validated (vX.Y.Z, read from the caller's own workflows on its default branch), no token; the
+      # commit the pins name (validated by the planner, read from the caller's own workflows on its default branch),
+      # no token; the clone must be the tag the pins' comment names, so a tag moved off that commit fails here. The
       # one checkout of fleet by the action stays at this workflow's pinned ref. The self-test has no such tag, so it
       # takes a copy of this fleet, with its VERSION stamped to the pin.
       - name: fleet at the pins' version
         if: steps.plan.outputs.action != 'none'
         env:
           PIN: ${{ steps.plan.outputs.pin }}
+          COMMIT: ${{ steps.plan.outputs.commit }}
           FIXTURE: ${{ inputs.fixture }}
         run: |
           if ! [[ "$PIN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::The planned pin '${PIN:0:40}' isn't a version"
+            exit 1
+          fi
+          if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The planned commit '${COMMIT:0:40}' isn't a commit"
             exit 1
           fi
           if [ -n "$FIXTURE" ]; then
@@ -153,6 +160,11 @@ jobs:
             echo "${PIN#v}" > .fleet-pin/VERSION
           else
             git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin
+            head=$(git -C .fleet-pin rev-parse HEAD)
+            if [ "$head" != "$COMMIT" ]; then
+              echo "::error::The tag $PIN is at $head, but the workflow pins name $COMMIT; a release tag is never moved"
+              exit 1
+            fi
           fi
           echo "fleet $(cat .fleet-pin/VERSION) in .fleet-pin"
 

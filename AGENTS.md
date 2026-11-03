@@ -1,6 +1,6 @@
 # Agent guide
 
-Instructions for AI coding agents working in fleet, the shared agent build safeguards of Darkroom, Waypoint and Runway: reusable workflows, the `fleet` command (`fleet_tools/`), the Claude Code plugin and the shared `AGENTS.md` blocks. The apps call it by pinned reference. Human contributors can use this guide too. The text between the `fleet:begin` and `fleet:end` markers is fleet's shared `AGENTS.md` blocks, the same the apps carry: edit it in `agents-md/sections/`, then `poetry run fleet sync --to v$(cat VERSION)`, never between the markers.
+Instructions for AI coding agents working in fleet, the shared agent build safeguards of Darkroom, Waypoint and Runway: reusable workflows, the `fleet` command (`fleet_tools/`), the Claude Code plugin and the shared `AGENTS.md` blocks. The apps call it by pinned reference. Human contributors can use this guide too. The text between the `fleet:begin` and `fleet:end` markers is fleet's shared `AGENTS.md` blocks, the same the apps carry: edit it in `agents-md/sections/`, then `poetry run fleet sync --to v$(cat VERSION)` (fleet's own workflows carry no fleet pin, so it reads the tag's commit for `.fleet/version` with `git ls-remote` and needs the network; offline, add `--commit $(git rev-parse v$(cat VERSION)^{commit})`), never between the markers.
 
 ## Layout
 

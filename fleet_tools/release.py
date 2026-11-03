@@ -28,10 +28,12 @@ DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 RELEASED = re.compile(r"## \[(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\] - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 SNIPPET_VERSION = re.compile(r"(?P<head>uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*|\"AnthonyPluth/fleet\",[ \t]*\"ref\":[ \t]*\""
-                             r"|fleet sync --to[ \t]+|fleet:begin [a-z0-9-]+[ \t]+|raw\.githubusercontent\.com/AnthonyPluth/fleet/"
-                             r"|github\.com/AnthonyPluth/fleet@|echo[ \t]+(?=\S+[ \t]*>[ \t]*\.fleet/version))(?P<tag>[^\s\"/]*)")
+                             r"|fleet sync --to[ \t]+|fleet:begin [a-z0-9-]+[ \t]+)(?P<tag>[^\s\"/]*)")
+FLEET_URL = re.compile(r"(?:github\.com/AnthonyPluth/fleet(?:\.git)?@|raw\.githubusercontent\.com/AnthonyPluth/fleet/)(?P<ref>[^\s\"'/]*)")
+COMMIT_PLACEHOLDER = "<commit>"
 FIXTURES = Path("tests/fixtures")
 DRIFTED = FIXTURES / "drifted"
+FIXTURE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 FIXTURE_PIN = re.compile(r"^([ \t-]*uses: AnthonyPluth/fleet/\S+@\S+[ \t]+#[ \t]*)v[0-9]+\.[0-9]+\.[0-9]+", re.MULTILINE)
 DRIFTED_MARKER = re.compile(r"(<!-- fleet:begin [a-z0-9-]+ )v[0-9]+\.[0-9]+\.[0-9]+")
 FLEET_REF_LINE = re.compile(r"^(  FLEET_REF:[ \t]+)(\S+)", re.MULTILINE)
@@ -134,7 +136,7 @@ def changelog_errors(text: str, version: str) -> list[str]:
     return []
 
 
-def snippet_versions(text: str) -> list[tuple[int, str]]:
+def fenced_lines(text: str) -> list[tuple[int, str]]:
     found: list[tuple[int, str]] = []
     fence = ""
     for number, line in enumerate(text.splitlines(), start=1):
@@ -143,16 +145,25 @@ def snippet_versions(text: str) -> list[tuple[int, str]]:
             if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence) and not line[opener.end():].strip():
                 fence = ""
                 continue
-            found.extend((number, match.group("tag")) for match in SNIPPET_VERSION.finditer(line))
+            found.append((number, line))
         elif opener:
             fence = opener.group(1)
     return found
 
 
+def snippet_versions(text: str) -> list[tuple[int, str]]:
+    return [(number, match.group("tag")) for number, line in fenced_lines(text) for match in SNIPPET_VERSION.finditer(line)]
+
+
 def adopting_errors(text: str, version: str, name: Path = ADOPTING) -> list[str]:
     allowed = {f"v{version}"} | ({PLACEHOLDER} if version.startswith("0.") else set())
-    return [f"{name.as_posix()}:{number}: a snippet says {found}, but VERSION is {version}"
-            for number, found in snippet_versions(text) if found not in allowed]
+    errors = [f"{name.as_posix()}:{number}: a snippet says {found}, but VERSION is {version}"
+              for number, found in snippet_versions(text) if found not in allowed]
+    errors += [f"{name.as_posix()}:{number}: a snippet fetches fleet at {match.group('ref')[:40]!r}, a ref that can move; "
+               "name the commit (`@<commit>`)"
+               for number, line in fenced_lines(text) for match in FLEET_URL.finditer(line)
+               if match.group("ref") != COMMIT_PLACEHOLDER and not agents_md.COMMIT.fullmatch(match.group("ref"))]
+    return errors
 
 
 def read(root: Path, path: Path) -> str | None:
@@ -278,7 +289,7 @@ def stamp_fixtures(root: Path, tag: str) -> dict[Path, str]:
     if (drifted / AGENTS).is_file():
         text = (drifted / AGENTS).read_text(encoding="utf-8")
         writes[DRIFTED / AGENTS] = DRIFTED_MARKER.sub(lambda match: match.group(1) + tag, text)
-        writes[DRIFTED / agents_md.VERSION_FILE] = tag + "\n"
+        writes[DRIFTED / agents_md.VERSION_FILE] = agents_md.render_version_file(tag, FIXTURE_COMMIT)
     return writes
 
 

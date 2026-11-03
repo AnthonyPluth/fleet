@@ -405,9 +405,10 @@ def fleet_of(run: Run, branch: str) -> Json:
     try:
         text = content_at(run, VERSION_FILE, branch)
         if text is not None:
-            if not agents_md.VERSION.fullmatch(text.strip()):
-                raise Unreadable(f"{VERSION_FILE} isn't a vX.Y.Z version")
-            version = text.strip()
+            try:
+                version = agents_md.parse_version_file(text).version
+            except ValueError as error:
+                raise Unreadable(f"{VERSION_FILE} isn't a vX.Y.Z version with an optional commit line: {error}") from error
     except (subprocess.CalledProcessError, Unreadable, ValueError) as error:
         run.lack(f"fleet: {VERSION_FILE}", error)
     sync_open: bool | None = None

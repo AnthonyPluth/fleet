@@ -93,9 +93,7 @@ def tagged(version: str, root: Path) -> dict[Path, str] | None:
 
 def shipped_at(version: str, root: Path | None = None) -> dict[Path, Vendored] | None:
     root = root or agents_md.ROOT
-    sources = tagged(version, root)
-    if sources is None and version == agents_md.own_version():
-        sources = working_tree(root)
+    sources = working_tree(root) if version == agents_md.own_version() else tagged(version, root)
     return None if sources is None else render(sources, version)
 
 

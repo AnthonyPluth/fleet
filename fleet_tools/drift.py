@@ -2,13 +2,15 @@ import argparse
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from fleet_tools import agents_md, config, vendor
 
 HELP = ("check that the consumer's fleet content is fleet's: every AGENTS.md block byte-equal to fleet's at the version "
         "in its marker, every vendored plugin file byte-equal to fleet's at .fleet/version, one version across the markers and "
-        ".fleet/version, and that version within the workflow pins")
+        ".fleet/version, that version within the workflow pins, and .fleet/version's commit (line 2, which tools/fleet "
+        "runs) the one the pins at that version name")
 
 WORKFLOWS = ".github/workflows"
 PIN = re.compile(r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*AnthonyPluth/fleet/[^@\s]+@(?P<ref>\S+)(?P<rest>.*)$",
@@ -16,18 +18,52 @@ PIN = re.compile(r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*AnthonyPluth/fleet/[^@\s]+@(?P<
 PIN_VERSION = re.compile(r"#\s*(v\d+\.\d+\.\d+)\b")
 
 
-def pins(root: Path) -> tuple[dict[str, list[str]], list[str]]:
-    found: dict[str, list[str]] = {}
-    problems = []
+@dataclass(frozen=True)
+class Pin:
+    file: str
+    ref: str
+    version: str | None
+
+
+def find_pins(root: Path) -> list[Pin]:
+    found = []
     for path in sorted((root / WORKFLOWS).glob("*.y*ml")):
         name = path.relative_to(root).as_posix()
         for pin in PIN.finditer(path.read_text(encoding="utf-8")):
             version = PIN_VERSION.search(pin.group("rest"))
-            if version:
-                found.setdefault(version.group(1), []).append(name)
-            else:
-                problems.append(f"{name}: the fleet pin @{pin.group('ref')} has no version in a comment (`# vX.Y.Z`)")
+            found.append(Pin(name, pin.group("ref"), version.group(1) if version else None))
+    return found
+
+
+def pins(root: Path) -> tuple[dict[str, list[str]], list[str]]:
+    found: dict[str, list[str]] = {}
+    problems = []
+    for pin in find_pins(root):
+        if pin.version:
+            found.setdefault(pin.version, []).append(pin.file)
+        else:
+            problems.append(f"{pin.file}: the fleet pin @{pin.ref} has no version in a comment (`# vX.Y.Z`)")
     return found, problems
+
+
+def pinned_commit(root: Path, version: str) -> tuple[str | None, list[str]]:
+    commits: dict[str, list[str]] = {}
+    problems = []
+    for pin in find_pins(root):
+        if pin.version != version:
+            continue
+        if agents_md.COMMIT.fullmatch(pin.ref):
+            commits.setdefault(pin.ref, []).append(pin.file)
+        else:
+            problems.append(f"{pin.file}: the fleet pin at {version} is @{pin.ref[:40]}, a ref that can move; pin it by "
+                            "full commit SHA (`@<sha>   # vX.Y.Z`)")
+    if len(commits) > 1:
+        listing = "; ".join(f"{commit} in {', '.join(files)}" for commit, files in sorted(commits.items()))
+        problems.append(f"the fleet pins at {version} name more than one commit: {listing}; bump them together "
+                        "(Dependabot's fleet group does)")
+    if problems:
+        return None, problems
+    return next(iter(commits), None), []
 
 
 def check_blocks(text: str) -> tuple[list[agents_md.Block], list[str]]:
@@ -70,12 +106,19 @@ def drift(root: Path) -> tuple[list[str], str]:
     elif not found:
         problems.append(f"{agents_md.AGENTS} has no fleet block (fleet sync inserts them)")
     version_file = root / agents_md.VERSION_FILE
-    content = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else None
-    if content is None:
+    content: str | None = None
+    commit: str | None = None
+    if not version_file.is_file():
         problems.append(f"{agents_md.VERSION_FILE.as_posix()} doesn't exist (fleet sync writes it)")
-    elif not agents_md.VERSION.fullmatch(content):
-        problems.append(f"{agents_md.VERSION_FILE.as_posix()} holds {content[:40]!r}, not a version (vX.Y.Z)")
-        content = None
+    else:
+        try:
+            parsed = agents_md.parse_version_file(version_file.read_text(encoding="utf-8"))
+            content, commit = parsed.version, parsed.commit
+        except ValueError as error:
+            problems.append(f"{error}; run `fleet sync`")
+    if content and commit is None and agents_md.needs_commit(content):
+        problems.append(f"{agents_md.VERSION_FILE.as_posix()} names no commit for {content} on its line 2, which "
+                        f"tools/fleet runs fleet at; run `fleet sync --to {content}` from fleet at {content}, which writes it")
     versions = {block.version for block in found} | ({content} if content else set())
     if len(versions) > 1:
         where = [f"{block.name} {block.version}" for block in found if block.version != content]
@@ -87,6 +130,13 @@ def drift(root: Path) -> tuple[list[str], str]:
         problems += vendor_problems
     pinned, pin_problems = pins(root)
     problems += pin_problems
+    if content:
+        pinned_at, commit_problems = pinned_commit(root, content)
+        problems += commit_problems
+        if commit and pinned_at and commit != pinned_at:
+            problems.append(f"{agents_md.VERSION_FILE.as_posix()} says fleet {content} is commit {commit}, but the "
+                            f"workflow pins at {content} in {', '.join(pinned[content])} name {pinned_at}; run "
+                            f"`fleet sync --to {content}`, which takes the pins' commit")
     summary = ""
     if content and len(versions) == 1:
         newer = [pin for pin in pinned if agents_md.version_key(content) > agents_md.version_key(pin)]
@@ -95,8 +145,9 @@ def drift(root: Path) -> tuple[list[str], str]:
             why = "is newer than" if pin in newer else "is another major version than"
             problems.append(f"fleet content {content} {why} the workflow pin {pin} in {', '.join(pinned[pin])}")
         pins_text = ", ".join(sorted(pinned, key=agents_md.version_key)) if pinned else "none"
+        at = f"{content} (commit {commit})" if commit else f"{content} (no commit: fleet {content} wrote none)"
         summary = (f"{len(found)} AGENTS.md blocks, {vendored} vendored files and {agents_md.VERSION_FILE.as_posix()} at "
-                   f"{content}; "
+                   f"{at}; "
                    f"fleet workflow pins: {pins_text}")
     return problems, summary
 

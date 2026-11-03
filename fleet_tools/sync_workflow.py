@@ -30,6 +30,7 @@ class Plan:
     action: str
     content: str
     pin: str
+    commit: str
     files: tuple[str, ...]
     reason: str
 
@@ -42,15 +43,15 @@ class Plan:
         return ""
 
 
-def content_version(root: Path) -> str:
+def content_version(root: Path) -> agents_md.Content:
     path = root / agents_md.VERSION_FILE
     if not path.is_file():
         raise PlanError(f"{agents_md.VERSION_FILE.as_posix()} doesn't exist: adopt fleet's content by hand first "
                         "(`fleet sync --to <the pins' version>` from fleet at that version; docs/adopting.md)")
-    text = path.read_text(encoding="utf-8").strip()
-    if not agents_md.VERSION.fullmatch(text):
-        raise PlanError(f"{agents_md.VERSION_FILE.as_posix()} holds {text[:40]!r}, not a version (vX.Y.Z)")
-    return text
+    try:
+        return agents_md.parse_version_file(path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        raise PlanError(str(error)) from error
 
 
 def plan(root: Path) -> Plan:
@@ -62,20 +63,31 @@ def plan(root: Path) -> Plan:
                             for version, files in sorted(pinned.items(), key=lambda item: agents_md.version_key(item[0])))
         raise PlanError(f"the fleet pins disagree: {listing}; bump them together (Dependabot's fleet group does)")
     if not pinned:
-        return Plan(NONE, "", "", (), f"no fleet pin in {drift.WORKFLOWS}; nothing to sync to")
-    content = content_version(root)
+        return Plan(NONE, "", "", "", (), f"no fleet pin in {drift.WORKFLOWS}; nothing to sync to")
+    stored = content_version(root)
+    content = stored.version
     pin, files = next(iter(pinned.items()))
+    commit, problems = drift.pinned_commit(root, pin)
+    if problems:
+        raise PlanError("; ".join(problems))
     where = ", ".join(files)
+    if commit is None:
+        raise PlanError(f"the fleet pins at {pin} ({where}) name no commit (`@<sha>`), which the sync writes into "
+                        f"{agents_md.VERSION_FILE.as_posix()}; pin by full commit SHA")
     have, want = agents_md.version_key(content), agents_md.version_key(pin)
     if have == want:
-        return Plan(NONE, content, pin, tuple(files), f"the content and the workflow pins agree at {pin}")
+        if stored.commit == commit or (stored.commit is None and not agents_md.needs_commit(content)):
+            return Plan(NONE, content, pin, commit, tuple(files), f"the content and the workflow pins agree at {pin}")
+        named = f"names {stored.commit}" if stored.commit else "names no commit"
+        return Plan(SYNC, content, pin, commit, tuple(files),
+                    f"the pins ({where}) are at {pin}, commit {commit}; {agents_md.VERSION_FILE.as_posix()} {named}")
     if have > want:
         raise PlanError(f"fleet content {content} is newer than the workflow pin {pin} in {where}; bump the pins "
                         "(Dependabot) rather than the content")
     if have[0] < want[0]:
-        return Plan(MIGRATION, content, pin, tuple(files),
+        return Plan(MIGRATION, content, pin, commit, tuple(files),
                     f"the pins ({where}) are at {pin}, a newer major than the content's {content}")
-    return Plan(SYNC, content, pin, tuple(files), f"the pins ({where}) are at {pin}; the content is at {content}")
+    return Plan(SYNC, content, pin, commit, tuple(files), f"the pins ({where}) are at {pin}; the content is at {content}")
 
 
 def changelog_between(text: str, after: str, upto: str) -> str:
@@ -103,7 +115,8 @@ def pull_request_body(found: Plan, changelog: str) -> str:
     where = ", ".join(f"`{name}`" for name in found.files)
     return (f"Syncs fleet's content from {found.content} to {found.pin}, the version the workflow pins carry ({where}): "
             "the `AGENTS.md` blocks between the fleet markers, the vendored `.claude/` files and `tools/fleet`, and "
-            "`.fleet/version`. Nothing outside the markers and nothing under `.github/workflows/` changes: Dependabot "
+            f"`.fleet/version` (the version, and the pins' commit `{found.commit}`, which `tools/fleet` runs fleet at). "
+            "Nothing outside the markers and nothing under `.github/workflows/` changes: Dependabot "
             "bumps the pins, and this pull request follows each bump.\n\n"
             "Opened by fleet's sync workflow with the fleet-bot App, so the pull request's checks run; the branch "
             f"`{BRANCH}` is rewritten by each run until this merges. `fleet drift` lets the content trail the pins "
@@ -117,8 +130,9 @@ def issue_body(found: Plan, changelog: str) -> str:
             "another major version. fleet's sync workflow doesn't cross a major, because a major release changes an "
             "input, a status name or an `AGENTS.md` block in a way the app has to adapt to first.\n\n"
             "Read the CHANGELOG entries below, make the changes they ask for, then sync the content by hand from fleet "
-            f"at the pins' version: `uvx --from \"git+https://github.com/AnthonyPluth/fleet@{found.pin}\" fleet sync "
-            f"--to {found.pin}`, and commit `AGENTS.md`, `.fleet/version` and the vendored files together. "
+            f"at the pins' version: `uvx --from \"git+https://github.com/AnthonyPluth/fleet@{found.commit}\" fleet sync "
+            f"--to {found.pin}` (the pins' commit, so `.fleet/version` gets it too), and commit `AGENTS.md`, "
+            "`.fleet/version` and the vendored files together. "
             "`fleet drift` fails until they match; this issue is done when it passes.\n\n"
             f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin)}")
 
@@ -132,7 +146,8 @@ def body(found: Plan, changelog: str) -> str:
 
 
 def outputs(found: Plan) -> list[str]:
-    return [f"action={found.action}", f"content={found.content}", f"pin={found.pin}", f"files={', '.join(found.files)}",
+    return [f"action={found.action}", f"content={found.content}", f"pin={found.pin}", f"commit={found.commit}",
+            f"files={', '.join(found.files)}",
             f"title={found.title}", f"branch={BRANCH}", f"reason={found.reason}"]
 
 

@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from consumers import WAYPOINT, commit, git
 
-from fleet_tools import agents_md, drift, vendor
+from fleet_tools import agents_md, drift, release, vendor
 
 ROOT = Path(__file__).resolve().parent.parent
 KEY = re.compile(r"^(pins|content)=(v\d+\.\d+\.\d+)$")
@@ -69,7 +69,7 @@ def build(out: Path, pins: str, content: str, source: Path = WAYPOINT) -> Path:
         path.write_text(vendored.text, encoding="utf-8")
         if vendored.executable:
             path.chmod(path.stat().st_mode | 0o755)
-    (out / agents_md.VERSION_FILE).write_text(content + "\n", encoding="utf-8")
+    (out / agents_md.VERSION_FILE).write_text(agents_md.render_version_file(content, release.FIXTURE_COMMIT), encoding="utf-8")
     git(out, "init", "-q", "-b", "main")
     commit(out, "chore: the fixture consumer")
     return out

@@ -13,7 +13,15 @@ from unittest import mock
 import sync_fixture
 from consumers import FIXTURES, RUNWAY, WAYPOINT, commit, copy, git, temporary, write
 
-from fleet_tools import agents_md, cli, drift, self_check, sync_workflow, vendor
+from fleet_tools import (
+    agents_md,
+    cli,
+    drift,
+    release,
+    self_check,
+    sync_workflow,
+    vendor,
+)
 
 ROOT = cli.ROOT
 VERSION = agents_md.own_version()
@@ -146,6 +154,58 @@ class Planner(unittest.TestCase):
             sync_workflow.plan(root)
         self.assertIn(f"{PIN_FILE}: the fleet pin @0123456789abcdef0123456789abcdef01234567 has no version", str(raised.exception))
 
+    def test_the_plan_carries_the_pins_commit_and_pins_at_two_commits_fail(self) -> None:
+        root = consumer(self, "v1.1.0", "v1.0.0")
+        self.assertEqual(sync_workflow.plan(root).commit, release.FIXTURE_COMMIT)
+        path = root / PIN_FILE
+        path.write_text(path.read_text(encoding="utf-8").replace(release.FIXTURE_COMMIT, "f" * 40), encoding="utf-8")
+        with self.assertRaises(sync_workflow.PlanError) as raised:
+            sync_workflow.plan(root)
+        self.assertEqual(str(raised.exception), f"the fleet pins at v1.1.0 name more than one commit: {release.FIXTURE_COMMIT} in "
+                                                f".github/workflows/sync.yml; {'f' * 40} in {PIN_FILE}; bump them together "
+                                                "(Dependabot's fleet group does)")
+
+    def test_pins_that_name_no_commit_cannot_be_synced_to(self) -> None:
+        for content in ("v1.0.0", "v1.1.0"):
+            for every in (True, False):
+                with self.subTest(content=content, every=every):
+                    root = consumer(self, "v1.1.0", content)
+                    paths = sorted((root / ".github/workflows").glob("*.yml")) if every else [root / PIN_FILE]
+                    for path in paths:
+                        path.write_text(path.read_text(encoding="utf-8").replace(f"@{release.FIXTURE_COMMIT}", "@main"),
+                                        encoding="utf-8")
+                    with self.assertRaises(sync_workflow.PlanError) as raised:
+                        sync_workflow.plan(root)
+                    self.assertIn(f"{PIN_FILE}: the fleet pin at v1.1.0 is @main, a ref that can move; pin it by full "
+                                  "commit SHA", str(raised.exception))
+        self.assertEqual(sync_workflow.plan(consumer(self, "v1.0.0", "v1.0.0")).commit, release.FIXTURE_COMMIT)
+
+    def test_pins_moved_to_another_commit_at_the_same_version_sync(self) -> None:
+        root = consumer(self, "v1.1.0", "v1.1.0")
+        self.assertEqual(sync_workflow.plan(root).action, "none")
+        other = "f" * 40
+        for path in (root / ".github/workflows").glob("*.yml"):
+            path.write_text(path.read_text(encoding="utf-8").replace(release.FIXTURE_COMMIT, other), encoding="utf-8")
+        found = sync_workflow.plan(root)
+        self.assertEqual((found.action, found.commit), ("sync", other))
+        self.assertIn(f"commit {other}; .fleet/version names {release.FIXTURE_COMMIT}", found.reason)
+        write(root, ".fleet/version", "v1.1.0\n")
+        found = sync_workflow.plan(root)
+        self.assertEqual(found.action, "sync")
+        self.assertIn(".fleet/version names no commit", found.reason)
+        root = consumer(self, "v1.0.0", "v1.0.0")
+        write(root, ".fleet/version", "v1.0.0\n")
+        self.assertEqual(sync_workflow.plan(root).action, "none")
+
+    def test_a_version_file_with_a_malformed_commit_fails(self) -> None:
+        root = consumer(self, "v1.1.0", "v1.0.0")
+        write(root, ".fleet/version", "v1.0.0\nnot-a-commit\n")
+        with self.assertRaises(sync_workflow.PlanError) as raised:
+            sync_workflow.plan(root)
+        self.assertEqual(str(raised.exception), ".fleet/version line 2 holds 'not-a-commit', not a commit (40 hex digits)")
+        write(root, ".fleet/version", "v1.0.0\n")
+        self.assertEqual(sync_workflow.plan(root).action, "sync")
+
     def test_content_newer_than_the_pins_fails(self) -> None:
         with self.assertRaises(sync_workflow.PlanError) as raised:
             sync_workflow.plan(consumer(self, "v1.0.0", "v1.1.0"))
@@ -178,6 +238,7 @@ class Planner(unittest.TestCase):
         lines = dict(line.split("=", 1) for line in out.splitlines())
         self.assertEqual(lines["action"], "sync")
         self.assertEqual(lines["pin"], "v1.1.0")
+        self.assertEqual(lines["commit"], release.FIXTURE_COMMIT)
         self.assertEqual(lines["content"], "v1.0.0")
         self.assertEqual(lines["title"], "chore: fleet content v1.1.0")
         self.assertEqual(lines["branch"], "fleet/sync")
@@ -232,9 +293,13 @@ class Bodies(unittest.TestCase):
         found = sync_workflow.plan(consumer(self, "v2.0.0", "v1.0.0"))
         body = sync_workflow.body(found, "## [2.0.0] - 2026-06-01\n\n### Changed\n\n- Breaking.\n")
         for phrase in ("another major version", "doesn't cross a major",
-                       '`uvx --from "git+https://github.com/AnthonyPluth/fleet@v2.0.0" fleet sync --to v2.0.0`',
+                       f'`uvx --from "git+https://github.com/AnthonyPluth/fleet@{release.FIXTURE_COMMIT}" fleet sync --to v2.0.0`',
                        "## CHANGELOG v1.0.0 → v2.0.0", "- Breaking."):
             self.assertIn(phrase, body)
+
+    def test_the_pull_request_body_names_the_pins_commit(self) -> None:
+        found = sync_workflow.plan(consumer(self, "v1.1.0", "v1.0.0"))
+        self.assertIn(f"the pins' commit `{release.FIXTURE_COMMIT}`, which `tools/fleet` runs fleet at", sync_workflow.body(found, CHANGELOG))
 
     def test_nothing_to_do_has_no_body(self) -> None:
         self.assertEqual(sync_workflow.body(sync_workflow.plan(consumer(self, "v1.0.0", "v1.0.0")), CHANGELOG), "")
@@ -296,7 +361,7 @@ class Fixture(unittest.TestCase):
         self.assertEqual(workflows, ["ci.yml", "merge-gate.yml", "sync.yml"])
         pinned, problems = drift.pins(root)
         self.assertEqual((problems, pinned), ([], {"v1.1.0": [".github/workflows/merge-gate.yml", ".github/workflows/sync.yml"]}))
-        self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), "v1.0.0\n")
+        self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), f"v1.0.0\n{release.FIXTURE_COMMIT}\n")
         text = (root / "AGENTS.md").read_text(encoding="utf-8")
         self.assertEqual({block.version for block in agents_md.blocks(text)}, {"v1.0.0"})
         self.assertEqual(len(agents_md.blocks(text)), len(agents_md.ORDER))
@@ -326,7 +391,7 @@ class Fixture(unittest.TestCase):
         self.assertIn(f"AGENTS.md: the mistakes block differs from fleet's at {VERSION}; edit it in fleet "
                       "(agents-md/sections/mistakes.md), not here, or run `fleet sync`", problems,
                       "regenerate tests/fixtures/drifted at this VERSION: fleet's blocks with one line added inside mistakes")
-        self.assertEqual((DRIFTED / ".fleet/version").read_text(encoding="utf-8"), VERSION + "\n")
+        self.assertEqual((DRIFTED / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{release.FIXTURE_COMMIT}\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(cli.main(["checks", "--root", str(DRIFTED)]), 0)
@@ -437,9 +502,13 @@ class SyncWorkflow(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.fleet-ref || env.FLEET_REF }}", fleet_checkouts[0])
         pin = self.steps["fleet at the pins' version"]
         self.assertIn("if: steps.plan.outputs.action != 'none'", pin)
+        self.assertIn("COMMIT: ${{ steps.plan.outputs.commit }}", pin)
         script = pin.split("run: |\n", 1)[1]
         self.assertIn('[[ "$PIN" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]', script)
+        self.assertIn('[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]', script)
         self.assertIn('git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin', script)
+        self.assertIn('head=$(git -C .fleet-pin rev-parse HEAD)', script)
+        self.assertIn('if [ "$head" != "$COMMIT" ]; then', script)
         self.assertIn("cp -a .fleet .fleet-pin", script)
         self.assertNotIn("GH_TOKEN", pin)
         self.assertNotIn("secrets.", pin)
@@ -533,6 +602,8 @@ class FixtureMode(unittest.TestCase):
                 if action == "none":
                     continue
                 env["PIN"] = found["pin"]
+                env["COMMIT"] = found["commit"]
+                self.assertEqual(found["commit"], release.FIXTURE_COMMIT)
                 self.run_step("fleet at the pins' version", workspace, env)
                 self.assertEqual((workspace / ".fleet-pin/VERSION").read_text(encoding="utf-8").strip(), found["pin"][1:])
                 self.run_step("Write the pull request's or the issue's body", workspace, env)
@@ -543,6 +614,27 @@ class FixtureMode(unittest.TestCase):
                     self.run_step("Sync the content", workspace, env)
                     changed = base64.b64decode(self.outputs(env)["changed"]).decode().split()
                     self.assertEqual(sorted(changed), sync_fixture.expected())
+                    self.assertEqual((workspace / "app/.fleet/version").read_text(encoding="utf-8"),
+                                     f"v1.1.0\n{release.FIXTURE_COMMIT}\n")
+
+    def test_a_real_sync_refuses_a_tag_off_the_pins_commit(self) -> None:
+        workspace = temporary(self)
+        fleet = workspace / "upstream"
+        write(fleet, "VERSION", "1.1.0\n")
+        git(fleet, "init", "-q", "-b", "main")
+        commit(fleet, "chore: fleet at the tag")
+        git(fleet, "tag", "v1.1.0")
+        script = script_of(self.steps["fleet at the pins' version"]).replace("https://github.com/AnthonyPluth/fleet", str(fleet))
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "PIN": "v1.1.0", "FIXTURE": "", "COMMIT": release.FIXTURE_COMMIT}
+        done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=workspace, env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn(f"The tag v1.1.0 is at {git(fleet, 'rev-parse', 'HEAD').strip()}, but the workflow pins name {release.FIXTURE_COMMIT}",
+                      done.stdout)
+        shutil.rmtree(workspace / ".fleet-pin")
+        env["COMMIT"] = git(fleet, "rev-parse", "HEAD").strip()
+        done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=workspace, env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("fleet 1.1.0 in .fleet-pin", done.stdout)
 
 
 class ChecksWorkflow(unittest.TestCase):
