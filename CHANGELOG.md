@@ -12,6 +12,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 - `merge-gate.yml` takes `require-codex-review` (default `false`, which changes nothing): `true` keeps the gate pending ("Codex review of this commit") until `chatgpt-codex-connector[bot]` has reviewed the head commit, by a pull request review on it or its own comment whose "Reviewed commit" (7 or more leading hex digits) or `codex-review-state` line names it; an older commit's review doesn't count, a read that fails stays pending, and Dependabot's pull requests are exempt. `docs/adopting.md` adds the `issue_comment` job a `merge-gate-threads` caller needs for it (fleet issue #58's second part). The fake `gh` serves `issues/<n>/…` paths.
 
+### Fixed
+
+- Caller defects found adopting v1 (#52). `fleet checks`' workflow conventions accept fleet's own caller snippets: a `runs-on` under a job's `with:` (a reusable workflow's input, quoted or not) is no longer held to the `RUNS_ON` line, and a workflow with no `run:` step needs no `defaults: run: shell: bash`; the check now also fails an event under `on:` that GitHub Actions doesn't have. `docs/adopting.md`'s `merge-gate-threads.yml` caller and the workflow's header drop the review-thread webhook, which Actions can't subscribe to (a workflow naming it is invalid and never runs): callers trigger on `pull_request_review` and `pull_request_review_comment` only, and after resolving a thread the "Merge gate" is re-run by hand or by the next push; `fleet self-check` fails when a doc, README, plugin file or workflow names that webhook. `deep-scan-due.yml`'s job also asks for `contents: read`, which its compare call needs to count the commits since the last scan (without it the call was refused and the issue said the count was unknown); a refused comparison now prints a `::warning::`. **A caller that grants `issues: write` alone must add `contents: read`**, or its call fails to start; `docs/adopting.md` and the self-test grant both. Tests in `tests/test_checks_workflows.py` (every documented caller passes), `tests/test_self_check.py` and `tests/test_deep_scan_due.py`.
+
 ## [1.1.0] - 2026-11-03
 
 ### Added

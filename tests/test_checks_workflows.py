@@ -1,4 +1,6 @@
+import re
 import unittest
+from pathlib import Path
 
 from consumers import RUNWAY, WAYPOINT, checks, copy, empty_consumer, ran, write
 
@@ -8,6 +10,22 @@ GOOD = ("name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n  a:\n   
         "      - uses: actions/checkout@" + "a" * 40 + "   # v7.0.1\n"
         "      - uses: ./.github/actions/local\n"
         "      - run: gh api --paginate \"repos/$R/pulls?per_page=100\"\n")
+
+
+ROOT = Path(__file__).resolve().parent.parent
+CALLER = ("name: X\non:\n  pull_request_review:\n    types: [submitted]\n  pull_request_review_comment:\n"
+          "    types: [created]\npermissions: {}\njobs:\n  a:\n    permissions:\n      actions: write\n"
+          "    uses: AnthonyPluth/fleet/.github/workflows/x.yml@" + "a" * 40 + "   # v1.1.0\n    with:\n"
+          "      runs-on: ${{ vars.RUNS_ON || '\"ubuntu-latest\"' }}\n")
+
+
+def snippets() -> list[tuple[str, str]]:
+    found = []
+    for doc in sorted([*(ROOT / "docs").glob("*.md"), ROOT / "README.md"]):
+        for block in re.finditer(r"^```yaml\n(.*?)^```", doc.read_text(encoding="utf-8"), re.MULTILINE | re.DOTALL):
+            if re.search(r"^jobs:", block.group(1), re.MULTILINE):
+                found.append((doc.name, block.group(1).replace("@<commit>", "@" + "0" * 40)))
+    return found
 
 
 def job_env(expression: str) -> str:
@@ -44,6 +62,37 @@ class Workflow(unittest.TestCase):
                      "runs-on: ubuntu-latest   # hosted:"):
             with self.subTest(bare=bare):
                 self.assertIn("should be fleet's RUNS_ON line", wf.check_workflow("x.yml", GOOD.replace(wf.RUNS_ON, bare))[0])
+
+    def test_a_caller_with_no_run_steps_needs_no_bash_default(self) -> None:
+        self.assertEqual(wf.check_workflow("x.yml", CALLER), [])
+        with_run = CALLER + "  b:\n    " + wf.RUNS_ON + "\n    steps:\n      - run: |\n          true\n"
+        self.assertIn("no top-level `defaults: run: shell: bash`", wf.check_workflow("x.yml", with_run)[0])
+
+    def test_a_runs_on_input_quoted_or_not_is_an_input_not_a_jobs_runner(self) -> None:
+        self.assertEqual(wf.check_workflow("x.yml", CALLER), [])
+        quoted = CALLER.replace("      runs-on:", '      "runs-on":')
+        self.assertEqual(wf.check_workflow("x.yml", quoted), [])
+        job = CALLER.replace("    uses:", "    runs-on: ubuntu-latest\n    uses:")
+        self.assertIn("should be fleet's RUNS_ON line", wf.check_workflow("x.yml", job)[0])
+
+    def test_an_event_outside_the_ones_actions_has_fails(self) -> None:
+        for bad in ("on:\n  pull_request_review_thread:\n    types: [resolved]\n", "on: [push, pull_request_review_thread]\n",
+                    "on: pull_request_review_thread\n"):
+            with self.subTest(bad=bad):
+                text = re.sub(r"^on:\n(?:  .*\n)+", bad, CALLER, flags=re.MULTILINE)
+                self.assertEqual(wf.check_workflow("x.yml", text), ["x.yml: `pull_request_review_thread` isn't a GitHub "
+                                                                    "Actions event (the file would be invalid and never run)"])
+        for fine in ("on: [push, pull_request]\n", "on: workflow_dispatch\n", '"on":\n  schedule:\n    - cron: "1 2 * * *"\n'):
+            with self.subTest(fine=fine):
+                text = re.sub(r"^on:\n(?:  .*\n)+", fine, CALLER, flags=re.MULTILINE)
+                self.assertEqual(wf.check_workflow("x.yml", text), [])
+
+    def test_fleets_documented_callers_pass(self) -> None:
+        found = snippets()
+        self.assertGreater(len(found), 10)
+        for doc, text in found:
+            with self.subTest(doc=doc, snippet=text.splitlines()[0]):
+                self.assertEqual(wf.check_workflow("x.yml", text), [])
 
     def test_a_context_a_job_env_cannot_use_fails_but_a_steps_env_may(self) -> None:
         job = GOOD.replace("  a:\n", "  a:\n    env:\n      OUT: ${{ runner.temp }}/x\n")

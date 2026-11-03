@@ -51,7 +51,9 @@ def recorded_revision(repo: str, issue: dict[str, Any]) -> str | None:
 def commits_since(repo: str, revision: str, branch: str) -> int | None:
     try:
         comparison = gh(f"repos/{repo}/compare/{revision}...{branch}")
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as error:
+        print(f"::warning::deep-scan-due: the comparison of {revision} with {branch} was refused, so the commit count is "
+              f"unknown: {(error.stderr or '').strip()[:200]}", file=sys.stderr)
         return None
     ahead = comparison.get("ahead_by")
     return ahead if isinstance(ahead, int) else None

@@ -64,10 +64,12 @@ jobs:
           echo "Semgrep failed on the planted finding, as it should."
 
   # The deep-scan reminder in dry run on fleet itself: it reads fleet's issues and prints the issue it would open (or
-  # that one is open) without opening anything. The called job asks for `issues: write`, so the caller grants it.
+  # that one is open) without opening anything. The called job asks for `issues: write` and `contents: read` (the
+  # commit count's compare call), so the caller grants both.
   deep-scan-due:
     name: Deep scan due (dry run)
     permissions:
+      contents: read
       issues: write
     uses: ./.github/workflows/deep-scan-due.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
     with:

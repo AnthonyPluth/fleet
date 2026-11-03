@@ -112,6 +112,25 @@ class FleetRefTest(unittest.TestCase):
         self.assertEqual(self_check.expected_ref("10.0.1"), "v10.0.1")
 
 
+class EventNamesTest(unittest.TestCase):
+    def test_a_doc_or_workflow_naming_the_review_thread_webhook_fails(self) -> None:
+        for path in ("docs/adopting.md", "README.md", ".github/workflows/merge-gate-threads.yml",
+                     "plugins/fleet/skills/x/SKILL.md"):
+            with self.subTest(path=path):
+                repo = Repo(self)
+                (repo.root / path).parent.mkdir(parents=True, exist_ok=True)
+                (repo.root / path).write_text("on:\n  pull_request_review_thread:\n    types: [resolved]\n", encoding="utf-8")
+                self.assertEqual(self_check.check(repo.root), [f"{path}: names `pull_request_review_thread`, a webhook "
+                                                               "GitHub Actions can't subscribe to (a workflow naming it "
+                                                               "is invalid and never runs)"])
+
+    def test_the_events_actions_has_pass(self) -> None:
+        repo = Repo(self)
+        (repo.root / "docs" / "adopting.md").write_text(
+            "# Adopting fleet\n\npull_request_review and pull_request_review_comment start it.\n", encoding="utf-8")
+        self.assertEqual(self_check.check(repo.root), [])
+
+
 class SelfTestCallsTest(unittest.TestCase):
     def test_calls_without_the_head_commit_as_fleet_ref_fail(self) -> None:
         repo = Repo(self)
