@@ -189,7 +189,28 @@ class Workflow(unittest.TestCase):
                  "  a:\n    " + wf.RUNS_ON + "\n    needs: *deps\n" + step)
         for case in cases:
             with self.subTest(case=case):
-                self.assertIn("uses YAML aliases or merge keys", " ".join(wf.check_workflow("x.yml", jobs(case))))
+                self.assertIn("uses YAML aliases, merge keys or explicit `?` keys", " ".join(wf.check_workflow("x.yml", jobs(case))))
+
+    def test_an_explicit_key_is_reported_not_skipped(self) -> None:
+        head = "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n"
+        step = "      steps:\n        - run: true\n"
+        for text in (head + "  ? build\n  : \n      runs-on: windows-latest\n" + step,
+                     head + "  ?\n    build\n  :\n      runs-on: windows-latest\n" + step):
+            with self.subTest(text=text):
+                self.assertIn("explicit `?` keys", " ".join(wf.check_workflow("x.yml", text)))
+        plain = head + "  ?build:\n    " + wf.RUNS_ON + "\n    steps:\n      - run: true\n"
+        self.assertEqual(wf.check_workflow("x.yml", plain), [])
+
+    def test_a_hash_inside_a_quoted_runner_is_not_a_comment(self) -> None:
+        head = "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n  a:\n"
+        tail = "\n    steps:\n      - run: true\n"
+        for runner in ('"ubuntu-latest # hosted: reason"', "'ubuntu-latest # hosted: reason'"):
+            with self.subTest(runner=runner):
+                found = wf.check_workflow("x.yml", head + "    runs-on: " + runner + tail)
+                self.assertEqual(len(found), 1)
+                self.assertIn("should be fleet's RUNS_ON line", found[0])
+        quoted_ok = head + '    runs-on: "ubuntu-latest"   # hosted: reason' + tail
+        self.assertEqual(wf.check_workflow("x.yml", quoted_ok), [])
 
     def test_jobs_that_cant_be_read_are_reported_not_accepted(self) -> None:
         for unreadable in ("{a: {runs-on: windows-latest, steps: []}}", ">-\n  a: b", "|\n  a: b"):

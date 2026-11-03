@@ -39,8 +39,8 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     where: Where = {}
     tree = parse(text, where)
     if resolves_elsewhere(tree):
-        problems.append(f"{name}: the file uses YAML aliases or merge keys, which this check can't resolve (write the "
-                        "values out)")
+        problems.append(f"{name}: the file uses YAML aliases, merge keys or explicit `?` keys, which this check can't resolve "
+                        "(write the values out)")
     if workflow and not only_calls(tree) and not BASH_DEFAULT.search(text):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
     for found in USES.finditer(text):
@@ -73,7 +73,7 @@ def resolves_elsewhere(node: Node) -> bool:
     if isinstance(node, Alias):
         return True
     if isinstance(node, dict):
-        return "<<" in node or any(resolves_elsewhere(child) for child in node.values())
+        return "<<" in node or "?" in node or any(resolves_elsewhere(child) for child in node.values())
     if isinstance(node, list):
         return any(resolves_elsewhere(child) for child in node)
     return False
@@ -94,7 +94,8 @@ def check_runners(name: str, text: str, tree: Node, where: Where) -> list[str]:
         runner = job["runs-on"]
         line = raw
         if isinstance(runner, str) and not isinstance(runner, BlockScalar):
-            line = f"runs-on: {runner}{raw[len(strip_comment(raw)):]}"
+            comment = raw[len(strip_comment(raw)):]
+            line = f'runs-on: "{runner}"{comment}' if re.search(r"\s#", runner) else f"runs-on: {runner}{comment}"
         if line != RUNS_ON and not HOSTED.match(line):
             problems.append(f"{name}: `{line[:60]}` should be fleet's RUNS_ON line (fleet_tools/checks/workflows.py), "
                             "or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`")

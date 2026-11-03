@@ -115,7 +115,12 @@ def _mapping(lines: list[Line], index: int, indent: int, path: Trail, where: Whe
     mapping: dict[str, Node] = {}
     while index < len(lines) and lines[index].indent == indent and not lines[index].text.startswith("- "):
         match = KEY_PATTERN.match(lines[index].text)
+        explicit = lines[index].text == "?" or lines[index].text.startswith("? ")
         index += 1
+        if explicit:
+            mapping["?"] = ""
+            while index < len(lines) and lines[index].indent > indent:
+                index += 1
         if match is None:
             continue
         key, value = match.group("key").strip(), match.group("value")
