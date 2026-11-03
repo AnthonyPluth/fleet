@@ -43,6 +43,8 @@
 #                        by chatgpt-codex-connector[bot] on the head commit, or its comment whose "Reviewed commit" or
 #                        review state names it (default: false)
 #   AUTOMERGE_DEPENDABOT merge Dependabot's pull requests once the gate passes (default: true)
+#   AUTOMERGE_FLEET_BUMPS merge one that changes a fleet reference too, rather than leave it for the owner
+#                        (default: false)
 #   AFTER_MERGE_WORKFLOWS workflow files to start on main after such a merge, space-separated
 #                        (default: docker.yml security.yml)
 # DRY_RUN=1 (or true) prints what it would do instead of doing it.
@@ -69,7 +71,9 @@ OPEN_BADGED_THREADS='.data.repository.pullRequest.reviewThreads.nodes[]
 REQUIRE_CODEX_REVIEW=${REQUIRE_CODEX_REVIEW:-false}
 CODEX='chatgpt-codex-connector[bot]'
 AUTOMERGE_DEPENDABOT=${AUTOMERGE_DEPENDABOT:-true}
+AUTOMERGE_FLEET_BUMPS=${AUTOMERGE_FLEET_BUMPS:-false}
 AFTER_MERGE_WORKFLOWS=${AFTER_MERGE_WORKFLOWS-docker.yml security.yml}
+FLEET_REFERENCE='AnthonyPluth/fleet/'
 
 lines() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' <<< "$1"; }
 mapfile -t required_workflows < <(lines "$required_workflows_text")
@@ -215,13 +219,24 @@ for (( attempt = 0; ; attempt++ )); do
   sleep "$POLL_SECONDS"
 done
 
-# Dependabot's pull requests merge themselves once the gate passes (any update type, a bump of a fleet reference too:
-# the gate is the tests), as long as every commit is Dependabot's own, so nobody else's change rides along.
+# Dependabot's pull requests merge themselves once the gate passes (any update type: the gate is the tests), as long as
+# every commit is Dependabot's own, so nobody else's change rides along.
 [ "$state" = success ] && [ "$author" = "dependabot[bot]" ] && [ "$head_repo" = "$REPO" ] && [ "$draft" = false ] || exit 0
 if [ "$AUTOMERGE_DEPENDABOT" != true ]; then echo "Not merging #$number: AUTOMERGE_DEPENDABOT is off."; exit 0; fi
 others=$(gh api --paginate "repos/$REPO/pulls/$number/commits" \
            --jq '.[] | select(.author.login != "dependabot[bot]" or .commit.verification.verified != true) | .sha')
 if [ -n "$others" ]; then echo "::notice::#$number has commits from someone other than Dependabot; leaving it for review."; exit 0; fi
+# A bump of a fleet reference changes the review and this gate themselves, so by default the gate leaves it for the
+# owner to merge; AUTOMERGE_FLEET_BUMPS=true merges it like any other once the gate passes.
+fleet_bump=$(gh api --paginate "repos/$REPO/pulls/$number/files" \
+               --jq '.[] | select(any((.patch // "") | split("\n")[]; test("^[-+].*'"$FLEET_REFERENCE"'"))) | .filename')
+if [ -n "$fleet_bump" ]; then
+  if [ "$AUTOMERGE_FLEET_BUMPS" != true ]; then
+    echo "::notice::#$number changes a $FLEET_REFERENCE reference ($(paste -sd, <<< "$fleet_bump" | sed 's/,/, /g')); leaving it for the owner."
+    exit 0
+  fi
+  echo "#$number changes a $FLEET_REFERENCE reference; merging it (AUTOMERGE_FLEET_BUMPS is on)."
+fi
 # --match-head-commit refuses if the pull request moved on since the checked commit.
 run gh pr merge "$number" --repo "$REPO" --squash --match-head-commit "$SHA"
 # A merge made with this token starts no workflows by itself: start main's release build and security scan.
