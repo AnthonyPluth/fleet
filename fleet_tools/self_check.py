@@ -26,8 +26,19 @@ Trail: TypeAlias = tuple[str | int, ...]
 Where: TypeAlias = dict[Trail, int]
 
 
+PROPERTIES = re.compile(r"^(?:[&!]\S*[ \t]*)+")
+
+
 class BlockScalar(str):
     pass
+
+
+class Alias(str):
+    pass
+
+
+def without_properties(text: str) -> str:
+    return PROPERTIES.sub("", text, count=1)
 
 
 @dataclass(frozen=True)
@@ -72,9 +83,11 @@ def lines_of(source: str) -> list[Line]:
         match = KEY_PATTERN.match(text.strip()) if not text.strip().startswith("- ") else None
         value = match.group("value") if match else None
         if value is None and text.strip().startswith("- "):
-            item = KEY_PATTERN.match(text.strip()[2:].strip())
+            item = KEY_PATTERN.match(without_properties(text.strip()[2:].strip()))
             value = item.group("value") if item else None
-        if value is not None and value[:1] in "|>":
+        if value is not None:
+            value = without_properties(value)
+        if value is not None and value[:1] in ("|", ">"):
             while index < len(raw) and (not raw[index].strip() or _indent(raw[index]) > indent):
                 index += 1
     return lines
@@ -106,13 +119,15 @@ def _mapping(lines: list[Line], index: int, indent: int, path: Trail, where: Whe
         if match is None:
             continue
         key, value = match.group("key").strip(), match.group("value")
+        if value is not None:
+            value = without_properties(value)
         here = (*path, key)
         if where is not None:
             where[here] = lines[index - 1].number
         if value is not None and value[:1] in ("|", ">"):
             mapping[key] = BlockScalar()
-        elif value is not None:
-            mapping[key] = unquote(value)
+        elif value:
+            mapping[key] = Alias(value) if value.startswith("*") else unquote(value)
             while index < len(lines) and lines[index].indent > indent:
                 index += 1
         elif index < len(lines) and lines[index].indent > indent:
@@ -127,7 +142,7 @@ def _mapping(lines: list[Line], index: int, indent: int, path: Trail, where: Whe
 def _sequence(lines: list[Line], index: int, indent: int, path: Trail, where: Where | None) -> tuple[Node, int]:
     items: list[Node] = []
     while index < len(lines) and lines[index].indent == indent and lines[index].text.startswith("-"):
-        rest = lines[index].text[1:].strip()
+        rest = without_properties(lines[index].text[1:].strip())
         index += 1
         here = (*path, len(items))
         if not rest:
@@ -146,7 +161,7 @@ def _sequence(lines: list[Line], index: int, indent: int, path: Trail, where: Wh
             item, _ = _mapping(nested, 0, inner, here, where)
             items.append(item)
         else:
-            items.append(unquote(rest))
+            items.append(Alias(rest) if rest.startswith("*") else unquote(rest))
     return items, index
 
 

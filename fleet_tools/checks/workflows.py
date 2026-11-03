@@ -2,7 +2,15 @@ import re
 from pathlib import Path
 
 from fleet_tools.checks.context import Check, Context
-from fleet_tools.self_check import BlockScalar, Node, Where, flow, parse, strip_comment
+from fleet_tools.self_check import (
+    Alias,
+    BlockScalar,
+    Node,
+    Where,
+    flow,
+    parse,
+    strip_comment,
+)
 
 WORKFLOWS = ".github/workflows"
 ACTIONS = ".github/actions"
@@ -30,6 +38,9 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     problems = []
     where: Where = {}
     tree = parse(text, where)
+    if resolves_elsewhere(tree):
+        problems.append(f"{name}: the file uses YAML aliases or merge keys, which this check can't resolve (write the "
+                        "values out)")
     if workflow and not only_calls(tree) and not BASH_DEFAULT.search(text):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
     for found in USES.finditer(text):
@@ -56,6 +67,16 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
             problems.append(f"{name}: `{event}` isn't a GitHub Actions event (the file would be invalid and never run)")
     problems += check_runners(name, text, tree, where)
     return problems
+
+
+def resolves_elsewhere(node: Node) -> bool:
+    if isinstance(node, Alias):
+        return True
+    if isinstance(node, dict):
+        return "<<" in node or any(resolves_elsewhere(child) for child in node.values())
+    if isinstance(node, list):
+        return any(resolves_elsewhere(child) for child in node)
+    return False
 
 
 def check_runners(name: str, text: str, tree: Node, where: Where) -> list[str]:

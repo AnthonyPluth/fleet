@@ -162,6 +162,35 @@ class Workflow(unittest.TestCase):
         scalar = "  a:\n    runs-on: >-\n      ubuntu-latest\n" + step
         self.assertEqual(len(wf.check_workflow("x.yml", jobs(scalar))), 1)
 
+    def test_a_node_property_does_not_hide_the_mapping_it_marks(self) -> None:
+        def jobs(body: str) -> str:
+            return "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n" + body
+
+        step = "    steps:\n      - run: true\n"
+        for marker in ("&build", "!!map", "&build !!map", "!tag &build"):
+            bad = "  build: " + marker + "\n    runs-on: windows-latest\n" + step
+            good = "  build: " + marker + "\n    " + wf.RUNS_ON + "\n" + step
+            with self.subTest(marker=marker):
+                found = wf.check_workflow("x.yml", jobs(bad))
+                self.assertEqual(len(found), 1)
+                self.assertIn("`runs-on: windows-latest` should be fleet's RUNS_ON line", found[0])
+                self.assertEqual(wf.check_workflow("x.yml", jobs(good)), [])
+        anchored_steps = "  a:\n    " + wf.RUNS_ON + "\n    steps: &s\n      - run: true\n"
+        self.assertEqual(wf.check_workflow("x.yml", jobs(anchored_steps)), [])
+
+    def test_an_alias_or_a_merge_key_is_reported_not_accepted(self) -> None:
+        def jobs(body: str) -> str:
+            return "name: X\non: push\ndefaults:\n  run:\n    shell: bash\njobs:\n" + body
+
+        step = "    steps:\n      - run: true\n"
+        base = "  base: &base\n    runs-on: windows-latest\n" + step
+        cases = (base + "  build:\n    <<: *base\n", base + "  build: *base\n",
+                 "  a:\n    " + wf.RUNS_ON + "\n    steps:\n      - *step\n",
+                 "  a:\n    " + wf.RUNS_ON + "\n    needs: *deps\n" + step)
+        for case in cases:
+            with self.subTest(case=case):
+                self.assertIn("uses YAML aliases or merge keys", " ".join(wf.check_workflow("x.yml", jobs(case))))
+
     def test_jobs_that_cant_be_read_are_reported_not_accepted(self) -> None:
         for unreadable in ("{a: {runs-on: windows-latest, steps: []}}", ">-\n  a: b", "|\n  a: b"):
             with self.subTest(unreadable=unreadable):
