@@ -612,7 +612,7 @@ class AdoptingTest(unittest.TestCase):
 
     def test_the_adoption_steps(self) -> None:
         for needle in (f"fleet sync --to {DOC_TAG}", ".fleet/version", f'"ref": "{DOC_TAG}"', "Merge gate",
-                       'patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]', "schedule: { interval: daily }", "cooldown: { default-days: 7 }", "guides =",
+                       'patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]', "schedule: { interval: daily }", "cooldown: { default-days: 3 }", "guides =",
                        "safety-critical", "review-mining", "manual"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.text)

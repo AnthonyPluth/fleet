@@ -535,7 +535,7 @@ class DependabotTest(unittest.TestCase):
         self.assertIn(f"(dry run) gh workflow run security.yml --repo {REPO} --ref main", result.stdout)
         self.assertIn("(dry run) gh pr merge", gate.run(DRY_RUN="true").stdout)
 
-    def test_a_dependabot_pull_request_bumping_a_fleet_reference_passes_but_is_not_merged(self) -> None:
+    def test_a_dependabot_pull_request_bumping_a_fleet_reference_merges(self) -> None:
         gate = Gate(self)
         gate.dependabot([
             changed_file("poetry.lock", '-version = "1.0"\n+version = "1.1"'),
@@ -549,23 +549,9 @@ class DependabotTest(unittest.TestCase):
         result = gate.run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.posted, [("success", "Every check passed")])
-        self.assertFalse(result.merged)
-        self.assertIn(
-            f"::notice::#{NUMBER} changes a AnthonyPluth/fleet/ reference (.github/workflows/merge-gate.yml); leaving it for the owner.",
-            result.stdout,
-        )
-
-    def test_a_fleet_reference_only_in_unchanged_context_lines_still_merges(self) -> None:
-        gate = Gate(self)
-        gate.dependabot([
-            changed_file(
-                ".github/workflows/ci.yml",
-                "     uses: AnthonyPluth/fleet/.github/workflows/checks.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # v1.0.0\n"
-                "-    uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # v7.0.1\n"
-                "+    uses: actions/checkout@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb   # v7.0.2\n",
-            ),
-        ])
-        self.assertTrue(gate.run().merged)
+        self.assertTrue(result.merged)
+        self.assertIn(["gh", "pr", "merge", str(NUMBER), "--repo", REPO, "--squash", "--match-head-commit", SHA], result.calls)
+        self.assertNotIn("leaving it for the owner", result.stdout)
 
     def test_dependabot_needs_neither_codeql_nor_the_reviews(self) -> None:
         gate = Gate(self)

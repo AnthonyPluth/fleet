@@ -3,7 +3,7 @@ name: Merge gate
 # The reusable merge gate: one commit status, "Merge gate", on a pull request's head, passing once every check on it
 # has passed (the rules are in .github/scripts/merge-gate.sh). An app requires it in a ruleset on main
 # (Settings → Rules → Rulesets → Require status checks to pass → "Merge gate") and it's the one check a merge waits on.
-# It also merges Dependabot's pull requests once it passes, except one that bumps a fleet reference.
+# It also merges Dependabot's pull requests once it passes, a bump of a fleet reference included.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them: its
 # workflow_run list names the app's own workflows, check_suite covers other apps' checks, and workflow_dispatch takes a
@@ -61,7 +61,7 @@ on:
         type: boolean
         default: false
       automerge-dependabot:
-        description: Merge Dependabot's pull requests once the gate passes (never one that bumps a fleet reference).
+        description: Merge Dependabot's pull requests once the gate passes (one that bumps a fleet reference too).
         type: boolean
         default: true
       after-merge-workflows:
