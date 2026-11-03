@@ -527,6 +527,8 @@ jobs:
       contents: read           # check out fleet's tools
       statuses: write          # the pending "Second review" status (and reading the head's)
       actions: write           # start the merge gate
+    outputs:
+      event-class: ${{ steps.class.outputs.class }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
@@ -535,6 +537,16 @@ jobs:
           path: .fleet
           sparse-checkout: fleet_tools
           persist-credentials: false
+      # Which concurrency group second-review joins on a label event (push, label or other-label), decided here because
+      # an expression can't trim: the label is matched against second-review-labels as split_list() splits them, the
+      # same match `wanted` makes. An event this step didn't classify gets a group of its own run (it cancels nothing).
+      - name: Classify the event for the second review's concurrency group
+        id: class
+        env:
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          TRIGGER_LABELS: ${{ inputs.second-review-labels }}
+        run: python3 -I .fleet/fleet_tools/agent_review.py second event-class
       - name: Mark the second review pending while it runs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -613,7 +625,8 @@ jobs:
   # <!-- second-review -->, its own state and findings lines) and its own "Second review" status, posted by
   # second-report. It runs on label events too, which `review` ignores; an unlabeled event from anyone but the
   # repository owner never starts it. Its concurrency group is the job's and tells label events apart from pushes, so
-  # a label event can't cancel a running review of a push (two label events replace each other: the later state wins).
+  # a label event can't cancel a running review of a push (two label events replace each other: the later state wins);
+  # whether a label is a trigger label comes from second-pending's event-class output, matched as split_list() splits.
   # On a label event it runs after second-pending, which marks the head's "Second review" pending first.
   second-review:
     name: Second review
@@ -625,7 +638,7 @@ jobs:
     runs-on: ubuntu-latest   # hosted: reads untrusted pull request content with secrets in reach
     timeout-minutes: 45
     concurrency:
-      group: second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-${{ !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) && 'push' || (contains(format(',{0},', inputs.second-review-labels), format(',{0},', github.event.label.name)) || contains(format(',{0},', inputs.second-review-labels), format(', {0},', github.event.label.name)) || contains(format(',{0},', inputs.second-review-labels), format(',{0} ,', github.event.label.name)) || contains(format(',{0},', inputs.second-review-labels), format(', {0} ,', github.event.label.name))) && 'label' || 'other-label' }}
+      group: second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-${{ !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) && 'push' || needs.second-pending.outputs.event-class || format('unknown-{0}', github.run_id) }}
       cancel-in-progress: true
     permissions:
       contents: read           # check out fleet, main's instructions and the pull request's code

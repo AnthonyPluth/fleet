@@ -91,6 +91,9 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
                                                   lines) on stdin, $SENDER, $OWNER, $LABEL, $LABELS, $TRIGGER_LABELS
                                                   ($FAKE_EVENT, self-test only): wanted=true|false, reason=...,
                                                   reviewed=true|false and pending=true|false for $GITHUB_OUTPUT
+  agent_review.py event-class                     $ACTION, $LABEL, $TRIGGER_LABELS: class=push|label|other-label for
+                                                  $GITHUB_OUTPUT (the second review's concurrency group; the label
+                                                  matched against $TRIGGER_LABELS as `wanted` matches it)
   agent_review.py previous COMMENTS.jsonl OUT.md  the last review's commit and verdict, its text to OUT.md
   agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff; with
                                                   $VERIFICATION=true, $BODY's verification record to verification.md,
@@ -176,6 +179,12 @@ def wanted(action: str, statuses: Sequence[Sequence[str]], review: Review = FIRS
     if action == "ready_for_review" and reviewed_here(statuses, review, event.get("run_url", "")):
         return False, NOT_WANTED["reviewed"]
     return True, ""
+
+
+def event_class(event: dict[str, Any]) -> str:
+    if event.get("action") not in LABEL_EVENTS:
+        return "push"
+    return "label" if event.get("label", "") in event.get("trigger_labels", []) else "other-label"
 
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -680,7 +689,8 @@ def decide(runs: dict[int, Entry]) -> Entry | None:
         return None
     latest = runs[max(runs)]
     if latest.state == "success" and latest.description != NOT_RISKY:
-        blocking = [run for run, e in runs.items() if run < latest.run and e.state == "failure"]
+        cleared = max((run for run, e in runs.items() if run < latest.run and e.state == "success" and e.description == NOT_RISKY), default=0)
+        blocking = [run for run, e in runs.items() if cleared < run < latest.run and e.state == "failure"]
         if blocking:
             return runs[max(blocking)]
     return latest
@@ -826,6 +836,12 @@ def main(argv: list[str]) -> int:
         print(f"reviewed={'true' if reviewed_here(statuses, review, event['run_url']) else 'false'}")
         print(f"pending={'true' if pending_first(action, statuses, review, event) else 'false'}")
         return 0
+    if argv == ["event-class"]:
+        env = {k: v for k, v in os.environ.items() if k != "FAKE_EVENT"}
+        value = event_class(event_from_env(env))
+        append_outputs([f"class={value}"])
+        print(f"class={value}")
+        return 0
     if len(argv) == 3 and argv[0] == "previous":
         with open(argv[1], encoding="utf-8") as f:
             bodies = [b for b in (json.loads(line) for line in f if line.strip()) if isinstance(b, str)]
@@ -861,7 +877,7 @@ def main(argv: list[str]) -> int:
 
 def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("args", nargs=argparse.REMAINDER,
-                        help="[second] detect | wanted ACTION | previous COMMENTS OUT | plan | risky FILES | report OUT | second runs | "
+                        help="[second] detect | wanted ACTION | event-class | previous COMMENTS OUT | plan | risky FILES | report OUT | second runs | "
                              "second publish | second settle")
 
 

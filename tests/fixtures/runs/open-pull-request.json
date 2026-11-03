@@ -1,0 +1,58 @@
+{
+  "id": 9100000001,
+  "name": "Agent review",
+  "node_id": "WFR_madeup",
+  "head_branch": "agent/change",
+  "head_sha": "d0cd1ddb20f4d308de63f9e0481c3152a41c89a0",
+  "path": ".github/workflows/agent-review.yml",
+  "display_title": "fix: a change",
+  "run_number": 12,
+  "event": "pull_request_target",
+  "status": "completed",
+  "conclusion": "skipped",
+  "workflow_id": 700000001,
+  "url": "https://api.github.com/repos/example/app/actions/runs/9100000001",
+  "html_url": "https://github.com/example/app/actions/runs/9100000001",
+  "pull_requests": [
+    {
+      "url": "https://api.github.com/repos/example/app/pulls/7",
+      "id": 800000007,
+      "number": 7,
+      "head": {
+        "ref": "agent/change",
+        "sha": "d0cd1ddb20f4d308de63f9e0481c3152a41c89a0",
+        "repo": {
+          "id": 900000001,
+          "url": "https://api.github.com/repos/example/app",
+          "name": "app"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "6d8acf9291416e2d57b0605cdad8f58e55c7305c",
+        "repo": {
+          "id": 900000001,
+          "url": "https://api.github.com/repos/example/app",
+          "name": "app"
+        }
+      }
+    }
+  ],
+  "run_attempt": 1,
+  "head_repository": {
+    "id": 900000001,
+    "name": "app",
+    "full_name": "example/app",
+    "private": false,
+    "fork": false,
+    "url": "https://api.github.com/repos/example/app"
+  },
+  "repository": {
+    "id": 900000001,
+    "name": "app",
+    "full_name": "example/app",
+    "private": false,
+    "fork": false,
+    "url": "https://api.github.com/repos/example/app"
+  }
+}

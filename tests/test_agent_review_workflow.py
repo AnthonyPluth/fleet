@@ -99,11 +99,24 @@ class ReusableWorkflowTest(unittest.TestCase):
         second = mapping(mapping(jobs["second-review"])["concurrency"])
         self.assertEqual(second["cancel-in-progress"], "true")
         self.assertTrue(second["group"].startswith("second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-"))
-        self.assertIn("&& 'push' ||", second["group"])
-        for pattern in ("',{0},'", "', {0},'", "',{0} ,'", "', {0} ,'"):
-            self.assertIn(f"contains(format(',{{0}},', inputs.second-review-labels), format({pattern}, github.event.label.name))", second["group"])
-        self.assertIn(")) && 'label' || 'other-label' }}", second["group"])
+        self.assertTrue(second["group"].endswith("-${{ !contains(fromJSON('[\"labeled\", \"unlabeled\"]'), github.event.action) && 'push' || "
+                                                 "needs.second-pending.outputs.event-class || format('unknown-{0}', github.run_id) }}"))
+        self.assertNotIn("label.name", second["group"])
+        self.assertEqual(mapping(jobs["second-review"])["needs"], "second-pending")
         self.assertNotEqual(second["group"][:13], "agent-review-")
+
+    def test_second_pending_classifies_the_event_with_split_list_before_anything_can_exit(self) -> None:
+        job = mapping(mapping(self.workflow["jobs"])["second-pending"])
+        self.assertEqual(mapping(job["outputs"]), {"event-class": "${{ steps.class.outputs.class }}"})
+        steps = steps_of(self.workflow, "second-pending")
+        self.assertEqual([step_name(s) for s in steps][:2], ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                                                             "Classify the event for the second review's concurrency group"])
+        step = steps[1]
+        self.assertEqual(step["id"], "class")
+        self.assertNotIn("if", step)
+        self.assertEqual(mapping(step["env"]), {"ACTION": "${{ github.event.action }}", "LABEL": "${{ github.event.label.name }}",
+                                                "TRIGGER_LABELS": "${{ inputs.second-review-labels }}"})
+        self.assertEqual(step["run"], "python3 -I .fleet/fleet_tools/agent_review.py second event-class")
 
     def test_the_pull_request_checkout_keeps_no_credentials_and_every_checkout_says_so(self) -> None:
         for job in REVIEW_JOBS:
