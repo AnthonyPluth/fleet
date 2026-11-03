@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/fleet-session-start.sh\""}
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "v2.0.0"}}
+  }
+}

@@ -3,11 +3,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fleet_tools import agents_md, config, drift, vendor
+from fleet_tools import agents_md, config, drift, marketplace, vendor
 
 HELP = ("sync fleet's content into the consumer at this fleet's version: AGENTS.md's fleet blocks (replaced, or "
         "inserted under their heading; nothing outside the markers changes), the vendored plugin files (.claude/skills/"
-        "fleet-*, .claude/agents/fleet-reviewer.md, .claude/hooks/fleet-session-start.sh, tools/fleet) and .fleet/version "
+        "fleet-*, .claude/agents/fleet-reviewer.md, .claude/hooks/fleet-session-start.sh, tools/fleet), the ref of fleet's "
+        "marketplace in .claude/settings.json (when it declares one) and .fleet/version "
         "(the version, and the commit its tag points at, which tools/fleet runs fleet at: taken from the workflow pins at "
         "that version, else from `git ls-remote` of the tag, or given as --commit)")
 REPOSITORY = "https://github.com/AnthonyPluth/fleet"
@@ -57,6 +58,7 @@ def sync(root: Path, version: str, fleet: Path | None = None, commit: str | None
     if synced != text:
         path.write_text(synced, encoding="utf-8")
     report = [f"{agents_md.AGENTS}: {change}" for change in changes] + vendored
+    report += marketplace.sync(root, version)
     version_file = root / agents_md.VERSION_FILE
     current = version_file.read_text(encoding="utf-8") if version_file.is_file() else None
     rendered = agents_md.render_version_file(version, commit)

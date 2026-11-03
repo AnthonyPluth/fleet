@@ -404,13 +404,12 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: merge-gate-threads-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   decide:
     if: github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: merge-gate-threads-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
     uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.0.0
@@ -420,18 +419,37 @@ jobs:
 
 Upgrading changes behaviour: an app that adopts this version, or whose pin moves to it, fails its gate on an open P1 or P2 thread. Pass `blocking-thread-badges: ""` to keep the old behaviour.
 
-With `require-codex-review: true` the gate also waits for Codex's review of the head, and a review that finds nothing arrives as a conversation comment, which none of the triggers above sees. Add a second job to the same caller for it (a comment's workflow runs with the base repository's token, so there is no fork to skip; only Codex's own comments on a pull request start it):
+With `require-codex-review: true` the gate also waits for Codex's review of the head, and a review that finds nothing arrives as a conversation comment, which none of the triggers above sees. The caller then also runs on `issue_comment`, with a second job for it (a comment's workflow runs with the base repository's token, so there is no fork to skip; only Codex's own comments on a pull request start it):
 
 ```yaml
+name: Merge gate threads
+
 on:
-  # …the triggers above, plus:
-  issue_comment:
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issue_comment:   # zizmor: ignore[dangerous-triggers] only Codex's own comment on a pull request starts a job, which checks out nothing and passes main's merge gate only the number
     types: [created, edited]
 
+permissions: {}
+
 jobs:
-  # …decide, as above, with `if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository`
+  decide:
+    if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: merge-gate-threads-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      actions: write   # start the merge gate
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.0.0
+    with:
+      pr: ${{ github.event.pull_request.number }}
   codex-comment:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    concurrency:
+      group: merge-gate-threads-comment-${{ github.event.issue.number }}-${{ github.event.comment.user.login }}
+      cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
     uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.0.0
@@ -439,7 +457,7 @@ jobs:
       pr: ${{ github.event.issue.number }}
 ```
 
-The concurrency group then reads `merge-gate-threads-${{ github.event.pull_request.number || github.event.issue.number }}`.
+The concurrency groups are the jobs', never the workflow's. A workflow-level group is joined before any job's `if:` is read, and `issue_comment` fires on every comment on the pull request (a person's, the agent's own `@codex review`, another bot's): with the group at the top, each such run would cancel a gate restart still in flight (the `decide` run of Codex's review, or the `codex-comment` run of its comment), and its own jobs would then be skipped, leaving the gate pending until someone re-runs it. Each job's key is one that only a run which will start the gate has: a comment's run of `decide` has no pull request number (and every run of it on a fork's pull request is skipped), and the `codex-comment` group names the comment's author, so even a skipped job could share a group only with runs that start nothing, and a newer run replaces only one that would have started the same gate. `fleet checks`' conventions and zizmor (`tests/test_merge_gate_threads_caller.py` runs it over every documented caller) pass this caller; the `dangerous-triggers` ignore on `issue_comment` carries its reason, since the job runs only for `chatgpt-codex-connector[bot]`'s comment and hands main's merge gate nothing but the pull request number.
 
 What each app passes today: Waypoint and Runway `required-workflows: Docker image, Security scans, CodeQL`, Runway also `ignored-workflows: Preview|Screenshot diff`, and each app `required-statuses: Second review` with `first-review: false` in its agent review caller (the owner's policy). Those two are the defaults now, so a caller drops them when its pin moves here; an app that wants the first review back passes `first-review: true` and `required-statuses` with both `Agent review` and `Second review`.
 
@@ -466,7 +484,7 @@ Inside the markers is fleet's file at the marker's version, byte for byte; every
 
 To adopt: delete the app's copies of the shared bullets, put an empty pair of markers (`<!-- fleet:begin <section> v0.0.0 -->` and `<!-- fleet:end <section> -->` on the next line) where each block should go, above the app's own items under that heading, and run `fleet sync --to vX.Y.Z`. A section without markers is inserted at the end of its heading instead. A line that mentions a marker anywhere else is a marker error, so write about them without the `<!--` form. Commit `AGENTS.md` and `.fleet/version` together.
 
-`fleet sync` and `fleet drift` also cover the plugin files fleet vendors into the app ([Claude Code plugin](#claude-code-plugin)).
+`fleet sync` and `fleet drift` also cover the plugin files fleet vendors into the app and the `ref` of fleet's marketplace in `.claude/settings.json` ([Claude Code plugin](#claude-code-plugin)).
 
 ## Claude Code plugin
 
@@ -521,7 +539,7 @@ NODE_CHECK="esrap/types/public.d.ts eslint-plugin-svelte"
 }
 ```
 
-The plugin isn't enabled: the vendored copies already give every session the skills, the agent and the hook, and enabling the plugin as well would load each skill twice in a local session (once as `fleet-<name>`, once as `fleet:<name>`) and run the hook twice. Declaring the marketplace lets someone browse or install it by hand. The marketplace stays at the tag: Claude Code's marketplace `ref` is a branch or tag (it clones with `git clone --branch`), not a commit, and nothing a session runs comes from it. The app deletes its own `.claude/hooks/session-start.sh`; its own skills (`verify-waypoint`, say) stay.
+The plugin isn't enabled: the vendored copies already give every session the skills, the agent and the hook, and enabling the plugin as well would load each skill twice in a local session (once as `fleet-<name>`, once as `fleet:<name>`) and run the hook twice. Declaring the marketplace lets someone browse or install it by hand. The marketplace stays at the tag: Claude Code's marketplace `ref` is a branch or tag (it clones with `git clone --branch`), not a commit, and nothing a session runs comes from it. `fleet sync --to vX.Y.Z` moves that `ref` to `vX.Y.Z` (only the value; nothing else in the file changes) for an entry under `extraKnownMarketplaces` whose `source` is `github` and `repo` is `AnthonyPluth/fleet`, and `fleet drift` fails while it names another ref than `.fleet/version`'s version; settings that declare no such marketplace, or one without a `ref`, are left alone. The app deletes its own `.claude/hooks/session-start.sh`; its own skills (`verify-waypoint`, say) stay.
 
 ## Checks
 
