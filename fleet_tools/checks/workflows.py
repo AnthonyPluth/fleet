@@ -18,7 +18,6 @@ RUNS_ON = ("runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependa
            "github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '\"ubuntu-latest\"') }}")
 RUNS_ON_LINE = re.compile(r"^[ \t]*runs-on:.*$", re.MULTILINE)
 HOSTED = re.compile(r"^runs-on: ubuntu-latest[ \t]+# hosted: \S")
-STEP_RUN = re.compile(r"^[ \t]*(?:-[ \t]+)?run:[ \t]*[^\s#]", re.MULTILINE)
 EVENTS = frozenset({
     "branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment", "deployment_status",
     "discussion", "discussion_comment", "fork", "gollum", "image_version", "issue_comment", "issues", "label",
@@ -30,7 +29,7 @@ EVENTS = frozenset({
 
 def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     problems = []
-    if workflow and STEP_RUN.search(text) and not BASH_DEFAULT.search(text):
+    if workflow and not only_calls(text) and not BASH_DEFAULT.search(text):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
     for found in USES.finditer(text):
         target, rest = found.group(1), found.group(2)
@@ -59,6 +58,15 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
             problems.append(f"{name}: `{line[:60]}` should be fleet's RUNS_ON line (fleet_tools/checks/workflows.py), "
                             "or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`")
     return problems
+
+
+def only_calls(text: str) -> bool:
+    workflow = parse(text)
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    return all(isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"] and "steps" not in job
+               for job in jobs.values())
 
 
 def events(text: str) -> list[str]:

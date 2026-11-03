@@ -65,8 +65,14 @@ class Workflow(unittest.TestCase):
 
     def test_a_caller_with_no_run_steps_needs_no_bash_default(self) -> None:
         self.assertEqual(wf.check_workflow("x.yml", CALLER), [])
-        with_run = CALLER + "  b:\n    " + wf.RUNS_ON + "\n    steps:\n      - run: |\n          true\n"
-        self.assertIn("no top-level `defaults: run: shell: bash`", wf.check_workflow("x.yml", with_run)[0])
+        for step in ("- run: |\n          true\n", '- "run": echo ok\n', "- {run: echo ok}\n", "- 'run': echo ok\n",
+                     "- uses: ./.github/actions/local\n"):
+            with self.subTest(step=step):
+                with_steps = CALLER + "  b:\n    " + wf.RUNS_ON + "\n    steps:\n      " + step
+                self.assertIn("no top-level `defaults: run: shell: bash`", wf.check_workflow("x.yml", with_steps)[0])
+        for unreadable in ("name: X\non: push\n", "name: X\non: push\njobs: [a]\n", "name: X\non: push\njobs: {a: {uses: x}}\n"):
+            with self.subTest(unreadable=unreadable):
+                self.assertIn("no top-level `defaults: run: shell: bash`", wf.check_workflow("x.yml", unreadable)[0])
 
     def test_a_runs_on_input_quoted_or_not_is_an_input_not_a_jobs_runner(self) -> None:
         self.assertEqual(wf.check_workflow("x.yml", CALLER), [])
