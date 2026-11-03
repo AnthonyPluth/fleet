@@ -485,6 +485,18 @@ class EdgeTest(unittest.TestCase):
         self.assertIsNone(value["harness"]["commits"]["total"])
         self.assertIn("[tool.fleet.verification]", "\n".join(value["missing"]))
 
+    def test_a_non_utf_8_config_makes_the_harness_total_unread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "app"
+            shutil.copytree(RUNWAY, app)
+            (app / "pyproject.toml").write_bytes(b'[tool.fleet]\nmigrations = "\xff\xfe"\n')
+            done = self.stats.run(fixture(), "--app-root", str(app))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            value = self.stats.stats()
+            self.assertTrue(self.stats.markdown.is_file())
+        self.assertIsNone(value["harness"]["commits"]["total"])
+        self.assertIn("isn't valid UTF-8", "\n".join(value["missing"]))
+
     def test_a_task_opened_after_the_window_isn_t_counted_in_it(self) -> None:
         data = fixture()
         data[MINED].append({"number": 86, "user": {"login": rm.BOT}, "body": "<!-- mined-from row:repeated:later -->",

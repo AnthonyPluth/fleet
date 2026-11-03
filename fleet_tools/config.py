@@ -70,6 +70,8 @@ def load(root: Path) -> Config:
             data = tomllib.load(file)
     except FileNotFoundError:
         raise ConfigError(f"{pyproject} doesn't exist") from None
+    except UnicodeDecodeError:
+        raise ConfigError(f"{pyproject} isn't valid UTF-8") from None
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{pyproject} isn't valid TOML: {error}") from None
     tool = data.get("tool", {})
