@@ -180,6 +180,38 @@ class Event(unittest.TestCase):
         self.assertEqual(ar.event_from_env({})["trigger_labels"], ["safety-critical", "security"])
 
 
+class EventClass(unittest.TestCase):
+    CONFIGS = ("safety-critical,security", "safety-critical,  security", " security ,safety-critical", "security,,", "\tsecurity\t,x",
+               "", "a b,security")
+    LABELS = ("security", "safety-critical", "docs", " security", "security ", "a b", "a", "", "sec")
+
+    def test_a_label_event_is_a_trigger_label_exactly_when_wanted_reacts_to_it(self) -> None:
+        for config in self.CONFIGS:
+            for label in self.LABELS:
+                for action in ("labeled", "unlabeled"):
+                    event = ar.event_from_env({"ACTION": action, "LABEL": label, "TRIGGER_LABELS": config, "SENDER": "o", "OWNER": "o"})
+                    value = ar.event_class(event)
+                    self.assertEqual(value == "label", ar.wanted(action, [], ar.SECOND, event)[0], (config, label, action))
+                    self.assertIn(value, ("label", "other-label"))
+
+    def test_padding_around_a_configured_label_is_trimmed_as_split_list_trims_it(self) -> None:
+        event = ar.event_from_env({"ACTION": "labeled", "LABEL": "security", "TRIGGER_LABELS": "safety-critical,   security  "})
+        self.assertEqual(ar.event_class(event), "label")
+        self.assertEqual(ar.event_class({**event, "label": "docs"}), "other-label")
+        self.assertEqual(ar.event_class({**event, "action": "synchronize"}), "push")
+        self.assertEqual(ar.event_class({}), "push")
+
+    def test_the_command_writes_the_class_and_ignores_a_fake_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp, "out")
+            env = {"ACTION": "labeled", "LABEL": "security", "TRIGGER_LABELS": "safety-critical,  security", "GITHUB_OUTPUT": str(out),
+                   "FAKE_EVENT": "action=synchronize label=docs"}
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print") as printed:
+                self.assertEqual(ar.main(["second", "event-class"]), 0)
+            self.assertEqual(out.read_text(encoding="utf-8"), "class=label\n")
+        self.assertEqual(printed.call_args_list[0].args[0], "class=label")
+
+
 class Wanted(unittest.TestCase):
     def event(self, **more: Any) -> dict[str, Any]:
         return {"sender": "someone", "owner": "octocat", "label": "security", "labels": [], "files": None,

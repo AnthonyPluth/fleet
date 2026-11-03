@@ -26,6 +26,7 @@ EARLIER = 100
 LATER = 200
 LATEST = 300
 PREFIX = f"https://github.com/{REPO}/actions/runs/"
+RECORDED = cli.ROOT / "tests" / "fixtures" / "runs"
 Json = dict[str, Any]
 
 
@@ -66,6 +67,24 @@ def step_script(job: str, prefix: str) -> str:
             break
         lines.append(line[10:])
     return "\n".join(lines) + "\n"
+
+
+def recorded(name: str) -> Json:
+    value = json.loads((RECORDED / f"{name}.json").read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
+def lookup_filters() -> list[str]:
+    return re.findall(r'gh api "repos/\$REPO/actions/runs/\$id" --jq \'([^\']+)\'', WORKFLOW.read_text(encoding="utf-8"))
+
+
+def looked_up(record: Json) -> list[Any]:
+    filters = lookup_filters()
+    done = subprocess.run(["jq", "-r", filters[0]], input=json.dumps(record), capture_output=True, text=True, check=True)
+    line = json.loads(done.stdout)
+    assert isinstance(line, list)
+    return line
 
 
 PENDING = step_script("second-pending", "Mark the second review pending")
@@ -117,6 +136,23 @@ class Decisions(unittest.TestCase):
         decided = ar.decide(ar.effective(entries(status("error", LATER), status("failure", EARLIER)), runs))
         assert decided is not None
         self.assertEqual((decided.state, decided.run), ("error", LATER))
+
+    def test_a_failure_before_the_latest_not_risky_verdict_doesn_t_stand_over_a_later_pass(self) -> None:
+        runs = {EARLIER: False, LATER: False, LATEST: False}
+        found = entries(status("success", LATEST, "No blocking findings"), status("success", LATER, ar.NOT_RISKY), status("failure", EARLIER))
+        self.assertEqual(ar.decide(ar.effective(found, runs)), ar.Entry("success", "No blocking findings", LATEST, False))
+        found = entries(status("success", LATEST, "p"), status("failure", LATER), status("success", EARLIER, ar.NOT_RISKY))
+        self.assertEqual(ar.decide(ar.effective(found, runs)), ar.Entry("failure", "d", LATER, False))
+        found = entries(status("success", LATEST, "p"), status("success", LATER, "p"), status("failure", EARLIER))
+        self.assertEqual(ar.decide(ar.effective(found, runs)), ar.Entry("failure", "d", EARLIER, False))
+        found = entries(status("success", LATEST, "p"), status("success", LATER, ar.NOT_RISKY + "!"), status("failure", EARLIER))
+        self.assertEqual(ar.decide(ar.effective(found, runs)), ar.Entry("failure", "d", EARLIER, False))
+        found = entries(status("success", LATEST, "p"), status("failure", LATER, ar.NOT_RISKY), status("failure", EARLIER))
+        self.assertEqual(ar.decide(ar.effective(found, runs)), ar.Entry("failure", ar.NOT_RISKY, LATER, False))
+        found = entries(status("success", LATEST, "p"), status("success", LATER, ar.NOT_RISKY), status("failure", EARLIER))
+        self.assertEqual(ar.decide(ar.effective(found, {EARLIER: False, LATEST: False})), ar.Entry("failure", "d", EARLIER, False))
+        self.assertEqual(ar.publish(entries(status("success", LATER, ar.NOT_RISKY), status("failure", EARLIER)), runs, LATEST, "success", "p"),
+                         ("success", "p"))
 
     def test_an_untrusted_or_finished_pending_status_counts_for_nothing(self) -> None:
         found = entries(status("success", 999), status("pending", LATER), status("success", EARLIER))
@@ -214,6 +250,39 @@ class Decisions(unittest.TestCase):
                              ["status=", "description=", f"decided_by={LATER}", "comment=none"])
             self.assertNotEqual(subprocess.run(["python3", "-I", str(SCRIPT), "second", "settle"], env=env, input="",
                                                capture_output=True, text=True).returncode, 0)
+
+
+class RecordedRun(unittest.TestCase):
+    def test_both_lookups_read_a_run_with_the_same_filter(self) -> None:
+        filters = lookup_filters()
+        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(set(filters)), 1)
+
+    def test_a_recorded_pull_request_target_run_is_tied_by_its_head_commit_not_its_base(self) -> None:
+        record = recorded("open-pull-request")
+        pull = record["pull_requests"][0]
+        self.assertEqual(record["event"], "pull_request_target")
+        self.assertEqual(record["head_sha"], pull["head"]["sha"])
+        self.assertEqual(record["head_branch"], pull["head"]["ref"])
+        self.assertNotEqual(record["head_sha"], pull["base"]["sha"])
+        line = looked_up(record)
+        self.assertEqual(line, [record["id"], record["workflow_id"], "pull_request_target", record["head_sha"], record["head_branch"],
+                                record["head_repository"]["full_name"], [pull["number"]], record["status"]])
+        other = looked_up({**record, "id": record["id"] + 1})
+        runs = ar.read_runs([line, other])
+        self.assertEqual(ar.trusted(runs, record["id"], pull["number"], record["head_sha"]), {record["id"]: False, record["id"] + 1: True})
+        self.assertEqual(ar.trusted(runs, record["id"], pull["number"], pull["base"]["sha"]), {record["id"]: False})
+        self.assertEqual(ar.trusted(runs, record["id"], pull["number"] + 1, record["head_sha"]), {record["id"]: False})
+
+    def test_a_recorded_run_of_a_closed_pull_request_is_tied_by_its_head_and_branch(self) -> None:
+        record = recorded("closed-pull-request")
+        self.assertEqual(record["pull_requests"], [])
+        line = looked_up(record)
+        self.assertEqual(line[6], [])
+        runs = ar.read_runs([line, looked_up({**record, "id": record["id"] + 1})])
+        self.assertEqual(ar.trusted(runs, record["id"], 7, record["head_sha"], record["head_branch"]), {record["id"]: False, record["id"] + 1: True})
+        self.assertEqual(ar.trusted(runs, record["id"], 7, record["head_sha"], "other"), {record["id"]: False})
+        self.assertEqual(ar.trusted(runs, record["id"], 7, record["head_sha"]), {record["id"]: False})
 
 
 class Runs(unittest.TestCase):
@@ -398,14 +467,47 @@ class Runs(unittest.TestCase):
         self.report(EARLIER, "pass")
         self.assert_decided_by(LATER, "failure", "blocking")
 
-    def test_the_order_holds_with_the_run_records_github_gives_a_pull_request_target_caller(self) -> None:
-        for record in (run_record(EARLIER), run_record(LATER)):
-            self.assertEqual(record["head_sha"], record["pull_requests"][0]["head"]["sha"])
-            self.assertNotEqual(record["head_sha"], BASE)
-        self.pending(LATER)
-        self.report(EARLIER, "pass")
+    def test_the_order_holds_with_a_recorded_pull_request_target_caller_run(self) -> None:
+        record = recorded("open-pull-request")
+        sha = record["head_sha"]
+        self.assertEqual(record["event"], "pull_request_target")
+        self.assertEqual((record["pull_requests"][0]["number"], record["head_branch"], record["head_repository"]["full_name"]), (int(PR), BRANCH, REPO))
+        for run in (EARLIER, LATER):
+            self.register({**record, "id": run, "status": "in_progress"})
+        self.pending(LATER, sha)
+        self.report(EARLIER, "pass", sha=sha)
+        self.report(LATER, "blocking", sha=sha)
+        self.assert_decided_by(LATER, "failure", "blocking", sha=sha)
+        self.setUp()
+        closed = recorded("closed-pull-request")
+        self.assertEqual(closed["pull_requests"], [])
+        for run in (EARLIER, LATER):
+            self.register({**closed, "id": run, "status": "in_progress"})
+        self.report(LATER, "blocking", sha=sha)
+        self.report(EARLIER, "pass", sha=sha)
+        self.assert_decided_by(LATER, "failure", "blocking", sha=sha)
+        self.setUp()
+        self.register({**record, "id": EARLIER, "status": "in_progress"})
+        self.register({**record, "id": LATER, "status": "in_progress", "head_sha": record["pull_requests"][0]["base"]["sha"]})
+        self.pending(LATER, sha)
+        self.report(EARLIER, "blocking", sha=sha)
+        self.assert_decided_by(EARLIER, "failure", "blocking", sha=sha)
+
+    def test_a_blocking_verdict_cleared_by_the_owner_s_not_risky_gives_way_to_the_review_after_the_label_is_re_added(self) -> None:
+        self.pending(EARLIER)
+        self.report(EARLIER, "blocking")
+        self.report(LATER, "pass", description=ar.NOT_RISKY)
+        self.assertEqual(self.newest(), ("success", LATER))
+        self.assertIn("pending=true", self.pending(LATEST))
+        out = self.report(LATEST, "pass")
+        self.assertNotIn("An earlier run's blocking verdict stands", out)
+        self.assert_decided_by(LATEST, "success", "pass")
+        self.setUp()
+        self.report(EARLIER, "pass", description=ar.NOT_RISKY)
         self.report(LATER, "blocking")
-        self.assert_decided_by(LATER, "failure", "blocking")
+        self.report(LATEST, "pass")
+        self.assertEqual(self.newest(), ("failure", LATEST))
+        self.assertTrue(self.statuses()[0]["description"].startswith(ar.ON_BEHALF))
 
     def test_a_push_run_s_verdict_clears_the_pending_of_a_label_run_that_was_cancelled(self) -> None:
         self.pending(LATER)
