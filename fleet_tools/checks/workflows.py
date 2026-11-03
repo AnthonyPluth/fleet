@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 
 from fleet_tools.checks.context import Check, Context
+from fleet_tools.self_check import parse
 
 WORKFLOWS = ".github/workflows"
 ACTIONS = ".github/actions"
@@ -17,11 +18,18 @@ RUNS_ON = ("runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependa
            "github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '\"ubuntu-latest\"') }}")
 RUNS_ON_LINE = re.compile(r"^[ \t]*runs-on:.*$", re.MULTILINE)
 HOSTED = re.compile(r"^runs-on: ubuntu-latest[ \t]+# hosted: \S")
+EVENTS = frozenset({
+    "branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment", "deployment_status",
+    "discussion", "discussion_comment", "fork", "gollum", "image_version", "issue_comment", "issues", "label",
+    "merge_group", "milestone", "page_build", "public", "pull_request", "pull_request_review",
+    "pull_request_review_comment", "pull_request_target", "push", "registry_package", "release", "repository_dispatch",
+    "schedule", "status", "watch", "workflow_call", "workflow_dispatch", "workflow_run",
+})
 
 
 def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     problems = []
-    if workflow and not BASH_DEFAULT.search(text):
+    if workflow and not only_calls(text) and not BASH_DEFAULT.search(text):
         problems.append(f"{name}: no top-level `defaults: run: shell: bash` (steps then run without -o pipefail)")
     for found in USES.finditer(text):
         target, rest = found.group(1), found.group(2)
@@ -39,12 +47,87 @@ def check_workflow(name: str, text: str, workflow: bool = True) -> list[str]:
     for line in text.splitlines():
         if GH_API_LIST.search(line) and "--paginate" not in line:
             problems.append(f"{name}: `gh api ... per_page=` without --paginate reads only the first page: {line.strip()[:80]}")
+    named = events(text) if workflow else []
+    if named is None:
+        problems.append(f"{name}: the events under `on:` can't be read (write them as a block mapping or a list)")
+    for event in named or []:
+        if event not in EVENTS:
+            problems.append(f"{name}: `{event}` isn't a GitHub Actions event (the file would be invalid and never run)")
     for found in RUNS_ON_LINE.finditer(text):
         line = found.group(0).strip()
+        if parent_key(text, found.start()) == "with":
+            continue
         if line != RUNS_ON and not HOSTED.match(line):
             problems.append(f"{name}: `{line[:60]}` should be fleet's RUNS_ON line (fleet_tools/checks/workflows.py), "
                             "or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`")
     return problems
+
+
+def only_calls(text: str) -> bool:
+    workflow = parse(text)
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    return all(isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"] and "steps" not in job
+               for job in jobs.values())
+
+
+def events(text: str) -> list[str] | None:
+    workflow = parse(text)
+    trigger = workflow.get("on", "") if isinstance(workflow, dict) else ""
+    if isinstance(trigger, dict):
+        return list(trigger)
+    if isinstance(trigger, list):
+        return [item for item in trigger if isinstance(item, str)]
+    if trigger.startswith("{"):
+        return flow_keys(trigger)
+    return re.findall(r"[A-Za-z_]+", trigger)
+
+
+def flow_keys(text: str) -> list[str] | None:
+    keys: list[str] = []
+    depth, token, quote = 0, "", ""
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = ""
+            elif depth == 1:
+                token += char
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "{[":
+            depth += 1
+            token = ""
+        elif char in "}]":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 1 and char == ",":
+            token = ""
+        elif depth == 1 and char == ":":
+            key = token.strip()
+            if not re.fullmatch(r"[A-Za-z_]+", key):
+                return None
+            keys.append(key)
+            token = "\0"
+        elif depth == 1 and token != "\0":
+            token += char
+    return keys if depth == 0 and keys else None
+
+
+def parent_key(text: str, offset: int) -> str | None:
+    before = text[:offset].splitlines()
+    line = text[offset:].split("\n", 1)[0]
+    indent = len(line) - len(line.lstrip(" "))
+    for previous in reversed(before):
+        stripped = previous.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(previous) - len(previous.lstrip(" ")) < indent:
+            key = re.match(r"(?:-[ \t]+)?([\w.-]+):", stripped)
+            return key.group(1) if key else None
+    return None
 
 
 def check_workflows(root: Path) -> list[str]:

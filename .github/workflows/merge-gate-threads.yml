@@ -1,14 +1,14 @@
 name: Merge gate threads
 
-# The reusable half of the merge gate's review-thread check: resolving or reopening a review thread, or a new review or
-# review comment (a reviewer's P1 can land after every other check went green), starts no workflow the merge gate
-# listens to, so the caller asks for the gate to decide the pull request again. This workflow starts the caller's own
+# The reusable half of the merge gate's review-thread check: a new review or review comment (a reviewer's P1 can land
+# after every other check went green) starts no workflow the merge gate listens to, so the caller asks for the gate to
+# decide the pull request again. Resolving or reopening a thread has no Actions event at all: after resolving one, the
+# gate is re-run by hand or by the next push. This workflow starts the caller's own
 # merge gate workflow (a workflow_dispatch with a `pr` input, which docs/adopting.md's snippet has) on main; it checks out
 # nothing and runs nothing of the pull request's or of fleet's.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them:
-# pull_request_review_thread (resolved, unresolved), pull_request_review (submitted) and pull_request_review_comment
-# (created, edited, deleted). A pull request from a fork gets a read-only token there, so the caller skips it; the gate of such a pull
+# pull_request_review (submitted) and pull_request_review_comment (created, edited, deleted). A pull request from a fork gets a read-only token there, so the caller skips it; the gate of such a pull
 # request looks again on the next push or check, or by hand.
 on:
   workflow_call:

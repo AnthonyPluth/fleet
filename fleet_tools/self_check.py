@@ -7,8 +7,9 @@ from typing import TypeAlias
 
 from fleet_tools import release
 
-HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, the self-test's calls, and "
-        "VERSION agreeing with CHANGELOG.md, plugin.json, pyproject.toml and the snippets in docs/)")
+HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, the self-test's calls, "
+        "VERSION agreeing with CHANGELOG.md, plugin.json, pyproject.toml and the snippets in docs/, and no doc or "
+        "workflow naming an event Actions doesn't have)")
 
 WORKFLOWS = Path(".github/workflows")
 SELF_TEST = "self-test.yml"
@@ -16,6 +17,8 @@ SELF_TEST_REF = "${{github.sha}}"
 FLEET_REPOSITORY = "AnthonyPluth/fleet"
 FLEET_CHECKOUT_REF = "${{inputs.fleet-ref||env.FLEET_REF}}"
 VERSION_PATTERN = release.VERSION_PATTERN
+NOT_ACTIONS_EVENTS = ("pull_request_review_thread",)
+EVENT_NAME_FILES = ("README.md", "docs/*.md", ".github/workflows/*.y*ml", "plugins/**/*.md")
 KEY_PATTERN = re.compile(r"""^(?P<q>["']?)(?P<key>[^"':#][^"':]*)(?P=q)\s*:(?:\s+(?P<value>.*))?$""")
 
 Node: TypeAlias = "dict[str, Node] | list[Node] | str"
@@ -175,7 +178,20 @@ def check(root: Path) -> list[str]:
         errors.append(f"{(WORKFLOWS / SELF_TEST).as_posix()}: missing")
     else:
         errors.extend(check_self_test(self_test.relative_to(root).as_posix(), parse(self_test.read_text("utf-8"))))
+    errors.extend(check_event_names(root))
     errors.extend(release.check(root, version))
+    return errors
+
+
+def check_event_names(root: Path) -> list[str]:
+    errors: list[str] = []
+    for pattern in EVENT_NAME_FILES:
+        for path in sorted(root.glob(pattern)):
+            text = path.read_text(encoding="utf-8")
+            for event in NOT_ACTIONS_EVENTS:
+                if re.search(rf"(?<![\w-]){event}(?![\w-])", text):
+                    errors.append(f"{path.relative_to(root).as_posix()}: names `{event}`, a webhook GitHub Actions can't "
+                                  "subscribe to (a workflow naming it is invalid and never runs)")
     return errors
 
 

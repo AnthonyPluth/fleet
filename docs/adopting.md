@@ -94,7 +94,7 @@ A private repository on a personal account has no code scanning: pass `sarif-upl
 
 ## Deep-scan reminder
 
-`.github/workflows/deep-scan-due.yml` (`workflow_call`) opens one issue, "Deep security scan due" (labels `manual`, `security`), unless one is open, with the link to fleet's [deep-scan runbook](deep-scan.md) at the pinned ref, the revision of the last scan (read from the last closed issue with that title) and the number of commits on the default branch since. The caller schedules it; `issues: write` is all it needs, and no secrets. Both labels must exist in the repository.
+`.github/workflows/deep-scan-due.yml` (`workflow_call`) opens one issue, "Deep security scan due" (labels `manual`, `security`), unless one is open, with the link to fleet's [deep-scan runbook](deep-scan.md) at the pinned ref, the revision of the last scan (read from the last closed issue with that title) and the number of commits on the default branch since. The caller schedules it and grants `issues: write` (the issues it reads and the one it opens) and `contents: read` (the comparison of the last scan's revision with the default branch, which counts the commits); no secrets. A called job can't ask for more than its caller grants, so a caller with `issues: write` alone fails to start. Both labels must exist in the repository.
 
 ```yaml
 name: Deep scan due
@@ -109,7 +109,8 @@ permissions: {}
 jobs:
   remind:
     permissions:
-      issues: write
+      contents: read   # count the commits since the last scan
+      issues: write    # read the earlier issues and open the reminder
     uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # v2.0.0
 ```
 
@@ -319,7 +320,7 @@ modules = { "waypoint/domain/" = 90, "waypoint/providers/" = 90, "waypoint/serve
 | `[tool.fleet.verification]` | verification (`--pr-event`) | `required` (default `false`): a missing or malformed record in the pull request's description is a problem on a ready pull request, else a warning; `exempt-authors` (default `["dependabot[bot]", "fleet-bot[bot]"]`): pull requests by these authors are skipped. The table's presence turns the check on ([Verification records](#verification-records)). `guides` (no default): the directory of [verification guides](#verification-guides), relative to the repository root and below it, which turns on the `verification-guides` check. |
 | `[tool.fleet.coverage]` | `fleet coverage-floor` | `overall`: the floor for the whole report; `modules`: path prefix to floor, for each module with statements (the longest matching prefix wins). |
 
-The workflow conventions check runs wherever `.github/workflows/` or `.github/actions/` exists: bash as each workflow's default shell, every action pinned by its commit SHA with its version in a comment, `gh api ... per_page=` with `--paginate`, no `runner`, `steps`, `job` or `env` expression in a workflow's or job's `env:`, and every `runs-on:` either fleet's `vars.RUNS_ON` line (`fleet_tools/checks/workflows.py`) or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`.
+The workflow conventions check runs wherever `.github/workflows/` or `.github/actions/` exists: bash as each workflow's default shell, except in a caller whose every job calls a reusable workflow (`uses:` and no `steps:`), which runs no shell of its own, every action pinned by its commit SHA with its version in a comment, `gh api ... per_page=` with `--paginate`, no `runner`, `steps`, `job` or `env` expression in a workflow's or job's `env:`, every event under `on:` one GitHub Actions has (an `on:` the check can't read is reported), and every job's `runs-on:` either fleet's `vars.RUNS_ON` line (`fleet_tools/checks/workflows.py`) or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`. A `runs-on` under `with:` is a reusable workflow's input, which the check leaves alone, so the callers below pass as written.
 
 ## Merge gate
 
@@ -390,14 +391,12 @@ Inputs, each with the default fleet's own gate uses:
 
 ### Open review threads
 
-A review thread whose first comment is by one of the `blocking-thread-authors` (Codex, by default) and carries one of the `blocking-thread-badges` fails the gate until someone resolves it. Resolving a thread, reopening one, or a new review or review comment starts no workflow the gate listens to, so the caller adds a second small workflow, `merge-gate-threads.yml` (`workflow_call`; inputs `pr`, `merge-gate-workflow` (default `merge-gate.yml`), `dry-run`, `fleet-ref`; `actions: write` only), which starts the caller's own merge gate workflow on `main` with the pull request's number. It checks out nothing and runs nothing of the pull request's. The caller keeps the triggers, and skips a pull request from a fork, whose token is read-only there (that pull request's gate looks again on its next push or check, or by hand):
+A review thread whose first comment is by one of the `blocking-thread-authors` (Codex, by default) and carries one of the `blocking-thread-badges` fails the gate until someone resolves it. GitHub Actions has no event for resolving or reopening a thread, so nothing runs then: **after resolving a thread, re-run the "Merge gate" by hand** (its latest run's "Re-run jobs", or `gh workflow run merge-gate.yml -f pr=<number>`), or push, which runs it anyway. A new review or review comment starts no workflow the gate listens to either, so the caller adds a second small workflow, `merge-gate-threads.yml` (`workflow_call`; inputs `pr`, `merge-gate-workflow` (default `merge-gate.yml`), `dry-run`, `fleet-ref`; `actions: write` only), which starts the caller's own merge gate workflow on `main` with the pull request's number. It checks out nothing and runs nothing of the pull request's. The caller keeps the triggers, and skips a pull request from a fork, whose token is read-only there (that pull request's gate looks again on its next push or check, or by hand):
 
 ```yaml
 name: Merge gate threads
 
 on:
-  pull_request_review_thread:
-    types: [resolved, unresolved]
   pull_request_review:
     types: [submitted]
   pull_request_review_comment:

@@ -1,11 +1,14 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+
+from fleet_tools.self_check import Node, parse
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / ".github" / "scripts" / "deep_scan_due.py"
@@ -136,6 +139,16 @@ class LastScanTest(unittest.TestCase):
         result = self.reminder.run(answers)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"revision `{SHA12}`; `main` has an unknown number of commits since", self.reminder.created()[0]["body"])
+        self.assertIn(f"::warning::deep-scan-due: the comparison of {SHA12} with main was refused", result.stderr)
+
+    def test_a_counted_comparison_warns_of_nothing(self) -> None:
+        last = issue(20, body=f"CLAUDE-SECURITY-REVISION-{SHA12}.json", closed_at="2026-04-01T00:00:00Z")
+        key, bodies = comments(20)
+        answers = {**base([], [last]), key: bodies, f"GET repos/{REPO}/compare/{SHA12}...main": {"ahead_by": 5}}
+        result = self.reminder.run(answers)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`main` has 5 commits since", self.reminder.created()[0]["body"])
+        self.assertNotIn("::warning::", result.stderr)
 
     def test_the_default_branch_is_the_repositorys(self) -> None:
         last = issue(20, body=f"CLAUDE-SECURITY-REVISION-{SHA12}.json", closed_at="2026-04-01T00:00:00Z")
@@ -161,6 +174,32 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "deep-scan-due: #5 is open; nothing to do")
         self.assertEqual(reminder.created(), [])
+
+
+def granted(source: str, job: str) -> dict[str, Node]:
+    workflow = parse(source)
+    assert isinstance(workflow, dict)
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    found = jobs[job]
+    assert isinstance(found, dict)
+    permissions = found["permissions"]
+    assert isinstance(permissions, dict)
+    return permissions
+
+
+class PermissionsTest(unittest.TestCase):
+    def test_the_job_may_read_the_comparison_the_count_comes_from(self) -> None:
+        workflow = (ROOT / ".github/workflows/deep-scan-due.yml").read_text(encoding="utf-8")
+        self.assertEqual(granted(workflow, "remind"), {"contents": "read", "issues": "write"})
+
+    def test_the_callers_grant_what_the_job_asks_for(self) -> None:
+        self_test = (ROOT / ".github/workflows/self-test.yml").read_text(encoding="utf-8")
+        self.assertEqual(granted(self_test, "deep-scan-due"), {"contents": "read", "issues": "write"})
+        adopting = (ROOT / "docs/adopting.md").read_text(encoding="utf-8")
+        snippet = re.search(r"^```yaml\n(name: Deep scan due\n.*?)^```", adopting, re.MULTILINE | re.DOTALL)
+        assert snippet is not None
+        self.assertEqual(granted(snippet.group(1), "remind"), {"contents": "read", "issues": "write"})
 
 
 class FailuresTest(unittest.TestCase):
