@@ -21,19 +21,19 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 6. **Create the labels** the workflows use: `safety-critical` and `security` (they make a pull request risky for the second review; `security` also marks the deep-scan issue), `manual` (the deep-scan issue) and `review-mining` (the "Repeated review findings" issue). An issue opened with a label that doesn't exist fails.
 7. **Add the secrets and variables**: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (the reviews), the variable `FLEET_BOT_APP_ID` and the secret `FLEET_BOT_PRIVATE_KEY` (the content sync's App), and optionally the variables `RUNS_ON`, `AGENT_REVIEW_BUDGET_USD` and `AGENT_REVIEW_MAX_TURNS`.
 8. **Protect `main` with a ruleset** (Settings, Rules, Rulesets, a branch ruleset targeting the default branch): require a pull request before merging, block force pushes and deletions, and require one status check, **Merge gate**, and nothing else. The gate already waits for every workflow, check run and status the pull request started, and for the required ones; requiring them again in the ruleset would keep a pull request whose path filters skip a workflow from ever merging. Don't allow bypass for bots: Dependabot's merges go through the gate.
-9. **Let Dependabot bump the pins**, in one group so every fleet workflow moves at once, a few days after a release:
+9. **Let Dependabot bump the pins**, in one group so every fleet workflow moves at once, on the first weekday run after a release:
 
    ```yaml
    - package-ecosystem: github-actions
      directory: /
-     schedule: { interval: weekly, day: monday }
-     cooldown: { default-days: 3 }
+     schedule: { interval: daily }
+     cooldown: { default-days: 7, exclude: ["AnthonyPluth/fleet/*"] }
      groups:
        fleet:
          patterns: ["AnthonyPluth/fleet/*"]
    ```
 
-   Dependabot takes one entry per ecosystem and directory: an app that already has a `github-actions` entry for `/` adds the `fleet` group to it, first in its `groups` (a dependency joins the first group whose patterns match), and keeps the shorter cooldown for it or sets it for the whole entry. The merge gate passes a fleet bump but leaves it for the owner to merge; merging it starts `sync.yml`, which opens the content's pull request.
+   Dependabot takes one entry per ecosystem and directory: an app that already has a `github-actions` entry for `/` adds the `fleet` group to it, first in its `groups` (a dependency joins the first group whose patterns match), makes that entry daily and lists the fleet pattern in its cooldown's `exclude`, so a release reaches the app the next weekday instead of after a weekly run and a cooldown (up to two weeks). Other actions keep their cooldown; it guards nothing for fleet's pins, whose bumps are never merged unattended: the merge gate passes a fleet bump but leaves it for the owner to merge; merging it starts `sync.yml`, which opens the content's pull request.
 
 ## Security scans
 

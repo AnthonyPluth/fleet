@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- `docs/adopting.md`'s Dependabot step now runs the `github-actions` entry daily and lists `AnthonyPluth/fleet/*` in its cooldown's `exclude`, so a release's pin bump opens on the next weekday run instead of after a weekly run and a cooldown (v2.1.0 would have waited until the second Monday after it). Other actions keep their cooldown, and the merge gate still leaves fleet bumps for the owner to merge. `docs/release.md` step 6 says the same. What apps do: the same change in their `.github/dependabot.yml`.
+
 ## [2.1.0] - 2026-11-03
 
 ### Changed
