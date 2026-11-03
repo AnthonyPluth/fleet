@@ -71,16 +71,25 @@ class Line:
     number: int = 0
 
 
+def escaped(text: str, index: int, quote: str) -> bool:
+    return text[index] == "\\" if quote == '"' else text[index:index + 2] == "''"
+
+
 def strip_comment(text: str) -> str:
     quote = ""
-    for index, char in enumerate(text):
+    index = 0
+    while index < len(text):
+        char = text[index]
         if quote:
-            if char == quote:
+            if escaped(text, index, quote):
+                index += 1
+            elif char == quote:
                 quote = ""
         elif char in "\"'" and (index == 0 or text[index - 1] in " :[{,-"):
             quote = char
         elif char == "#" and (index == 0 or text[index - 1] in " \t"):
             return text[:index].rstrip()
+        index += 1
     return text.rstrip()
 
 
@@ -191,9 +200,14 @@ def _scalar(text: str, number: int) -> Node:
 def _closes(text: str) -> bool:
     depth = 0
     quote = ""
-    for index, char in enumerate(text):
+    index = -1
+    while index + 1 < len(text):
+        index += 1
+        char = text[index]
         if quote:
-            if char == quote:
+            if escaped(text, index, quote):
+                index += 1
+            elif char == quote:
                 quote = ""
         elif char in "\"'" and text[index - 1:index] in ("", " ", "[", "{", ",", ":"):
             quote = char

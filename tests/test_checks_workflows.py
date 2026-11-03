@@ -245,6 +245,13 @@ class Workflow(unittest.TestCase):
                 self.assertIn("`runs-on: windows-latest` should be fleet's RUNS_ON line", found[0])
                 self.assertEqual(wf.check_workflow("x.yml", head + key + "\n  build:\n    " + wf.RUNS_ON + "\n" + step), [])
 
+    def test_an_escaped_quote_in_a_quoted_value_is_read_not_reported(self) -> None:
+        for step in ("- run: 'it''s # data'   # a comment\n", '- run: "say \\"hi\\" # x"  # a comment\n'):
+            with self.subTest(step=step):
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + "      " + step), [])
+                self.assertEqual(wf.check_workflow("x.yml", GOOD + "      " + step + "      - uses: x/y@v1\n"),
+                                 ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+
     def test_yaml_outside_the_subset_reports_the_file_unreadable(self) -> None:
         bad = "    runs-on: windows-latest\n"
         cases = (

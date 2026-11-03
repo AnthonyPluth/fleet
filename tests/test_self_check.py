@@ -284,6 +284,14 @@ class ParseTest(unittest.TestCase):
         self.assert_unreadable("run: echo a: b\n", 1, self_check.PLAIN_COLON)
         self.assertEqual(self_check.parse("a: 'it''s: fine'\nb: x:y\n"), {"a": "it's: fine", "b": "x:y"})
 
+    def test_an_escaped_quote_does_not_end_a_quoted_value(self) -> None:
+        text = ("a: 'it''s # data'\nb: 'it''s # data'   # a comment\nc: \"say \\\"hi\\\" # x\"\n"
+                "d: \"say \\\"hi\\\" # x\"  # a comment\ne: \"back\\\\\" # a comment\nf: ['it''s # x]']  # a comment\n")
+        self.assertEqual(self_check.parse(text), {"a": "it's # data", "b": "it's # data", "c": 'say \\"hi\\" # x',
+                                                  "d": 'say \\"hi\\" # x', "e": "back\\\\", "f": "['it''s # x]']"})
+        for unclosed in ("a: 'it''s # data\n", "a: \"say \\\" # x\n", "a: \"back\\\\\" x\" # c\n"):
+            self.assert_unreadable(unclosed, 1, self_check.QUOTED)
+
     def test_a_multi_line_flow_collection_is_unreadable(self) -> None:
         self.assert_unreadable("with: {a: b,\n  c: d}\n", 1, self_check.FLOW)
         self.assert_unreadable("needs: [a,\n  b]\n", 1, self_check.FLOW)
