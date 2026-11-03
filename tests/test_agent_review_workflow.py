@@ -99,7 +99,9 @@ class ReusableWorkflowTest(unittest.TestCase):
         second = mapping(mapping(jobs["second-review"])["concurrency"])
         self.assertEqual(second["cancel-in-progress"], "true")
         self.assertTrue(second["group"].startswith("second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-"))
-        self.assertIn("'label' || 'push'", second["group"])
+        self.assertIn("&& 'push' ||", second["group"])
+        self.assertIn("format(',{0},', inputs.second-review-labels), format(',{0},', github.event.label.name)) && 'label' || 'other-label'",
+                      second["group"])
         self.assertNotEqual(second["group"][:13], "agent-review-")
 
     def test_the_pull_request_checkout_keeps_no_credentials_and_every_checkout_says_so(self) -> None:
@@ -198,7 +200,7 @@ class ReusableWorkflowTest(unittest.TestCase):
             for line in report.splitlines():
                 if "python3" in line:
                     self.assertRegex(line, r"python3 -I \.fleet/fleet_tools/review_outcomes\.py --finish comment\.md"
-                                     + (r"|python3 -I \.fleet/fleet_tools/agent_review\.py second (later|comment|settle) " if job == "second-report" else ""))
+                                     + (r"|python3 -I \.fleet/fleet_tools/agent_review\.py second (runs|publish|settle) " if job == "second-report" else ""))
             self.assertIn('--repo "$REPO" --pr "$PR" --sha "$SHA"', report)
             self.assertIn('--incremental "$INCREMENTAL" --touched touched.txt --findings findings.json', report)
             self.assertIn('base64 -d <<< "$TOUCHED" > touched.txt', report)

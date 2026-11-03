@@ -76,7 +76,7 @@ VERIFICATION_PROMPT = "verification-review.md"
 VERIFICATION_CHANGED = "verification-changed.md"
 NO_BLOCK = "no verification block"
 RECORD_HASH = re.compile(r"^[0-9a-f]{16}$")
-RUN_LINK = re.compile(r"/actions/runs/([0-9]+)(#restored)?$")
+RUN_LINK = re.compile(r"/actions/runs/[0-9]+$")
 RESTORED = "#restored"
 UNPARSED = ("NOTE: this record doesn't parse ({error}). Its format is `fleet checks`' job; judge what it covers from the text as "
             "it stands.\n\n")
@@ -101,14 +101,15 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
   agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment
                                                   ($RISKY_REASON goes into the second review's comment, $RUN_ID into
                                                   its state line)
-  agent_review.py later RUN_ID                    the head's statuses ([context, state, creator, description,
-                                                  target_url] JSON lines) on stdin: the id of a later run that set the
-                                                  status, or nothing
-  agent_review.py comment RUN_ID COMMENTS.jsonl   the review's comment ([id, body] JSON lines): post, patch ID, or
-                                                  keep ID RUN when a later run wrote it
-  agent_review.py settle                          the head's statuses on stdin: the status to post again (its state,
-                                                  target_url and description, one per line) when the newest isn't the
-                                                  latest run's, or nothing"""
+  agent_review.py second runs COMMENTS.jsonl      the head's statuses ([context, state, creator, description,
+                                                  target_url] JSON lines) on stdin, $RUN_ID, $RUN_URL: the run ids to
+                                                  look up (this run's, the statuses', the comment's)
+  agent_review.py second publish SHA RUNS.jsonl COMMENTS.jsonl STATE
+                                                  the statuses on stdin, the looked-up runs ([id, workflow_id, event,
+                                                  head_sha, [pull numbers], status] JSON lines), $PR, $DESCRIPTION:
+                                                  status=, description= (empty: post nothing), decided_by=, comment=
+  agent_review.py second settle SHA RUNS.jsonl    the statuses on stdin: the status to post again (state, target_url,
+                                                  description, one per line) when the newest isn't the decided one"""
 
 
 def is_agent(messages: list[str], body: str) -> bool:
@@ -134,6 +135,7 @@ def event_from_env(env: dict[str, str]) -> dict[str, Any]:
         "labels": [str(name) for name in labels] if isinstance(labels, list) else [],
         "files": None,
         "trigger_labels": split_list(env.get("TRIGGER_LABELS", DEFAULT_TRIGGER_LABELS)),
+        "run_url": env.get("RUN_URL", "") if RUN_LINK.search(env.get("RUN_URL", "")) else "",
     }
     for token in env.get("FAKE_EVENT", "").split():
         key, _, value = token.partition("=")
@@ -142,9 +144,11 @@ def event_from_env(env: dict[str, str]) -> dict[str, Any]:
     return event
 
 
-def reviewed_here(statuses: Sequence[Sequence[str]], review: Review) -> bool:
+def reviewed_here(statuses: Sequence[Sequence[str]], review: Review, own: str = "") -> bool:
     for status in statuses:
         if len(status) >= 3 and status[0] == review.context and status[2] == BOT:
+            if own and len(status) >= 5 and status[4] in (own, own + RESTORED):
+                return False
             if review is FIRST:
                 return True
             return status[1] in ("success", "failure") and (len(status) < 4 or status[3] != NOT_RISKY)
@@ -154,7 +158,7 @@ def reviewed_here(statuses: Sequence[Sequence[str]], review: Review) -> bool:
 def pending_first(action: str, statuses: Sequence[Sequence[str]], review: Review, event: dict[str, Any]) -> bool:
     if review is FIRST or action not in LABEL_EVENTS:
         return False
-    return wanted(action, statuses, review, event)[0] and not reviewed_here(statuses, review)
+    return wanted(action, statuses, review, event)[0] and not reviewed_here(statuses, review, event.get("run_url", ""))
 
 
 def wanted(action: str, statuses: Sequence[Sequence[str]], review: Review = FIRST,
@@ -168,7 +172,7 @@ def wanted(action: str, statuses: Sequence[Sequence[str]], review: Review = FIRS
         if action == "unlabeled" and (not event.get("owner") or event.get("sender") != event.get("owner")):
             return False, NOT_WANTED["not_owner"]
         return True, ""
-    if action == "ready_for_review" and reviewed_here(statuses, review):
+    if action == "ready_for_review" and reviewed_here(statuses, review, event.get("run_url", "")):
         return False, NOT_WANTED["reviewed"]
     return True, ""
 
@@ -592,57 +596,147 @@ def report(path: str, review: Review = FIRST) -> dict[str, str]:
     return {"verdict": "pass", "description": f"No blocking findings ({len(findings)} advisory)", "comment": comment, "findings": rows}
 
 
-class Status(NamedTuple):
+class Entry(NamedTuple):
     state: str
     description: str
-    url: str
     run: int
     copy: bool
 
 
-def run_statuses(statuses: Sequence[Sequence[str]], review: Review = SECOND) -> list[Status]:
-    out: list[Status] = []
+class Run(NamedTuple):
+    workflow: object
+    event: object
+    head: object
+    pulls: tuple[object, ...]
+    completed: bool
+
+
+ON_BEHALF = "An earlier run's blocking verdict stands: "
+
+
+def run_of(url: str, prefix: str) -> tuple[int, bool] | None:
+    if not prefix or not url.startswith(prefix):
+        return None
+    rest = url[len(prefix):]
+    copy = rest.endswith(RESTORED)
+    rest = rest[:-len(RESTORED)] if copy else rest
+    return (int(rest), copy) if rest.isdigit() and rest.isascii() else None
+
+
+def entries(statuses: Sequence[Sequence[str]], prefix: str, review: Review = SECOND) -> list[Entry]:
+    out: list[Entry] = []
     for status in statuses:
-        if len(status) < 3 or status[0] != review.context or status[2] != BOT:
+        if len(status) < 2 or status[0] != review.context:
             continue
-        description = status[3] if len(status) >= 4 else ""
-        url = status[4] if len(status) >= 5 else ""
-        link = RUN_LINK.search(url)
-        out.append(Status(status[1], description, url, int(link.group(1)) if link else 0, bool(link and link.group(2))))
+        found = run_of(status[4], prefix) if len(status) >= 5 and len(status) >= 3 and status[2] == BOT else None
+        out.append(Entry(status[1], status[3] if len(status) >= 4 else "", found[0] if found else 0, bool(found and found[1])))
     return out
 
 
-def later_run(statuses: Sequence[Sequence[str]], run: int, review: Review = SECOND) -> int:
-    return max((s.run for s in run_statuses(statuses, review) if s.run > run), default=0)
+def run_prefix(run_url: str) -> str:
+    return run_url.rsplit("/", 1)[0] + "/" if RUN_LINK.search(run_url) else ""
 
 
-def to_restore(statuses: Sequence[Sequence[str]], review: Review = SECOND) -> Status | None:
-    entries = run_statuses(statuses, review)
-    if not entries:
+def read_runs(lines: Iterable[Sequence[object]]) -> dict[int, Run]:
+    runs: dict[int, Run] = {}
+    for line in lines:
+        if len(line) < 6 or not isinstance(line[0], int) or not isinstance(line[4], list):
+            continue
+        runs[line[0]] = Run(line[1], line[2], line[3], tuple(line[4]), line[5] == "completed")
+    return runs
+
+
+def trusted(runs: dict[int, Run], mine: int, pr: int, sha: str) -> dict[int, bool]:
+    out = {mine: False}
+    own = runs.get(mine)
+    if own is None:
+        return out
+    for number, run in runs.items():
+        if number != mine and (run.workflow, run.event) == (own.workflow, own.event) and run.head == sha and pr in run.pulls:
+            out[number] = run.completed
+    return out
+
+
+def effective(found: Sequence[Entry], runs: dict[int, bool]) -> dict[int, Entry]:
+    out: dict[int, Entry] = {}
+    for entry in found:
+        if entry.run in runs and not entry.copy and entry.run not in out:
+            out[entry.run] = entry
+    return {run: e for run, e in out.items() if not (e.state == "pending" and runs[run])}
+
+
+def decide(runs: dict[int, Entry]) -> Entry | None:
+    if not runs:
         return None
-    latest = max(s.run for s in entries)
-    decided = next((s for s in entries if s.run == latest and not s.copy), None)
-    newest = entries[0]
-    if decided is None or (newest.state, newest.description, newest.run) == (decided.state, decided.description, decided.run):
+    latest = runs[max(runs)]
+    if latest.state == "success" and latest.description != NOT_RISKY:
+        blocking = [run for run, e in runs.items() if run < latest.run and e.state == "failure"]
+        if blocking:
+            return runs[max(blocking)]
+    return latest
+
+
+def publish(found: Sequence[Entry], runs: dict[int, bool], mine: int, state: str, description: str) -> tuple[str, str] | None:
+    current = effective(found, runs)
+    current[mine] = Entry(state, description, mine, False)
+    decided = decide(current)
+    if state == "failure" or decided is None or decided.run == mine:
+        return state, description
+    if max(current) == mine:
+        return decided.state, (ON_BEHALF + decided.description.removeprefix(ON_BEHALF))[:140]
+    return None
+
+
+def to_restore(found: Sequence[Entry], runs: dict[int, bool]) -> Entry | None:
+    decided = decide(effective(found, runs))
+    if decided is None or not found:
         return None
-    return decided
+    newest = found[0]
+    return None if (newest.state, newest.description, newest.run) == (decided.state, decided.description, decided.run) else decided
 
 
-def comment_run(body: str, review: Review = SECOND) -> int:
+def comment_state(body: str, review: Review = SECOND) -> tuple[str, int]:
     lines = body.splitlines()
     for index in range(1, min(len(lines), HIDDEN_LINES)):
         if state := review.state.match(lines[index]):
-            return int(state.group(4) or 0)
-    return 0
+            return state.group(1), int(state.group(4) or 0)
+    return "", 0
 
 
-def comment_action(comments: Sequence[Sequence[object]], run: int, review: Review = SECOND) -> str:
+def comment_run(body: str, review: Review = SECOND) -> int:
+    return comment_state(body, review)[1]
+
+
+def own_comment(comments: Sequence[Sequence[object]], review: Review = SECOND) -> tuple[object, str] | None:
     for comment in comments:
-        if len(comment) < 2 or not isinstance(comment[1], str) or not comment[1].startswith(review.marker):
-            continue
-        written = comment_run(comment[1], review)
-        return f"keep {comment[0]} {written}" if written > run else f"patch {comment[0]}"
-    return "post"
+        if len(comment) >= 2 and isinstance(comment[1], str) and comment[1].startswith(review.marker):
+            return comment[0], comment[1]
+    return None
+
+
+def comment_action(comments: Sequence[Sequence[object]], runs: dict[int, Run], mine: int, pr: int, sha: str, decides: bool,
+                   review: Review = SECOND) -> str:
+    found = own_comment(comments, review)
+    if found is None:
+        return "post"
+    written_sha, written = comment_state(found[1], review)
+    later = written > mine and written in trusted(runs, mine, pr, written_sha)
+    if later and (written_sha != sha or not decides):
+        return f"keep {found[0]} {written}"
+    return f"patch {found[0]}"
+
+
+def candidates(statuses: Sequence[Sequence[str]], comments: Sequence[Sequence[object]], mine: int, prefix: str,
+               review: Review = SECOND) -> list[int]:
+    out = [mine]
+    for entry in entries(statuses, prefix, review):
+        if entry.run and entry.run not in out:
+            out.append(entry.run)
+    found = own_comment(comments, review)
+    written = comment_state(found[1], review)[1] if found else 0
+    if written and written not in out:
+        out.append(written)
+    return out
 
 
 def json_lines(lines: Iterable[str]) -> list[list[Any]]:
@@ -662,6 +756,40 @@ def write_outputs(values: dict[str, str]) -> None:
     print(f"{values['verdict']}: {values['description']}")
 
 
+def order(argv: list[str], env: dict[str, str]) -> int:
+    mine = int(env["RUN_ID"])
+    prefix = run_prefix(env.get("RUN_URL", ""))
+    statuses = json_lines(sys.stdin)
+    if argv[0] == "runs" and len(argv) == 2:
+        with open(argv[1], encoding="utf-8") as f:
+            print(*candidates(statuses, json_lines(f), mine, prefix), sep="\n")
+        return 0
+    if len(argv) < 3:
+        print(USAGE, file=sys.stderr)
+        return 2
+    sha, pr = argv[1], int(env["PR"])
+    with open(argv[2], encoding="utf-8") as f:
+        runs = read_runs(json_lines(f))
+    found, verified = entries(statuses, prefix), trusted(runs, mine, pr, sha)
+    if argv[0] == "settle":
+        restore = to_restore(found, verified)
+        if restore:
+            print(restore.state, f"{prefix}{restore.run}{RESTORED}", " ".join(restore.description.split()), sep="\n")
+        return 0
+    if argv[0] == "publish" and len(argv) == 5:
+        state, description = argv[4], " ".join(env.get("DESCRIPTION", "").split())
+        post = publish(found, verified, mine, state, description)
+        print(f"status={post[0] if post else ''}")
+        print(f"description={post[1] if post else ''}")
+        decided = decide(effective(found, verified) | {mine: Entry(state, description, mine, False)})
+        print(f"decided_by={decided.run if decided else mine}")
+        with open(argv[3], encoding="utf-8") as f:
+            print(f"comment={comment_action(json_lines(f), runs, mine, pr, sha, post == (state, description))}")
+        return 0
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str]) -> int:
     review = FIRST
     if argv[:1] == ["second"]:
@@ -677,7 +805,7 @@ def main(argv: list[str]) -> int:
         yes, reason = wanted(action, statuses, review, event)
         print(f"wanted={'true' if yes else 'false'}")
         print(f"reason={reason}")
-        print(f"reviewed={'true' if reviewed_here(statuses, review) else 'false'}")
+        print(f"reviewed={'true' if reviewed_here(statuses, review, event['run_url']) else 'false'}")
         print(f"pending={'true' if pending_first(action, statuses, review, event) else 'false'}")
         return 0
     if len(argv) == 3 and argv[0] == "previous":
@@ -704,19 +832,8 @@ def main(argv: list[str]) -> int:
             Path(argv[2]).write_text(reason + "\n", encoding="utf-8")
         print(f"risky={'true' if yes else 'false'}: {reason}")
         return 0
-    if len(argv) == 2 and argv[0] == "later" and argv[1].isdigit():
-        later = later_run(json_lines(sys.stdin), int(argv[1]), review)
-        print(later if later else "")
-        return 0
-    if len(argv) == 3 and argv[0] == "comment" and argv[1].isdigit():
-        with open(argv[2], encoding="utf-8") as f:
-            print(comment_action(json_lines(f), int(argv[1]), review))
-        return 0
-    if argv == ["settle"]:
-        restore = to_restore(json_lines(sys.stdin), review)
-        if restore:
-            print(restore.state, restore.url + RESTORED, " ".join(restore.description.split()), sep="\n")
-        return 0
+    if review is SECOND and argv[:1] in (["runs"], ["publish"], ["settle"]):
+        return order(argv, dict(os.environ))
     if len(argv) == 2 and argv[0] == "report":
         write_outputs(report(argv[1], review))
         return 0
@@ -726,8 +843,8 @@ def main(argv: list[str]) -> int:
 
 def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("args", nargs=argparse.REMAINDER,
-                        help="[second] detect | wanted ACTION | previous COMMENTS OUT | plan | risky FILES | report OUT | later RUN_ID | "
-                             "comment RUN_ID COMMENTS | settle")
+                        help="[second] detect | wanted ACTION | previous COMMENTS OUT | plan | risky FILES | report OUT | second runs | "
+                             "second publish | second settle")
 
 
 def run(args: argparse.Namespace) -> int:
