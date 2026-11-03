@@ -164,11 +164,11 @@ def reviews(run: Run, pulls: list[rm.Pull]) -> Json:
     trimmed: set[int] = set()
     for number, comments in sorted(per_pull.items()):
         try:
-            raised = raised_on(run.repo, number, comments)
+            by_review = raised_on(run.repo, number, comments)
         except Trimmed:
             trimmed.add(number)
             continue
-        for key, kept in raised.items():
+        for key, kept in by_review.items():
             reviewed[key] += 1
             severity.update(level for level, _ in kept)
             statuses.update(status for _, status in kept)
@@ -181,11 +181,11 @@ def reviews(run: Run, pulls: list[rm.Pull]) -> Json:
         if number in trimmed:
             continue
         try:
-            raised = raised_on(run.repo, number, comments)
+            by_review = raised_on(run.repo, number, comments)
         except Trimmed:
             trimmed.add(number)
             continue
-        for kept in raised.values():
+        for kept in by_review.values():
             at_merge += len(kept)
             open_at_merge += sum(1 for _, status in kept if status == "open")
     if trimmed:
