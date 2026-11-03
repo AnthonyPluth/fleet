@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# A fake `gh` that keeps state, for the tests of the "Second review"'s order of runs (tests/test_second_review_order.py):
+# put a directory holding it as `gh` on PATH. It keeps one pull request's commit statuses and conversation comments in
+# the directory FAKE_GH_STATE, applies every write to them, and appends every invocation, one shell-quoted line each, to
+# FAKE_GH_LOG.
+#
+#   gh api [--paginate] PATH [--jq FILTER]                      a read, through jq -r with FILTER when one is given
+#     repos/<o>/<r>/commits/<sha>/statuses                      the statuses on <sha>, newest first
+#     repos/<o>/<r>/issues/<n>/comments                         the comments, oldest first
+#   gh api -X POST repos/<o>/<r>/statuses/<sha> -f state=... -f context=... -f description=... -f target_url=...
+#                                                               a status on <sha>, by FAKE_GH_LOGIN (github-actions[bot])
+#   gh api -X POST repos/<o>/<r>/issues/<n>/comments -F body=@FILE
+#   gh api -X PATCH repos/<o>/<r>/issues/comments/<id> -F body=@FILE
+#   gh workflow run ...                                         logged, nothing else
+#
+# FAKE_GH_HOOK, when set, is a bash command run once, just before the first write whose path contains FAKE_GH_HOOK_ON:
+# another run's step landing between this run's read and its write. The hook runs without FAKE_GH_HOOK in its
+# environment, so its own writes run no hook.
+set -euo pipefail
+
+: "${FAKE_GH_STATE:?set FAKE_GH_STATE to the directory the fake keeps its state in}"
+: "${FAKE_GH_LOG:?set FAKE_GH_LOG to the file to log invocations to}"
+
+printf '%q ' gh "$@" >> "$FAKE_GH_LOG"
+printf '\n' >> "$FAKE_GH_LOG"
+
+case "${1:-}" in
+  api) ;;
+  workflow) exit 0 ;;
+  *) echo "fake gh: unexpected command: $*" >&2; exit 64 ;;
+esac
+shift
+
+method=GET path="" filter=""
+declare -A field=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --paginate) shift ;;
+    -X) method=$2; shift 2 ;;
+    -f) field[${2%%=*}]=${2#*=}; shift 2 ;;
+    -F) value=${2#*=}; [[ "$value" != @* ]] || value=$(cat "${value#@}"); field[${2%%=*}]=$value; shift 2 ;;
+    --jq) filter=$2; shift 2 ;;
+    -*) echo "fake gh: unexpected option: $1" >&2; exit 64 ;;
+    *) path=$1; shift ;;
+  esac
+done
+path=${path%%\?*}
+mkdir -p "$FAKE_GH_STATE/statuses"
+comments="$FAKE_GH_STATE/comments.json"
+[ -f "$comments" ] || echo '[]' > "$comments"
+
+if [ "$method" != GET ] && [ -n "${FAKE_GH_HOOK:-}" ] && [[ "$path" == *"${FAKE_GH_HOOK_ON:-}"* ]] && [ ! -e "$FAKE_GH_STATE/.hooked" ]; then
+  touch "$FAKE_GH_STATE/.hooked"
+  hook=$FAKE_GH_HOOK
+  (unset FAKE_GH_HOOK FAKE_GH_HOOK_ON; bash -c "$hook")
+fi
+
+answer() { if [ -n "$filter" ]; then jq -r "$filter" <<< "$1"; else printf '%s\n' "$1"; fi; }
+
+if [[ "$method" == GET && "$path" =~ ^repos/[^/]+/[^/]+/commits/([0-9a-f]{40})/statuses$ ]]; then
+  file="$FAKE_GH_STATE/statuses/${BASH_REMATCH[1]}.json"
+  answer "$(cat "$file" 2>/dev/null || echo '[]')"
+elif [[ "$method" == GET && "$path" =~ ^repos/[^/]+/[^/]+/issues/[0-9]+/comments$ ]]; then
+  answer "$(cat "$comments")"
+elif [[ "$method" == POST && "$path" =~ ^repos/[^/]+/[^/]+/statuses/([0-9a-f]{40})$ ]]; then
+  file="$FAKE_GH_STATE/statuses/${BASH_REMATCH[1]}.json"
+  [ -f "$file" ] || echo '[]' > "$file"
+  jq --arg state "${field[state]}" --arg context "${field[context]}" --arg description "${field[description]:-}" \
+     --arg url "${field[target_url]:-}" --arg login "${FAKE_GH_LOGIN:-github-actions[bot]}" \
+     '[{state: $state, context: $context, description: $description, target_url: $url, creator: {login: $login}}] + .' \
+     "$file" > "$file.new"
+  mv "$file.new" "$file"
+  echo '{}'
+elif [[ "$method" == POST && "$path" =~ ^repos/[^/]+/[^/]+/issues/[0-9]+/comments$ ]]; then
+  jq --arg body "${field[body]}" --arg login "${FAKE_GH_LOGIN:-github-actions[bot]}" \
+     '. + [{id: (length + 1), body: $body, user: {login: $login}, author_association: "NONE", html_url: ""}]' \
+     "$comments" > "$comments.new"
+  mv "$comments.new" "$comments"
+  echo '{}'
+elif [[ "$method" == PATCH && "$path" =~ ^repos/[^/]+/[^/]+/issues/comments/([0-9]+)$ ]]; then
+  jq --argjson id "${BASH_REMATCH[1]}" --arg body "${field[body]}" 'map(if .id == $id then .body = $body else . end)' \
+     "$comments" > "$comments.new"
+  mv "$comments.new" "$comments"
+  echo '{}'
+else
+  echo "fake gh: no route for $method $path" >&2
+  exit 65
+fi

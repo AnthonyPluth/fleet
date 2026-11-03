@@ -547,20 +547,40 @@ jobs:
           LABEL: ${{ github.event.label.name }}
           TRIGGER_LABELS: ${{ inputs.second-review-labels }}
           FAKE_EVENT: ${{ inputs.fake-review != '' && inputs.fake-event || '' }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MERGE_GATE: ${{ inputs.merge-gate-workflow }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
           run() { if [ "$DRY_RUN" = true ]; then echo "(dry run) $*"; else "$@" > /dev/null; fi; }
-          statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" \
-                       --jq '.[] | [.context, .state, .creator.login, (.description // "")] | @json')
+          read_statuses() {
+            gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" \
+              --jq '.[] | [.context, .state, .creator.login, (.description // ""), (.target_url // "")] | @json'
+          }
+          statuses=$(read_statuses)
           python3 -I .fleet/fleet_tools/agent_review.py second wanted "$ACTION" <<< "$statuses" | tee "$RUNNER_TEMP/wanted.txt"
           if ! grep -qx 'pending=true' "$RUNNER_TEMP/wanted.txt"; then
             echo "No second review will run on this event; the status stays as it is."
             exit 0
           fi
+          # The run that started last decides the head's "Second review" (docs/agent-review.md, "Which run decides").
+          later=$(python3 -I .fleet/fleet_tools/agent_review.py second later "$RUN_ID" <<< "$statuses")
+          if [ -n "$later" ]; then
+            echo "Run $later, which started after this one, has set this head's \"Second review\"; it stays as it is."
+            exit 0
+          fi
           run gh api -X POST "repos/$REPO/statuses/$HEAD" -f state=pending -f context="Second review" \
             -f description="A second review is running after a label change" -f target_url="$RUN_URL"
+          # A later run may have posted between the check above and this post: its status goes back on top.
+          for _ in 1 2 3; do
+            statuses=$(read_statuses)
+            mapfile -t restore < <(python3 -I .fleet/fleet_tools/agent_review.py second settle <<< "$statuses")
+            [ "${#restore[@]}" -eq 3 ] || break
+            echo "A later run set this head's \"Second review\" meanwhile: posting its ${restore[0]} again."
+            run gh api -X POST "repos/$REPO/statuses/$HEAD" -f state="${restore[0]}" -f context="Second review" \
+              -f description="${restore[2]:0:140}" -f target_url="${restore[1]}"
+            [ "$DRY_RUN" != true ] || break
+          done
           if [ -n "$MERGE_GATE" ]; then
             run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
           fi
@@ -811,6 +831,7 @@ jobs:
           STUB: ${{ inputs.fake-review }}
           REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}   # in the comment, for the next push's re-review
           RECORD_HASH: ${{ steps.plan.outputs.record }}            # beside it: the verification record this review read
+          RUN_ID: ${{ github.run_id }}                              # and its run, which orders the runs on one head
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$WANTED" != true ]; then
@@ -875,6 +896,7 @@ jobs:
           FINDINGS: ${{ needs.second-review.outputs.findings }}
           INCREMENTAL: ${{ needs.second-review.outputs.incremental }}
           TOUCHED: ${{ needs.second-review.outputs.touched }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MERGE_GATE: ${{ inputs.merge-gate-workflow }}
           DRY_RUN: ${{ inputs.dry-run }}
@@ -887,6 +909,17 @@ jobs:
             *) state=error; [ -n "$DESCRIPTION" ] || DESCRIPTION="The second review didn't finish; see the run" ;;
           esac
           echo "$state: $DESCRIPTION"
+          read_statuses() {
+            gh api --paginate "repos/$REPO/commits/$SHA/statuses?per_page=100" \
+              --jq '.[] | [.context, .state, .creator.login, (.description // ""), (.target_url // "")] | @json'
+          }
+          # The run that started last decides the head's "Second review" (docs/agent-review.md, "Which run decides"):
+          # a run that started earlier posts nothing over it, whichever finishes first.
+          later=$(read_statuses | python3 -I .fleet/fleet_tools/agent_review.py second later "$RUN_ID")
+          if [ -n "$later" ]; then
+            echo "Run $later, which started after this one, has set this head's \"Second review\"; this run's $state isn't posted."
+            exit 0
+          fi
           if [ -n "$COMMENT" ]; then
             base64 -d <<< "$COMMENT" > comment.md
             # The second review's own outcomes record (its marker), merged and shown as for the first review.
@@ -895,18 +928,31 @@ jobs:
             python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md --second --repo "$REPO" --pr "$PR" --sha "$SHA" \
               --incremental "$INCREMENTAL" --touched touched.txt --findings findings.json
             if [ "$DRY_RUN" = true ]; then echo "(dry run) the comment:"; cat comment.md; echo; fi
-            # One second-review comment per pull request, updated by each second review (the marker is its first line).
-            existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
-                         --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- second-review -->"))) | .id')
-            existing=${existing%%$'\n'*}
-            if [ -n "$existing" ]; then
-              run gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@comment.md
-            else
-              run gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md
-            fi
+            # One second-review comment per pull request, updated by each second review (the marker is its first line),
+            # unless its state line says a run that started after this one wrote it (for this head or a newer one).
+            gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- second-review -->"))) | [.id, .body] | @json' \
+              > comments.jsonl
+            read -r action existing written < <(python3 -I .fleet/fleet_tools/agent_review.py second comment "$RUN_ID" comments.jsonl)
+            case "$action" in
+              patch) run gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@comment.md ;;
+              post) run gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md ;;
+              keep) echo "Run $written, which started after this one, wrote the comment; it stays as it is." ;;
+              *) echo "::error::Couldn't tell which run wrote the second review's comment"; exit 1 ;;
+            esac
           fi
           run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="$state" -f context="Second review" \
             -f description="${DESCRIPTION:0:140}" -f target_url="$RUN_URL"
+          # A later run may have posted between the check above and this post: its status goes back on top.
+          for _ in 1 2 3; do
+            statuses=$(read_statuses)
+            mapfile -t restore < <(python3 -I .fleet/fleet_tools/agent_review.py second settle <<< "$statuses")
+            [ "${#restore[@]}" -eq 3 ] || break
+            echo "A later run set this head's \"Second review\" meanwhile: posting its ${restore[0]} again."
+            run gh api -X POST "repos/$REPO/statuses/$SHA" -f state="${restore[0]}" -f context="Second review" \
+              -f description="${restore[2]:0:140}" -f target_url="${restore[1]}"
+            [ "$DRY_RUN" != true ] || break
+          done
           if [ -n "$MERGE_GATE" ]; then
             run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
           fi

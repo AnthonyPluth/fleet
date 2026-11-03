@@ -284,6 +284,22 @@ jobs:
       - name: A fixed finding resolves and a dismissal changes no status
         run: .github/scripts/finding-outcomes-self-test.sh
 
+  # The order of second reviews on one head (#69): the second-pending and second-report steps of agent-review.yml, run
+  # as they are against a fake GitHub that keeps state (tests/fakes/github), in the push-then-label and label-then-push
+  # orders, with re-runs, a push to a new head and a single run; a blocking verdict of the run that started later stands.
+  second-review-order:
+    name: Second review order (fake GitHub)
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, a fake gh and a few lines of shell
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The run that started later decides, whichever finishes first
+        run: python3 -m unittest -v tests.test_second_review_order
+
   # The verify run on a fixture tree (tests/fixtures/verify/): Python with Poetry's virtualenv, Node with the packages
   # and libfaketime are set up as for an app, no browser, and its `make smoke` checks each is there and writes a marker.
   verify:

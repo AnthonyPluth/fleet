@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-review.yml`'s "Second review" no longer depends on which of two runs on one head finishes last (#69): a push run and a trigger-label run each wrote the status and the comment, so a push run's success finishing after a label run's blocking verdict replaced it and the gate could pass over the finding. Now the run that started last (the higher `github.run_id`; a re-run keeps its place) decides: an earlier run posts no status or comment over a later run's pending, verdict or error, a status written in between is put back on top, and the comment's state line carries ` run=<id>` (older lines still parse). Apps change nothing but the pin. `docs/agent-review.md` ("Which run decides") has the cases and what remains; `tests/test_second_review_order.py` runs the workflow's steps against a fake GitHub that keeps state (`tests/fakes/github`), and the self-test runs it.
+
 ## [2.0.0] - 2026-11-03
 
 ### Changed

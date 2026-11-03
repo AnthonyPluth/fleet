@@ -197,13 +197,14 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertEqual(steps.index(checkouts[0]), 0)
             for line in report.splitlines():
                 if "python3" in line:
-                    self.assertIn("python3 -I .fleet/fleet_tools/review_outcomes.py --finish comment.md", line)
+                    self.assertRegex(line, r"python3 -I \.fleet/fleet_tools/review_outcomes\.py --finish comment\.md"
+                                     + (r"|python3 -I \.fleet/fleet_tools/agent_review\.py second (later|comment|settle) " if job == "second-report" else ""))
             self.assertIn('--repo "$REPO" --pr "$PR" --sha "$SHA"', report)
             self.assertIn('--incremental "$INCREMENTAL" --touched touched.txt --findings findings.json', report)
             self.assertIn('base64 -d <<< "$TOUCHED" > touched.txt', report)
             self.assertIn('base64 -d <<< "$FINDINGS" > findings.json', report)
             self.assertLess(report.index("review_outcomes.py --finish"), report.index("(dry run) the comment:"))
-            self.assertLess(report.index("review_outcomes.py --finish"), report.index("existing="))
+            self.assertLess(report.index("review_outcomes.py --finish"), report.index("-X PATCH"))
             env = mapping(next(s for s in steps if step_name(s).startswith("Post"))["env"])
             self.assertEqual(env["INCREMENTAL"], f"${{{{ needs.{review}.outputs.incremental }}}}")
             self.assertEqual(env["FINDINGS"], f"${{{{ needs.{review}.outputs.findings }}}}")
@@ -233,7 +234,8 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertNotIn("needs.review.", second)
         self.assertNotIn("needs.second-review.", first)
         self.assertEqual(self.text.count('-f context="Agent review"'), 1)
-        self.assertEqual(self.text.count('-f context="Second review"'), 2)
+        self.assertEqual(self.text.count('-f context="Second review"'), 4)
+        self.assertEqual(second.count('-f context="Second review"'), 2)
         self.assertIn('-f context="Second review"', job_source(self.text, "second-pending"))
 
     def test_label_events_dependabot_and_first_review_off_run_neither_first_review_job(self) -> None:
@@ -481,6 +483,16 @@ class FindingOutcomesSelfTestTest(unittest.TestCase):
         script = cli.ROOT / ".github" / "scripts" / "finding-outcomes-self-test.sh"
         self.assertTrue(script.is_file())
         self.assertTrue(script.stat().st_mode & 0o111)
+
+    def test_the_self_test_runs_the_second_review_order_cases_from_the_pull_request_s_checkout(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8")
+        job = mapping(mapping(mapping(self_check.parse(text))["jobs"])["second-review-order"])
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        steps = [mapping(s) for s in job["steps"]]
+        self.assertEqual(mapping(steps[0]["with"])["persist-credentials"], "false")
+        self.assertEqual(steps[1]["run"], "python3 -m unittest -v tests.test_second_review_order")
+        fake = cli.ROOT / "tests" / "fakes" / "github"
+        self.assertTrue(fake.stat().st_mode & 0o111)
 
 
 class LockedClaudeCodeTest(unittest.TestCase):
