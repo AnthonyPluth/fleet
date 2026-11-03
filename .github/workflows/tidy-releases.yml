@@ -41,7 +41,7 @@ on:
         default: ""
 
 env:
-  FLEET_REF: v1.0.0   # stamped by the release
+  FLEET_REF: v1.1.0   # stamped by the release
 
 permissions: {}
 
