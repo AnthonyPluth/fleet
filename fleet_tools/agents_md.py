@@ -71,11 +71,11 @@ def parse_version_file(text: str) -> Content:
         raise ValueError(f"{name} holds {version[:40]!r}, not a version (vX.Y.Z)")
     if len(lines) == 1:
         return Content(version, None)
-    commit = lines[1]
+    commit = lines[1].strip(" \t")
     if not COMMIT.fullmatch(commit):
         if COMMIT.fullmatch(commit.strip()):
-            raise ValueError(f"{name} line 2 holds {commit!r}: the commit must be exactly 40 hex digits, with no space or carriage "
-                             "return around it (tools/fleet rejects it)")
+            raise ValueError(f"{name} line 2 holds {lines[1]!r}: tools/fleet reads it with `read -r`, which strips only spaces and tabs, "
+                             "so a carriage return or other whitespace around the commit makes it reject the line")
         raise ValueError(f"{name} line 2 holds {commit[:40]!r}, not a commit (40 hex digits)")
     return Content(version, commit)
 

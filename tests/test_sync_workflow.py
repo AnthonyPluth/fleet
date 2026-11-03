@@ -206,9 +206,13 @@ class Planner(unittest.TestCase):
         write(root, ".fleet/version", "v1.0.0\n")
         self.assertEqual(sync_workflow.plan(root).action, "sync")
 
-    def test_a_commit_with_whitespace_around_it_fails_like_the_shim(self) -> None:
+    def test_a_commit_with_whitespace_around_it_is_read_as_the_shim_reads_it(self) -> None:
         root = consumer(self, "v1.1.0", "v1.0.0")
-        for line in (f" {'a' * 40}", f"{'a' * 40} ", f"{'a' * 40}\r"):
+        for line in (f" {'a' * 40}", f"{'a' * 40} ", f"\t{'a' * 40}", f"{'a' * 40}\t"):
+            with self.subTest(line=line):
+                write(root, ".fleet/version", f"v1.0.0\n{line}\n")
+                self.assertEqual(sync_workflow.content_version(root).commit, "a" * 40)
+        for line in (f"{'a' * 40}\r", f"\r{'a' * 40}"):
             with self.subTest(line=line):
                 write(root, ".fleet/version", f"v1.0.0\n{line}\n")
                 with self.assertRaises(sync_workflow.PlanError) as raised:
