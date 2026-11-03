@@ -275,6 +275,8 @@ def _sequence(lines: list[Line], index: int, indent: int, path: Trail, where: Wh
             items.append(item)
         else:
             items.append(_scalar(rest, line.number))
+            if where is not None and isinstance(items[-1], BlockScalar):
+                where[here] = line.number
             if index < len(lines) and lines[index].indent > indent:
                 raise Unreadable(lines[index].number, CONTINUED)
     return items, index

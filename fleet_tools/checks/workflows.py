@@ -88,9 +88,13 @@ def without_block_scalars(text: str, tree: Node, where: Where) -> str:
             continue
         key = header.lstrip(" ")
         column = len(header) - len(key)
+        dash = column
         while key.startswith("- "):
+            dash = column
             column += len(key) - len(key[1:].lstrip(" "))
             key = key[1:].lstrip(" ")
+        if isinstance(trail[-1], int):
+            column = dash
         index = start + 1
         while index < len(source) and not source[index].strip():
             index += 1

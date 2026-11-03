@@ -174,9 +174,18 @@ class Workflow(unittest.TestCase):
             with self.subTest(block=block):
                 self.assertEqual(wf.check_workflow("x.yml", GOOD + "      " + block),
                                  ["x.yml: a `uses:` written as a block scalar can't be read (write it on one line)"])
+
+    def test_a_list_item_block_scalar_is_text_not_a_step(self) -> None:
+        matrix = GOOD.replace("    steps:\n", "    strategy:\n      matrix:\n        command:\n          - |\n"
+                                             "            uses: x/y@v1\n          -   >-\n            uses: x/z@v2\n"
+                                             "          - echo\n    steps:\n", 1)
+        self.assertEqual(wf.check_workflow("x.yml", matrix), [])
+        self.assertEqual(wf.check_workflow("x.yml", matrix + "      - uses: x/w@v3\n"),
+                         ["x.yml: x/w@v3 isn't pinned by its commit SHA"])
         listed = GOOD + "      - uses: ./.github/actions/local\n        with:\n          args:\n            - |\n" \
-                        "              uses: x/y@v1\n"
-        self.assertEqual(wf.check_workflow("x.yml", listed), ["x.yml: x/y@v1 isn't pinned by its commit SHA"])
+                        "              uses: x/y@v1\n            - |\n             uses: x/z@v2\n"
+        self.assertEqual(wf.check_workflow("x.yml", listed), [])
+        self.assertIn("indented to none", wf.check_workflow("x.yml", listed + "            - |\n            uses: x/q@v1\n")[0])
 
     def test_a_block_scalar_under_env_is_still_read_as_its_value(self) -> None:
         self.assertIn("`runner` isn't available", wf.check_workflow("x.yml", job_env("|\n        ${{ runner.temp }}/x"))[0])
