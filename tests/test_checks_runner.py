@@ -72,6 +72,15 @@ class Reporting(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("fleet checks: `git merge-base nowhere HEAD` failed", err)
 
+    def test_a_non_utf_8_pyproject_is_a_clean_config_error(self) -> None:
+        root = empty_consumer(self)
+        (root / "pyproject.toml").write_bytes(b'[tool.fleet]\nmigrations = "\xff\xfe"\n')
+        code, _, err = run("--root", str(root))
+        self.assertEqual(code, 2)
+        self.assertIn("fleet checks: ", err)
+        self.assertIn("isn't valid UTF-8", err)
+        self.assertNotIn("Traceback", err)
+
     def test_the_root_defaults_to_the_nearest_pyproject(self) -> None:
         root = copy(self, RUNWAY, repository=False)
         here = Path.cwd()

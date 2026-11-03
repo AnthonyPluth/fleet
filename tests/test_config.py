@@ -76,6 +76,13 @@ class ConfigErrorsTest(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             config.load(self.write("[tool.fleet\n"))
 
+    def test_a_pyproject_that_is_not_utf_8_is_a_config_error(self) -> None:
+        root = self.write("")
+        (root / "pyproject.toml").write_bytes(b'[tool.fleet]\nmigrations = "\xff\xfe"\n')
+        with self.assertRaises(config.ConfigError) as caught:
+            config.load(root)
+        self.assertIn("UTF-8", str(caught.exception))
+
     def test_fleet_not_a_table(self) -> None:
         with self.assertRaises(config.ConfigError):
             config.load(self.write('[tool]\nfleet = "yes"\n'))

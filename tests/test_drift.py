@@ -212,6 +212,25 @@ class Drifted(unittest.TestCase):
                 self.assertIn(f"{problem}; run `fleet sync`", problems)
                 self.assertEqual(len(problems), 1, problems)
 
+    def test_spaces_and_tabs_around_the_commit_pass_as_the_shim_reads_them(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        for label, line in (("a leading space", f" {FIXTURE_COMMIT}"), ("a trailing space", f"{FIXTURE_COMMIT} "),
+                            ("a leading tab", f"\t{FIXTURE_COMMIT}"), ("a trailing tab", f"{FIXTURE_COMMIT}\t")):
+            with self.subTest(label):
+                write(root, ".fleet/version", f"{VERSION}\n{line}\n")
+                self.assertEqual(self.problems(root), [])
+
+    def test_whitespace_the_shim_keeps_fails_naming_the_line(self) -> None:
+        root = copy(self, RUNWAY, repository=False)
+        for label, line in (("a trailing carriage return", f"{FIXTURE_COMMIT}\r"), ("a leading carriage return", f"\r{FIXTURE_COMMIT}"),
+                            ("a trailing form feed", f"{FIXTURE_COMMIT}\f"), ("a carriage return after a space", f"{FIXTURE_COMMIT} \r")):
+            with self.subTest(label):
+                write(root, ".fleet/version", f"{VERSION}\n{line}\n")
+                problems = self.problems(root)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertTrue(problems[0].startswith(f".fleet/version line 2 holds {line!r}: "), problems)
+                self.assertTrue(problems[0].endswith("; run `fleet sync`"), problems)
+
     def test_a_missing_block_version_file_or_agents_md_fails(self) -> None:
         root = copy(self, RUNWAY, repository=False)
         path = root / "AGENTS.md"
