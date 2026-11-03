@@ -63,6 +63,15 @@ class Clean(unittest.TestCase):
         self.assertTrue(agents_md.needs_commit("v1.0.1"))
         self.assertTrue(agents_md.needs_commit("v1.1.0"))
 
+    def test_only_content_after_v1_0_0_needs_a_commit_whatever_this_version(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        for content, needs in (("v1.0.0", False), ("v1.1.0", True), ("v2.0.0", True)):
+            with self.subTest(content=content):
+                write(root, ".fleet/version", f"{content}\n")
+                problems, _ = drift.drift(root)
+                missing = f".fleet/version names no commit for {content} on its line 2"
+                self.assertEqual(any(problem.startswith(missing) for problem in problems), needs, problems)
+
     def test_any_edit_outside_the_blocks_passes(self) -> None:
         rng = random.Random(4)
         for case in range(40):
@@ -171,6 +180,18 @@ class Drifted(unittest.TestCase):
         pin(root, f"v{x}.{y + 1}.0")
         write(root, ".fleet/version", f"{VERSION}\n{'f' * 40}\n")
         self.assertEqual(self.problems(root), [])
+
+    def test_a_pin_at_the_contents_version_by_a_movable_ref_fails(self) -> None:
+        for ref in ("main", VERSION):
+            with self.subTest(ref=ref):
+                root = copy(self, WAYPOINT, repository=False)
+                write(root, ".github/workflows/other.yml", f"jobs:\n  x:\n    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@{ref}   # {VERSION}\n")
+                self.assertEqual(self.problems(root), [
+                    f".github/workflows/other.yml: the fleet pin at {VERSION} is @{ref}, a ref that can move; pin it by full commit "
+                    "SHA (`@<sha>   # vX.Y.Z`)"])
+                path = root / PIN_FILE
+                path.write_text(path.read_text(encoding="utf-8").replace(FIXTURE_COMMIT, ref), encoding="utf-8")
+                self.assertEqual(len(self.problems(root)), 2)
 
     def test_pins_at_one_version_naming_two_commits_fail(self) -> None:
         root = copy(self, WAYPOINT, repository=False)

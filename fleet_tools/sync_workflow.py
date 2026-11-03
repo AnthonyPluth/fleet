@@ -43,13 +43,13 @@ class Plan:
         return ""
 
 
-def content_version(root: Path) -> str:
+def content_version(root: Path) -> agents_md.Content:
     path = root / agents_md.VERSION_FILE
     if not path.is_file():
         raise PlanError(f"{agents_md.VERSION_FILE.as_posix()} doesn't exist: adopt fleet's content by hand first "
                         "(`fleet sync --to <the pins' version>` from fleet at that version; docs/adopting.md)")
     try:
-        return agents_md.parse_version_file(path.read_text(encoding="utf-8")).version
+        return agents_md.parse_version_file(path.read_text(encoding="utf-8"))
     except ValueError as error:
         raise PlanError(str(error)) from error
 
@@ -64,21 +64,26 @@ def plan(root: Path) -> Plan:
         raise PlanError(f"the fleet pins disagree: {listing}; bump them together (Dependabot's fleet group does)")
     if not pinned:
         return Plan(NONE, "", "", "", (), f"no fleet pin in {drift.WORKFLOWS}; nothing to sync to")
-    content = content_version(root)
+    stored = content_version(root)
+    content = stored.version
     pin, files = next(iter(pinned.items()))
     commit, problems = drift.pinned_commit(root, pin)
     if problems:
         raise PlanError("; ".join(problems))
     where = ", ".join(files)
-    have, want = agents_md.version_key(content), agents_md.version_key(pin)
-    if have == want:
-        return Plan(NONE, content, pin, commit or "", tuple(files), f"the content and the workflow pins agree at {pin}")
-    if have > want:
-        raise PlanError(f"fleet content {content} is newer than the workflow pin {pin} in {where}; bump the pins "
-                        "(Dependabot) rather than the content")
     if commit is None:
         raise PlanError(f"the fleet pins at {pin} ({where}) name no commit (`@<sha>`), which the sync writes into "
                         f"{agents_md.VERSION_FILE.as_posix()}; pin by full commit SHA")
+    have, want = agents_md.version_key(content), agents_md.version_key(pin)
+    if have == want:
+        if stored.commit == commit or (stored.commit is None and not agents_md.needs_commit(content)):
+            return Plan(NONE, content, pin, commit, tuple(files), f"the content and the workflow pins agree at {pin}")
+        named = f"names {stored.commit}" if stored.commit else "names no commit"
+        return Plan(SYNC, content, pin, commit, tuple(files),
+                    f"the pins ({where}) are at {pin}, commit {commit}; {agents_md.VERSION_FILE.as_posix()} {named}")
+    if have > want:
+        raise PlanError(f"fleet content {content} is newer than the workflow pin {pin} in {where}; bump the pins "
+                        "(Dependabot) rather than the content")
     if have[0] < want[0]:
         return Plan(MIGRATION, content, pin, commit, tuple(files),
                     f"the pins ({where}) are at {pin}, a newer major than the content's {content}")

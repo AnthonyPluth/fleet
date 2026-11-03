@@ -166,13 +166,36 @@ class Planner(unittest.TestCase):
                                                 "(Dependabot's fleet group does)")
 
     def test_pins_that_name_no_commit_cannot_be_synced_to(self) -> None:
-        root = consumer(self, "v1.1.0", "v1.0.0")
-        for path in (root / ".github/workflows").glob("*.yml"):
-            path.write_text(path.read_text(encoding="utf-8").replace(f"@{release.FIXTURE_COMMIT}", "@main"), encoding="utf-8")
-        with self.assertRaises(sync_workflow.PlanError) as raised:
-            sync_workflow.plan(root)
-        self.assertIn("name no commit (`@<sha>`)", str(raised.exception))
+        for content in ("v1.0.0", "v1.1.0"):
+            for every in (True, False):
+                with self.subTest(content=content, every=every):
+                    root = consumer(self, "v1.1.0", content)
+                    paths = sorted((root / ".github/workflows").glob("*.yml")) if every else [root / PIN_FILE]
+                    for path in paths:
+                        path.write_text(path.read_text(encoding="utf-8").replace(f"@{release.FIXTURE_COMMIT}", "@main"),
+                                        encoding="utf-8")
+                    with self.assertRaises(sync_workflow.PlanError) as raised:
+                        sync_workflow.plan(root)
+                    self.assertIn(f"{PIN_FILE}: the fleet pin at v1.1.0 is @main, a ref that can move; pin it by full "
+                                  "commit SHA", str(raised.exception))
         self.assertEqual(sync_workflow.plan(consumer(self, "v1.0.0", "v1.0.0")).commit, release.FIXTURE_COMMIT)
+
+    def test_pins_moved_to_another_commit_at_the_same_version_sync(self) -> None:
+        root = consumer(self, "v1.1.0", "v1.1.0")
+        self.assertEqual(sync_workflow.plan(root).action, "none")
+        other = "f" * 40
+        for path in (root / ".github/workflows").glob("*.yml"):
+            path.write_text(path.read_text(encoding="utf-8").replace(release.FIXTURE_COMMIT, other), encoding="utf-8")
+        found = sync_workflow.plan(root)
+        self.assertEqual((found.action, found.commit), ("sync", other))
+        self.assertIn(f"commit {other}; .fleet/version names {release.FIXTURE_COMMIT}", found.reason)
+        write(root, ".fleet/version", "v1.1.0\n")
+        found = sync_workflow.plan(root)
+        self.assertEqual(found.action, "sync")
+        self.assertIn(".fleet/version names no commit", found.reason)
+        root = consumer(self, "v1.0.0", "v1.0.0")
+        write(root, ".fleet/version", "v1.0.0\n")
+        self.assertEqual(sync_workflow.plan(root).action, "none")
 
     def test_a_version_file_with_a_malformed_commit_fails(self) -> None:
         root = consumer(self, "v1.1.0", "v1.0.0")

@@ -48,13 +48,21 @@ def pins(root: Path) -> tuple[dict[str, list[str]], list[str]]:
 
 def pinned_commit(root: Path, version: str) -> tuple[str | None, list[str]]:
     commits: dict[str, list[str]] = {}
+    problems = []
     for pin in find_pins(root):
-        if pin.version == version and agents_md.COMMIT.fullmatch(pin.ref):
+        if pin.version != version:
+            continue
+        if agents_md.COMMIT.fullmatch(pin.ref):
             commits.setdefault(pin.ref, []).append(pin.file)
+        else:
+            problems.append(f"{pin.file}: the fleet pin at {version} is @{pin.ref[:40]}, a ref that can move; pin it by "
+                            "full commit SHA (`@<sha>   # vX.Y.Z`)")
     if len(commits) > 1:
         listing = "; ".join(f"{commit} in {', '.join(files)}" for commit, files in sorted(commits.items()))
-        return None, [f"the fleet pins at {version} name more than one commit: {listing}; bump them together "
-                      "(Dependabot's fleet group does)"]
+        problems.append(f"the fleet pins at {version} name more than one commit: {listing}; bump them together "
+                        "(Dependabot's fleet group does)")
+    if problems:
+        return None, problems
     return next(iter(commits), None), []
 
 
