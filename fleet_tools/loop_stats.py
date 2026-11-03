@@ -57,9 +57,14 @@ MAX_SAMPLES = 20
 MAX_PATH = 300
 MAX_TITLE = 200
 MAX_MISSING = 300
+TRIM_MARGIN = 4096
 
 
 class Unreadable(Exception):
+    pass
+
+
+class Trimmed(Exception):
     pass
 
 
@@ -124,6 +129,12 @@ def bot_comments(comments: list[Json], review: Review) -> list[Json]:
     return out
 
 
+def may_be_trimmed(entries: list[Json], review: Review) -> bool:
+    if len(entries) >= review_outcomes.MAX_ENTRIES:
+        return True
+    return len(review_outcomes.encode(entries, review).encode()) > review_outcomes.MAX_OUTCOMES_LINE - TRIM_MARGIN
+
+
 def raised_on(repo: str, number: int, comments: list[Json]) -> dict[str, list[tuple[str, str]]]:
     ready = rm.shaped(comments)
     found: dict[str, list[tuple[str, str]]] = {}
@@ -135,6 +146,8 @@ def raised_on(repo: str, number: int, comments: list[Json]) -> dict[str, list[tu
         line = parsed[1] if parsed is not None and parsed[0] is review else []
         levels = {f["id"]: f["severity"] for f in line if f["id"]}
         entries = review_outcomes.load(repo, number, review.marker, ready)
+        if may_be_trimmed(entries, review):
+            raise Trimmed(f"#{number}")
         ids = {str(entry["id"]) for entry in entries}
         kept = [(levels.get(str(entry["id"]), UNKNOWN), str(entry["status"])) for entry in entries]
         kept += [(f["severity"], "open") for f in line if not f["id"] or f["id"] not in ids]
@@ -148,8 +161,14 @@ def reviews(run: Run, pulls: list[rm.Pull]) -> Json:
     reviewed: Counter[str] = Counter()
     severity: Counter[str] = Counter()
     statuses: Counter[str] = Counter()
+    trimmed: set[int] = set()
     for number, comments in sorted(per_pull.items()):
-        for key, kept in raised_on(run.repo, number, comments).items():
+        try:
+            raised = raised_on(run.repo, number, comments)
+        except Trimmed:
+            trimmed.add(number)
+            continue
+        for key, kept in raised.items():
             reviewed[key] += 1
             severity.update(level for level, _ in kept)
             statuses.update(status for _, status in kept)
@@ -159,9 +178,22 @@ def reviews(run: Run, pulls: list[rm.Pull]) -> Json:
     snapshot, indeterminate = rm.at_merge(per_pull, merged)
     at_merge = open_at_merge = 0
     for number, comments in sorted(snapshot.items()):
-        for kept in raised_on(run.repo, number, comments).values():
+        if number in trimmed:
+            continue
+        try:
+            raised = raised_on(run.repo, number, comments)
+        except Trimmed:
+            trimmed.add(number)
+            continue
+        for kept in raised.values():
             at_merge += len(kept)
             open_at_merge += sum(1 for _, status in kept if status == "open")
+    if trimmed:
+        unread += len(trimmed)
+        listed = ", ".join(f"#{n}" for n in sorted(trimmed))
+        run.missing.append(f"reviews: the outcome record of {len(trimmed)} merged pull request(s) ({listed}) is at or near its cap "
+                           f"({review_outcomes.MAX_ENTRIES} entries or {review_outcomes.MAX_OUTCOMES_LINE} bytes), so findings may have been "
+                           "trimmed; their reviews and findings aren't counted")
     raised = sum(statuses.values())
     findings = {"raised": raised, "by_severity": {**{level: severity[level] for level in SEVERITIES}, UNKNOWN: severity[UNKNOWN]},
                 "resolved": statuses["resolved"], "dismissed": statuses["dismissed"], "open": statuses["open"],

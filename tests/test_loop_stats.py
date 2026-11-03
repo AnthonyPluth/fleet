@@ -404,6 +404,40 @@ class EdgeTest(unittest.TestCase):
         self.assertIsNone(value["reviews"])
         self.assertIn(f"over {ls.MAX_PAGES * 100} pull requests were updated in the window", "\n".join(value["missing"]))
 
+    def trimmed_run(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+        data = fixture()
+        data[history(3)] = [reviewed(3, [finding("Layout", "Overflows")], entries)]
+        self.stats.run(data)
+        return self.stats.stats()
+
+    def test_a_record_at_the_entry_cap_is_unread_not_complete(self) -> None:
+        entries = [outcome("Layout", f"Finding {i}", "resolved") for i in range(review_outcomes.MAX_ENTRIES)]
+        value = self.trimmed_run(entries)
+        self.assertEqual(value["reviews"]["unread"], 1)
+        self.assertEqual(value["reviews"]["with_agent_review"], 2)
+        self.assertEqual(value["reviews"]["findings"]["raised"], 5)
+        self.assertIn("(#3)", "\n".join(value["missing"]))
+
+    def test_a_record_over_the_size_cap_is_unread_not_complete(self) -> None:
+        entries = [outcome("Layout", f"{i} " + "x" * 190, "resolved", file="f" * 250) for i in range(40)]
+        self.assertGreater(len(review_outcomes.encode(entries, ar.FIRST).encode()), review_outcomes.MAX_OUTCOMES_LINE)
+        value = self.trimmed_run(entries)
+        self.assertEqual(value["reviews"]["unread"], 1)
+        self.assertIn("(#3)", "\n".join(value["missing"]))
+
+    def test_a_record_near_the_size_cap_is_unread(self) -> None:
+        entries = [outcome("Layout", f"{i} " + "x" * 190, "resolved", file="f" * 250) for i in range(40)]
+        while len(review_outcomes.encode(entries, ar.FIRST).encode()) > review_outcomes.MAX_OUTCOMES_LINE:
+            entries.pop()
+        value = self.trimmed_run(entries)
+        self.assertEqual(value["reviews"]["unread"], 1)
+
+    def test_a_small_record_is_read(self) -> None:
+        value = self.trimmed_run([outcome("Layout", "Overflows"), outcome("Layout", "Cramped", "resolved")])
+        self.assertEqual(value["reviews"]["unread"], 0)
+        self.assertEqual(value["reviews"]["with_agent_review"], 3)
+        self.assertNotIn("outcome record", "\n".join(value["missing"]))
+
     def test_unreadable_comments_and_files_are_counted_and_said(self) -> None:
         data = fixture()
         del data[history(3)]
