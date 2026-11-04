@@ -72,6 +72,7 @@ class Install:
         self.bin = self.root / "bin"
         self.log = self.root / "curl.log"
         self.github_path = self.root / "github_path"
+        self.github_output = self.root / "github_output"
         self.sums: dict[str, str] = {}
         for platform, arch in (("Linux-64bit", "X64"), ("Linux-ARM64", "ARM64")):
             data = tarball(f"0.70.0 {platform}")
@@ -80,6 +81,7 @@ class Install:
 
     def run(self, **env: str) -> subprocess.CompletedProcess[str]:
         self.github_path.write_text("", encoding="utf-8")
+        self.github_output.write_text("", encoding="utf-8")
         full = {
             "PATH": f"{FAKES}:/usr/bin:/bin",
             "FAKE_CURL_LOG": str(self.log),
@@ -92,9 +94,13 @@ class Install:
             "RUNNER_OS": "Linux",
             "RUNNER_ARCH": "X64",
             "GITHUB_PATH": str(self.github_path),
+            "GITHUB_OUTPUT": str(self.github_output),
             **env,
         }
         return subprocess.run(["bash", str(SCRIPT)], env=full, capture_output=True, text=True, check=False)
+
+    def output(self) -> str:
+        return self.github_output.read_text(encoding="utf-8")
 
     def downloads(self) -> list[str]:
         if not self.log.exists():
@@ -115,6 +121,7 @@ class InstallScriptTest(unittest.TestCase):
         self.assertTrue(os.access(self.install.bin / "trivy", os.X_OK))
         self.assertFalse((self.install.bin / "LICENSE").exists())
         self.assertTrue((self.install.cache / "trivy_0.70.0_Linux-64bit.tar.gz").exists())
+        self.assertEqual(self.install.output(), "installed=true\n")
 
     def test_it_never_asks_get_trivy_dev(self) -> None:
         self.install.run()
@@ -141,6 +148,7 @@ class InstallScriptTest(unittest.TestCase):
         self.assertEqual(self.install.github_path.read_text(encoding="utf-8"), "")
         self.assertFalse((self.install.bin / "trivy").exists())
         self.assertEqual(list(self.install.cache.iterdir()), [])
+        self.assertEqual(self.install.output(), "")
 
     def test_the_x64_checksum_does_not_pass_an_arm64_tarball(self) -> None:
         result = self.install.run(RUNNER_ARCH="ARM64", TRIVY_SHA256_ARM64=self.install.sums["X64"])
@@ -168,14 +176,25 @@ class InstallScriptTest(unittest.TestCase):
         result = self.install.run(FAKE_CURL_EXIT="6")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.install.github_path.read_text(encoding="utf-8"), "")
+        self.assertEqual(self.install.output(), "")
 
-    def test_an_unsupported_runner_fails_with_a_reason(self) -> None:
-        for runner_os, arch in (("macOS", "ARM64"), ("Linux", "ARM"), ("Windows", "X64")):
+    def test_a_runner_without_a_pinned_checksum_installs_nothing_and_leaves_it_to_trivy_action(self) -> None:
+        for runner_os, arch in (("macOS", "ARM64"), ("macOS", "X64"), ("Linux", "X86"), ("Linux", "ARM"), ("Windows", "X64")):
             with self.subTest(runner_os=runner_os, arch=arch):
                 result = self.install.run(RUNNER_OS=runner_os, RUNNER_ARCH=arch)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Linux on X64 or ARM64 runners only", result.stderr)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("::warning::No pinned Trivy", result.stdout)
+                self.assertEqual(self.install.output(), "installed=false\n")
+                self.assertEqual(self.install.github_path.read_text(encoding="utf-8"), "")
         self.assertEqual(self.install.downloads(), [])
+        self.assertFalse(self.install.bin.exists())
+
+    def test_a_pinned_platform_never_falls_back(self) -> None:
+        for env in ({"TRIVY_SHA256_X64": "0" * 64}, {"FAKE_CURL_EXIT": "6"}, {"TRIVY_SHA256_X64": ""},
+                    {"RUNNER_ARCH": "ARM64", "TRIVY_SHA256_ARM64": "0" * 64}):
+            with self.subTest(env=env):
+                self.assertNotEqual(self.install.run(**env).returncode, 0)
+                self.assertNotIn("installed=false", self.install.output())
 
     def test_a_missing_checksum_or_a_malformed_version_fails_before_any_download(self) -> None:
         for env in ({"TRIVY_SHA256_X64": ""}, {"TRIVY_SHA256_X64": "abc"}, {"TRIVY_VERSION": "0.70.0"},
@@ -207,7 +226,9 @@ class TrivyJobsTest(unittest.TestCase):
                 install = index_of(job_steps, "security-trivy-install.sh")
                 fleet = index_of(job_steps, "repository': 'AnthonyPluth/fleet")
                 removed = index_of(job_steps, "rm -rf .fleet")
-                self.assertEqual(job_steps[scan]["with"]["skip-setup-trivy"], "true")
+                self.assertEqual(job_steps[install]["id"], "trivy")
+                self.assertEqual(job_steps[scan]["with"]["skip-setup-trivy"], "${{ steps.trivy.outputs.installed == 'true' }}")
+                self.assertEqual(job_steps[scan]["with"]["version"], "${{ env.TRIVY_VERSION }}")
                 self.assertLess(fleet, install)
                 self.assertLess(install, removed)
                 self.assertLess(removed, scan)
@@ -258,7 +279,6 @@ class TrivyJobsTest(unittest.TestCase):
         self.assertEqual(image["ignore-unfixed"], "true")
         for scan in (files, image):
             self.assertEqual(scan["exit-code"], "${{ inputs.sarif-upload && '0' || '1' }}")
-            self.assertNotIn("version", scan)
 
     def test_the_script_is_executable_and_takes_no_expression(self) -> None:
         self.assertTrue(os.access(SCRIPT, os.X_OK))

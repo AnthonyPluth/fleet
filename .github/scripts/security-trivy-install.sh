@@ -3,11 +3,14 @@
 # script downloads from get.trivy.dev, which stopped resolving): the release tarball straight from Trivy's GitHub
 # release, checked against the SHA-256 security.yml pins for the runner's platform, then put on the PATH. A tarball
 # already in TRIVY_CACHE (restored by actions/cache) is used only when its checksum still matches; any other is
-# downloaded again and checked the same way.
+# downloaded again and checked the same way. It writes `installed=true` to GITHUB_OUTPUT once Trivy is on the PATH.
+# On a platform with no pinned checksum (anything but Linux on X64 or ARM64) it installs nothing and writes
+# `installed=false`, and the job falls back to trivy-action's own install as before. On a pinned platform a failed
+# download or a checksum that doesn't match fails the step: it never falls back.
 #
 # Environment: TRIVY_VERSION (v0.70.0), TRIVY_SHA256_X64 and TRIVY_SHA256_ARM64 (the tarballs' pinned checksums),
-# TRIVY_CACHE (where the tarball is kept), TRIVY_BIN (where the binary goes), RUNNER_OS, RUNNER_ARCH and GITHUB_PATH
-# (set by the runner), TRIVY_DOWNLOAD (the release download URL; default GitHub's, for the tests).
+# TRIVY_CACHE (where the tarball is kept), TRIVY_BIN (where the binary goes), RUNNER_OS, RUNNER_ARCH, GITHUB_PATH and
+# GITHUB_OUTPUT (set by the runner), TRIVY_DOWNLOAD (the release download URL; default GitHub's, for the tests).
 set -euo pipefail
 
 TRIVY_DOWNLOAD=${TRIVY_DOWNLOAD:-https://github.com/aquasecurity/trivy/releases/download}
@@ -16,8 +19,9 @@ case "${RUNNER_OS:-}-${RUNNER_ARCH:-}" in
   Linux-X64) platform=Linux-64bit; sum=${TRIVY_SHA256_X64:-} ;;
   Linux-ARM64) platform=Linux-ARM64; sum=${TRIVY_SHA256_ARM64:-} ;;
   *)
-    echo "::error::Trivy is installed for Linux on X64 or ARM64 runners only, not ${RUNNER_OS:-?} on ${RUNNER_ARCH:-?}" >&2
-    exit 1 ;;
+    echo "::warning::No pinned Trivy for ${RUNNER_OS:-?} on ${RUNNER_ARCH:-?} (only Linux on X64 or ARM64): trivy-action installs it instead"
+    echo "installed=false" >> "$GITHUB_OUTPUT"
+    exit 0 ;;
 esac
 
 if ! [[ "${TRIVY_VERSION:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -59,3 +63,4 @@ tar --extract --gzip --file "$cached" --directory "$TRIVY_BIN" trivy
 chmod 0755 "$TRIVY_BIN/trivy"
 echo "$TRIVY_BIN" >> "$GITHUB_PATH"
 "$TRIVY_BIN/trivy" --version
+echo "installed=true" >> "$GITHUB_OUTPUT"
