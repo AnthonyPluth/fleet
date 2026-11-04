@@ -78,6 +78,8 @@ jobs:
 
 A private repository on a personal account has no code scanning: pass `sarif-upload: false` (Semgrep, Trivy and zizmor then fail their job on findings, which the merge gate sees) and `scorecard: false`, and don't require CodeQL in its merge gate.
 
+With `sarif-upload: true` (the default) Semgrep and Trivy pass their jobs with findings, which reach the merge gate only through code scanning's check runs (such as "Code scanning results / Semgrep OSS"). Those are weaker than a failing job: they fail only at the repository's code scanning failure threshold (GitHub's default: security alerts High or higher, other alerts Error), only for alerts the pull request introduces, and nothing requires them, since a check run is neither a workflow nor a status in `required-workflows`; the gate counts them when they are there. To upload and keep the gate as strict as without SARIF, pass `fail-on-findings: true`: after its upload, the Semgrep job fails on any finding in its SARIF (less those suppressed in source with `nosemgrep`), as `--error` does, and each Trivy job on a CRITICAL or HIGH one (SARIF level `error`; Trivy's SARIF carries every severity), as `exit-code: 1` does. The job's log lists the findings, and the Security tab still gets them. zizmor and `npm audit` fail their job on findings in either mode.
+
 | Input | Default | What |
 | --- | --- | --- |
 | `code-paths` | required | Regex of the paths whose change runs Semgrep |
@@ -88,6 +90,7 @@ A private repository on a personal account has no code scanning: pass `sarif-upl
 | `dockerfile` | `Dockerfile` | The image's Dockerfile |
 | `zizmor-paths` | `.` | What zizmor audits (space-separated paths); the whole tree by default |
 | `sarif-upload` | `true` | Upload findings to the Security tab; `false` fails the job on findings instead |
+| `fail-on-findings` | `false` | With `sarif-upload`, also fail the Semgrep and Trivy jobs after the upload when they found findings (Semgrep any, Trivy CRITICAL or HIGH); `false` leaves them to code scanning's check runs. No effect with `sarif-upload: false` |
 | `scorecard` | `true` | Run OpenSSF Scorecard (public repositories only) |
 | `runs-on` | `"ubuntu-latest"` | The runner for every job but Scorecard's, as JSON |
 | `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch scripts from (fleet's self-test only) |

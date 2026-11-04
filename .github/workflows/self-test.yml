@@ -40,7 +40,8 @@ jobs:
       scorecard: false
 
   # With `sarif-upload: false`, the planted finding in the fixture tree (its own .semgrep rule flags its one line)
-  # must fail the Semgrep step: the step passes only when the script exits non-zero.
+  # must fail the Semgrep step: the step passes only when the script exits non-zero. With SARIF it must reach the
+  # SARIF and fail `fail-on-findings`' check.
   planted-finding:
     name: A planted Semgrep finding fails without SARIF upload
     runs-on: ubuntu-latest
@@ -62,6 +63,20 @@ jobs:
             exit 1
           fi
           echo "Semgrep failed on the planted finding, as it should."
+      # With SARIF (and fail-on-findings), the same finding must be in the SARIF and fail the check that runs after
+      # the upload.
+      - name: Semgrep with SARIF over the planted fixture tree, then the fail-on-findings check
+        env:
+          ROOT: tests/fixtures/security/planted
+          SARIF_UPLOAD: "true"
+          SEMGREP: pipx run semgrep==1.146.0
+        run: |
+          .github/scripts/security-semgrep.sh
+          if python3 -I .github/scripts/sarif_findings.py tests/fixtures/security/planted/semgrep.sarif; then
+            echo "::error::The fail-on-findings check passed over the planted finding"
+            exit 1
+          fi
+          echo "The fail-on-findings check failed on the planted finding, as it should."
 
   # The deep-scan reminder in dry run on fleet itself: it reads fleet's issues and prints the issue it would open (or
   # that one is open) without opening anything. The called job asks for `issues: write` and `contents: read` (the

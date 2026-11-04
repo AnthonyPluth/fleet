@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Added
+
+- Security scans can fail on findings while uploading SARIF (#91): a new input, `fail-on-findings` (boolean, default `false`, unchanged behaviour), makes the Semgrep job fail after its SARIF upload on any finding (less those suppressed in source), as `--error` does without SARIF, and both Trivy jobs on a CRITICAL or HIGH finding (SARIF level `error`), as `exit-code: 1` does. Without it, with `sarif-upload: true`, those jobs pass with findings and the merge gate sees them only through code scanning's check runs, which fail only at the repository's severity threshold, only for alerts the pull request introduces, and aren't required. The check is `.github/scripts/sarif_findings.py` (standard library, run with `python3 -I` from fleet's checkout; the Trivy jobs fetch fleet's scripts again after their scan, so no scan sees them); a SARIF that is missing or can't be read fails the job, and the findings it lists can't start a workflow command. The `security.yml` header no longer says the merge gate "requires" code scanning's check runs: it counts them when they exist. `sarif-upload: false` is unchanged. What apps do: nothing to keep working; an app that uploads SARIF and wants findings to fail the gate passes `fail-on-findings: true`. `docs/adopting.md` (Security scans); `tests/test_security_workflow.py` (`FailOnFindingsWorkflowTest`, `FindingsScriptTest`) and the Self-test's planted Semgrep finding in SARIF mode.
+
 ## [2.2.2] - 2026-11-04
 
 ### Changed

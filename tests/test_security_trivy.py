@@ -49,6 +49,12 @@ def index_of(job_steps: list[Node], match: str) -> int:
     return hits[0]
 
 
+def install_checkout(job_steps: list[Node]) -> int:
+    hits = [i for i, step in enumerate(job_steps) if "repository': 'AnthonyPluth/fleet" in str(step) and "fail-on-findings" not in str(step)]
+    assert len(hits) == 1, hits
+    return hits[0]
+
+
 def tarball(version: str) -> bytes:
     binary = f"#!/bin/sh\necho 'Version: {version}'\n".encode()
     buffer = io.BytesIO()
@@ -224,7 +230,7 @@ class TrivyJobsTest(unittest.TestCase):
                 job_steps = steps(job)
                 scan = index_of(job_steps, TRIVY_ACTION)
                 install = index_of(job_steps, "security-trivy-install.sh")
-                fleet = index_of(job_steps, "repository': 'AnthonyPluth/fleet")
+                fleet = install_checkout(job_steps)
                 removed = index_of(job_steps, "rm -rf .fleet")
                 self.assertEqual(job_steps[install]["id"], "trivy")
                 self.assertEqual(job_steps[scan]["with"]["skip-setup-trivy"], "${{ steps.trivy.outputs.installed == 'true' }}")
@@ -250,7 +256,7 @@ class TrivyJobsTest(unittest.TestCase):
     def test_the_two_jobs_install_trivy_the_same_way_and_only_the_file_scan_saves_the_cache(self) -> None:
         def install_steps(job: str) -> list[Node]:
             job_steps = steps(job)
-            start = index_of(job_steps, "repository': 'AnthonyPluth/fleet")
+            start = install_checkout(job_steps)
             return job_steps[start:index_of(job_steps, "rm -rf .fleet") + 1]
         files, image = install_steps("trivy"), install_steps("image")
         self.assertEqual(len(files), len(image))
@@ -264,7 +270,7 @@ class TrivyJobsTest(unittest.TestCase):
     def test_the_image_job_checks_out_fleet_after_the_build_so_it_stays_out_of_the_build_context(self) -> None:
         job_steps = steps("image")
         self.assertLess(index_of(job_steps, "docker/build-push-action@"),
-                        index_of(job_steps, "repository': 'AnthonyPluth/fleet"))
+                        install_checkout(job_steps))
 
     def test_what_is_scanned_is_unchanged(self) -> None:
         files = steps("trivy")[index_of(steps("trivy"), TRIVY_ACTION)]["with"]
