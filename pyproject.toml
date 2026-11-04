@@ -1,6 +1,6 @@
 [project]
 name = "fleet"
-version = "2.2.2"   # the same as VERSION (tests/test_cli.py checks it)
+version = "2.3.0"   # the same as VERSION (tests/test_cli.py checks it)
 description = "Shared agent build safeguards: reusable workflows, checks and the Claude Code plugin"
 readme = "README.md"
 license = "AGPL-3.0-only"
