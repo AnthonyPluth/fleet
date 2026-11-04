@@ -76,6 +76,12 @@ jobs:
       runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
 ```
 
+### Trivy's version
+
+Both Trivy jobs install Trivy themselves (`.github/scripts/security-trivy-install.sh`) and pass `skip-setup-trivy: true` to `aquasecurity/trivy-action`, whose own install (`aquasecurity/setup-trivy`) downloads from `get.trivy.dev`, which stopped resolving. The script downloads the Linux release tarball for the runner (X64 or ARM64; any other runner fails the job with that reason) from `https://github.com/aquasecurity/trivy/releases/download/`, checks it against the SHA-256 that `security.yml` pins, and puts `trivy` on the `PATH`; the tarball is cached outside the workspace (`actions/cache`, keyed on the version, the platform and the checksum) and checked again on every run, cached or not, so a cache that doesn't match is downloaded again. The file scan saves the cache; the image job only restores it.
+
+Dependabot bumps `trivy-action`'s pin but can't bump Trivy itself, whose version and checksums are three values at the top of `security.yml`: `TRIVY_VERSION`, `TRIVY_SHA256_X64` and `TRIVY_SHA256_ARM64`. To move to a new Trivy, a fleet pull request changes all three together, taking the checksums of `trivy_<version>_Linux-64bit.tar.gz` and `trivy_<version>_Linux-ARM64.tar.gz` from the release's `trivy_<version>_checksums.txt`, and confirms them independently: `sha256sum` over the downloaded tarballs, and their Sigstore bundles (`<tarball>.sigstore.json` on the release) with `sigstore verify github --bundle <tarball>.sigstore.json --repository aquasecurity/trivy --ref refs/tags/<version> <tarball>`. A `trivy-action` bump whose default `version` moves is the reminder to do it. The apps change nothing but the pin.
+
 A private repository on a personal account has no code scanning: pass `sarif-upload: false` (Semgrep, Trivy and zizmor then fail their job on findings, which the merge gate sees) and `scorecard: false`, and don't require CodeQL in its merge gate.
 
 | Input | Default | What |
