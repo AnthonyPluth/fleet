@@ -4,6 +4,8 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-04
+
 ### Changed
 
 - `docs/deep-scan.md` has a new section, "Per-app settings": each app records its deep-scan settings in a `## Deep security scans` section of its own `AGENTS.md`, outside the `fleet:begin`/`fleet:end` blocks, rather than in an open issue: when it scans (the quarterly `deep-scan-due` reminder, or none, plus milestone or provider triggers), where findings go (draft security advisories on a public repository, never a public issue), the model (`claude-fable-5-1`) and the one first-run issue that tracks the first scan and closes once the scan record is written there (retitled to exactly "Deep security scan due" first in an app with the reminder, since `deep_scan_due.py` reads the last revision only from closed issues with that title; Codex on #87), after which the "Deep security scan due" reminders carry the schedule. The runbook no longer points to "each app's deep-scan issue", and `docs/adopting.md`'s Deep-scan reminder section adds the adoption step (the `AGENTS.md` section and the first-run issue). No workflow, input or tool changes. What apps do: move the rules out of their "Owner runbook: deep security scans" issue into that `AGENTS.md` section, and keep the issue as the first-run tracker (retitled before it closes, where the app calls the reminder). `tests/test_deep_scan_due.py` (`DocsTest`) fails when "The scan record", Per-app settings item 4 or `docs/adopting.md`'s adoption step stops telling the reader to retitle to exactly the title the script reads (its `TITLE`) (Codex on #87).
