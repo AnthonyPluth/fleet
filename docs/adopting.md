@@ -416,9 +416,6 @@ permissions: {}
 jobs:
   decide:
     if: github.event.pull_request.head.repo.full_name == github.repository
-    concurrency:
-      group: merge-gate-threads-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
     uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.2.1
@@ -446,9 +443,6 @@ permissions: {}
 jobs:
   decide:
     if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
-    concurrency:
-      group: merge-gate-threads-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
     uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.2.1
@@ -456,9 +450,6 @@ jobs:
       pr: ${{ github.event.pull_request.number }}
   codex-comment:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
-    concurrency:
-      group: merge-gate-threads-comment-${{ github.event.issue.number }}-${{ github.event.comment.user.login }}
-      cancel-in-progress: true
     permissions:
       actions: write   # start the merge gate
     uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v2.2.1
@@ -466,7 +457,7 @@ jobs:
       pr: ${{ github.event.issue.number }}
 ```
 
-The concurrency groups are the jobs', never the workflow's. A workflow-level group is joined before any job's `if:` is read, and `issue_comment` fires on every comment on the pull request (a person's, the agent's own `@codex review`, another bot's): with the group at the top, each such run would cancel a gate restart still in flight (the `decide` run of Codex's review, or the `codex-comment` run of its comment), and its own jobs would then be skipped, leaving the gate pending until someone re-runs it. Each job's key is one that only a run which will start the gate has: a comment's run of `decide` has no pull request number (and every run of it on a fork's pull request is skipped), and the `codex-comment` group names the comment's author, so even a skipped job could share a group only with runs that start nothing, and a newer run replaces only one that would have started the same gate. `fleet checks`' conventions and zizmor (`tests/test_merge_gate_threads_caller.py` runs it over every documented caller) pass this caller; the `dangerous-triggers` ignore on `issue_comment` carries its reason, since the job runs only for `chatgpt-codex-connector[bot]`'s comment and hands main's merge gate nothing but the pull request number.
+The caller has no concurrency group, neither the workflow's nor a job's. Codex posts a review and a comment per finding in one burst, and every run of a review event belongs to the same head commit: with a group and `cancel-in-progress`, each newer run cancelled the one before it, and a cancelled job leaves a check run on the pull request's head that GitHub lists as failing ("Merge gate" green, the checks red, the merge state "unstable"). Cancelling them saves nothing, since each run only starts the gate, and `merge-gate.yml`'s own group (`merge-gate-<pull request number>` for a `workflow_dispatch`, with `cancel-in-progress`) already replaces an older evaluation of the same pull request with the newer one; those runs belong to `main`, not to the pull request's head. A group keyed on `github.run_id` with `cancel-in-progress: false` would do the same as none, so there is none. A workflow-level group in particular would also be wrong: it is joined before any job's `if:` is read, and `issue_comment` fires on every comment on the pull request (a person's, the agent's own `@codex review`, another bot's), so each such run would cancel a gate restart still in flight (the `decide` run of Codex's review, or the `codex-comment` run of its comment) and then skip its own jobs, leaving the gate pending until someone re-runs it. `fleet checks`' conventions and zizmor (`tests/test_merge_gate_threads_caller.py` runs it over every documented caller) pass this caller; the `dangerous-triggers` ignore on `issue_comment` carries its reason, since the job runs only for `chatgpt-codex-connector[bot]`'s comment and hands main's merge gate nothing but the pull request number.
 
 What each app passes today: Waypoint and Runway `required-workflows: Docker image, Security scans, CodeQL`, Runway also `ignored-workflows: Preview|Screenshot diff`, and each app `required-statuses: Second review` with `first-review: false` in its agent review caller (the owner's policy). Those two are the defaults now, so a caller drops them when its pin moves here; an app that wants the first review back passes `first-review: true` and `required-statuses` with both `Agent review` and `Second review`.
 

@@ -70,29 +70,32 @@ class Concurrency(unittest.TestCase):
                                  "every comment on the pull request would cancel (or replace, while queued) a gate "
                                  "restart in flight; give each job its own group")
 
-    def test_each_threads_job_has_its_own_group_and_only_codexs_comment_shares_one(self) -> None:
+    def test_no_threads_run_cancels_another(self) -> None:
         callers = threads_callers()
         self.assertEqual(len(callers), 2)
-        for text in callers:
+        reusable = (ROOT / ".github" / "workflows" / "merge-gate-threads.yml").read_text(encoding="utf-8")
+        for text in [*callers, reusable]:
             workflow = self_check.parse(text)
             assert isinstance(workflow, dict)
+            self.assertNotIn("concurrency", workflow)
+            self.assertNotIn("cancel-in-progress", text, "Codex's review and comments arrive in one burst on one head "
+                             "commit: a cancelled run stays on the pull request's head as a failing check, and "
+                             "merge-gate.yml's own group already replaces an older evaluation")
             jobs = workflow["jobs"]
             assert isinstance(jobs, dict)
             for name, job in jobs.items():
                 with self.subTest(job=name):
                     assert isinstance(job, dict)
-                    concurrency = job["concurrency"]
-                    assert isinstance(concurrency, dict)
-                    group = concurrency["group"]
-                    assert isinstance(group, str)
+                    self.assertNotIn("concurrency", job)
                     if "issue_comment" in events(workflow):
                         self.assertIn("github.event_name", job["if"])
                     if name == "codex-comment":
                         self.assertIn(f"github.event.comment.user.login == '{CODEX}'", job["if"])
-                        self.assertIn("${{ github.event.issue.number }}", group)
-                        self.assertIn("${{ github.event.comment.user.login }}", group)
-                    else:
-                        self.assertEqual(group, "merge-gate-threads-${{ github.event.pull_request.number }}")
+
+    def test_the_docs_explain_why_the_caller_has_no_group(self) -> None:
+        text = (ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
+        self.assertIn("The caller has no concurrency group, neither the workflow's nor a job's.", text)
+        self.assertNotIn("merge-gate-threads-${{", text)
 
 
 class Zizmor(unittest.TestCase):
