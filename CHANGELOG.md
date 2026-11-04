@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Fixed
+
+- Trivy no longer depends on `get.trivy.dev`, which stopped resolving: on a runner without Trivy in its cache, `aquasecurity/setup-trivy` (inside `trivy-action`) failed to download it (`curl: (6) Could not resolve host`), failing "Trivy (files)" and "Trivy (image)" within a second. On Linux X64 and ARM64 runners, both jobs now install Trivy v0.70.0 (the version `trivy-action` v0.36.0 installed) with `.github/scripts/security-trivy-install.sh` and pass `skip-setup-trivy` to `trivy-action`. The script fetches the release tarball from Trivy's GitHub release, checked against a SHA-256 pinned in `security.yml` (`TRIVY_VERSION`, `TRIVY_SHA256_X64`, `TRIVY_SHA256_ARM64`; confirmed against the release's checksums file and its Sigstore bundles) on every run, and cached outside the workspace with `actions/cache` (saved by the file scan, restored by the image job). A failed download or a checksum mismatch fails the job and never falls back. Any other runner (no pinned checksum) gets a warning and keeps `trivy-action`'s own install at the same version, as before. What is scanned, the inputs and the statuses are unchanged; fleet's scripts are removed from the workspace before either scan, and the image job fetches them after its build. Dependabot can't bump Trivy's version or checksums: `docs/adopting.md` ("Trivy's version") says how a fleet pull request changes them. Apps change nothing but the pin. `tests/test_security_trivy.py` (the script against a fake `curl`, and both jobs' steps).
+
 ## [2.2.0] - 2026-11-03
 
 ### Changed

@@ -62,6 +62,12 @@ on:
 
 env:
   FLEET_REF: v2.2.0   # stamped by the release
+  # The Trivy both Trivy jobs install from its GitHub release (.github/scripts/security-trivy-install.sh), and the
+  # SHA-256 of each Linux tarball, from the release's trivy_<version>_checksums.txt. Dependabot can't bump these: change
+  # all three together (docs/adopting.md, "Trivy's version").
+  TRIVY_VERSION: v0.70.0
+  TRIVY_SHA256_X64: 8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9
+  TRIVY_SHA256_ARM64: 2f6bb988b553a1bbac6bdd1ce890f5e412439564e17522b88a4541b4f364fc8d
 
 permissions: {}
 
@@ -179,9 +185,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      # Trivy from its GitHub release, checked against the pinned SHA-256, instead of trivy-action's own install
+      # (setup-trivy downloads from get.trivy.dev). The tarball is cached outside the workspace, so nothing scans it,
+      # and checked again on every run, cached or not. A runner with no pinned checksum (not Linux on X64 or ARM64)
+      # keeps trivy-action's own install, at the same version, as before.
+      - name: Cache the Trivy tarball
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-tarball
+          key: trivy-tarball-${{ env.TRIVY_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ runner.arch == 'ARM64' && env.TRIVY_SHA256_ARM64 || env.TRIVY_SHA256_X64 }}
+      - name: Install Trivy
+        id: trivy
+        env:
+          TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
+          TRIVY_BIN: ${{ runner.temp }}/trivy-bin
+        run: .fleet/.github/scripts/security-trivy-install.sh
+      # fleet's scripts aren't the app's files: no scan sees them, as before.
+      - name: Remove fleet's scripts from the workspace
+        run: rm -rf .fleet
       - name: Scan the repository (dependencies, secrets, Dockerfile and workflow settings)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
           scan-type: fs
           scanners: vuln,secret,misconfig
           format: ${{ inputs.sarif-upload && 'sarif' || 'table' }}
@@ -218,9 +251,35 @@ jobs:
           load: true
           tags: app:scan
           cache-from: type=gha
+      # After the build, so fleet's scripts never reach the build context.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      # Trivy as in the file scan. Restore only: this job builds an image, so it writes no cache (the file scan, which
+      # runs on every pull request, saves the tarball).
+      - name: Restore the cached Trivy tarball
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-tarball
+          key: trivy-tarball-${{ env.TRIVY_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ runner.arch == 'ARM64' && env.TRIVY_SHA256_ARM64 || env.TRIVY_SHA256_X64 }}
+      - name: Install Trivy
+        id: trivy
+        env:
+          TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
+          TRIVY_BIN: ${{ runner.temp }}/trivy-bin
+        run: .fleet/.github/scripts/security-trivy-install.sh
+      # fleet's scripts aren't the app's files: no scan sees them, as before.
+      - name: Remove fleet's scripts from the workspace
+        run: rm -rf .fleet
       - name: Scan the image (OS packages and libraries)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
           image-ref: app:scan
           format: ${{ inputs.sarif-upload && 'sarif' || 'table' }}
           output: ${{ inputs.sarif-upload && 'trivy-image.sarif' || '' }}
