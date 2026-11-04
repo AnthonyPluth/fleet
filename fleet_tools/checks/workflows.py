@@ -27,7 +27,7 @@ GH_API_LIST = re.compile(r"\bgh api\b[^\n]*per_page=")
 RUNS_ON = ("runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && "
            "(!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && "
            "github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '\"ubuntu-latest\"') }}")
-HOSTED = re.compile(r"^runs-on: ubuntu-latest[ \t]+# hosted: \S")
+HOSTED = re.compile(r"^runs-on: (?:ubuntu-latest|macos-\d+)[ \t]+# hosted: \S")
 EVENTS = frozenset({
     "branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment", "deployment_status",
     "discussion", "discussion_comment", "fork", "gollum", "image_version", "issue_comment", "issues", "label",
@@ -143,7 +143,8 @@ def check_runners(name: str, text: str, tree: Node, where: Where) -> list[str]:
             line = f'runs-on: "{runner}"{comment}' if re.search(r"\s#", runner) else f"runs-on: {runner}{comment}"
         if line != RUNS_ON and not HOSTED.match(line):
             problems.append(f"{name}: `{line[:60]}` should be fleet's RUNS_ON line (fleet_tools/checks/workflows.py), "
-                            "or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>`")
+                            "or `runs-on: ubuntu-latest   # hosted: <why it needs GitHub's runners>` (a pinned `macos-<number>` runner may "
+                            "take the same comment, for what only macOS can build)")
     return problems
 
 

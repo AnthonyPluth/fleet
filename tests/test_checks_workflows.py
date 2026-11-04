@@ -62,7 +62,11 @@ class Workflow(unittest.TestCase):
     def test_a_job_runs_on_runs_on_or_says_why_it_needs_githubs_runners(self) -> None:
         hosted = GOOD.replace(wf.RUNS_ON, "runs-on: ubuntu-latest   # hosted: publishes from GitHub's runners only")
         self.assertEqual(wf.check_workflow("x.yml", hosted), [])
-        for bare in ("runs-on: ubuntu-latest", "runs-on: self-hosted", "runs-on: ${{ fromJSON(vars.RUNS_ON) }}",
+        macos = GOOD.replace(wf.RUNS_ON, "runs-on: macos-15   # hosted: Xcode only runs on macOS")
+        self.assertEqual(wf.check_workflow("x.yml", macos), [])
+        for bare in ("runs-on: macos-15", "runs-on: macos-15   # hosted:", "runs-on: macos-latest   # hosted: Xcode",
+                     "runs-on: macos-15-xlarge   # hosted: Xcode", "runs-on: windows-2025   # hosted: tests",
+                     "runs-on: ubuntu-latest", "runs-on: self-hosted", "runs-on: ${{ fromJSON(vars.RUNS_ON) }}",
                      "runs-on: ubuntu-latest   # hosted:"):
             with self.subTest(bare=bare):
                 self.assertIn("should be fleet's RUNS_ON line", wf.check_workflow("x.yml", GOOD.replace(wf.RUNS_ON, bare))[0])
@@ -374,7 +378,8 @@ class FixtureConsumers(unittest.TestCase):
         path.write_text(path.read_text().replace("   # hosted: Runway runs on GitHub's runners only", ""))
         self.assertEqual(checks(root), [".github/workflows/ci.yml: `runs-on: ubuntu-latest` should be fleet's RUNS_ON "
                                         "line (fleet_tools/checks/workflows.py), or `runs-on: ubuntu-latest   # hosted: "
-                                        "<why it needs GitHub's runners>`"])
+                                        "<why it needs GitHub's runners>` (a pinned `macos-<number>` runner may take the same "
+                                        "comment, for what only macOS can build)"])
 
     def test_a_composite_action_is_checked_too(self) -> None:
         root = copy(self, RUNWAY, repository=False)

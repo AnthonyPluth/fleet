@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- `fleet checks` accepts a pinned macOS runner for a job that only macOS can build: `runs-on: macos-<number>   # hosted: <why>` (for example `macos-15   # hosted: Xcode only runs on macOS`) passes beside fleet's `RUNS_ON` line and `runs-on: ubuntu-latest   # hosted: <why>`, in place of a failure for every app with an iPhone app. `macos-latest`, a larger macOS runner (`macos-15-xlarge`), Windows and a macOS runner without the reason still fail. Linux jobs and every other check are unchanged. What apps do: pin to the release, then add the `# hosted:` reason to the macOS `runs-on:` line. `tests/test_checks_workflows.py`.
+
 ## [2.2.2] - 2026-11-04
 
 ### Changed
