@@ -190,7 +190,7 @@ on:
         value: ${{ jobs.second-review.outputs.description }}
 
 env:
-  FLEET_REF: v2.2.1   # stamped by the release
+  FLEET_REF: v2.2.2   # stamped by the release
 
 permissions: {}
 

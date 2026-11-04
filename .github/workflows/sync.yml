@@ -62,7 +62,7 @@ on:
         value: ${{ jobs.sync.outputs.body }}
 
 env:
-  FLEET_REF: v2.2.1   # stamped by the release
+  FLEET_REF: v2.2.2   # stamped by the release
 
 permissions: {}
 
