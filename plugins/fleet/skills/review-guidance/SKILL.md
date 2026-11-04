@@ -23,13 +23,13 @@ Fix every finding you're going to fix, run `make check`, then push once. Each pu
 
 ## After resolving a thread
 
-Resolving a review thread starts no workflow (GitHub has no event for it), so the "Merge gate" keeps failing on that thread until it runs again. On a pull request you own (the one you opened, on the branch you were given), once you have resolved its review threads, start its merge gate yourself, as the agent review does after it sets its status:
+Resolving a review thread starts no workflow (GitHub has no event for it), so the "Merge gate" keeps failing on that thread until it runs again. On a pull request you own (the one you opened, on the branch you were given), once you have resolved its review threads, start its merge gate yourself, as the agent review does after it sets its status. The gate's workflow file is `merge-gate.yml` unless the repository's agent review caller (`.github/workflows/` calling `agent-review.yml`) passes another name in `merge-gate-workflow`; use that name where it does:
 
 ```sh
-gh workflow run merge-gate.yml --ref main -f pr=<number>
+gh workflow run <gate workflow> --ref main -f pr=<number>
 ```
 
-or the GitHub MCP server's `actions_run_trigger` with the same workflow (`merge-gate.yml`), ref (`main`) and input (`pr`). Start it once, after the last thread you resolve. It needs no new permission, workflow or secret: it uses the same GitHub access you already use to push and to resolve the thread, and it runs main's own merge gate, which reads the threads again. Where the repository has no `merge-gate.yml` (the gate isn't set up yet), there is nothing to start, so this is a no-op: skip it, and a "workflow not found" error changes nothing. If the start is refused, say so in the pull request instead of working around it. Never start it for a pull request you don't own: its gate is its owner's to run. A push runs the gate anyway, so after a push there is nothing to start.
+(`gh workflow run merge-gate.yml --ref main -f pr=<number>` with the default), or the GitHub MCP server's `actions_run_trigger` with the same workflow file, ref (`main`) and input (`pr`). Start it once, after the last thread you resolve. It needs no new permission, workflow or secret: it uses the same GitHub access you already use to push and to resolve the thread, and it runs main's own merge gate, which reads the threads again. Where the repository has no such workflow (the gate isn't set up yet, or `merge-gate-workflow` is empty), there is nothing to start, so this is a no-op: skip it, and a "workflow not found" error changes nothing. If the start is refused, say so in the pull request instead of working around it. Never start it for a pull request you don't own: its gate is its owner's to run. A push runs the gate anyway, so after a push there is nothing to start.
 
 ## The labels
 
