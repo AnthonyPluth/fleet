@@ -1,6 +1,6 @@
 # Deep security scan
 
-The owner's runbook for a deep scan of an app with the [claude-security plugin](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-security) (Anthropic's directory, `anthropics/claude-plugins-official`, `plugins/claude-security`). Written against plugin version **0.11.0**; see [When the plugin changes](#when-the-plugin-changes). Nothing here is specific to one app: each app's own deep-scan issue says when it scans and where its findings go.
+The owner's runbook for a deep scan of an app with the [claude-security plugin](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-security) (Anthropic's directory, `anthropics/claude-plugins-official`, `plugins/claude-security`). Written against plugin version **0.11.0**; see [When the plugin changes](#when-the-plugin-changes). Nothing here is specific to one app: each app records its own settings (when it scans, where its findings go, the model and where its first scan is tracked) in its own repository, as [Per-app settings](#per-app-settings) says, not in an open issue.
 
 ## Why this is a runbook, not a workflow
 
@@ -14,7 +14,7 @@ So fleet automates only the reminder: the `deep-scan-due` reusable workflow ([ad
 
 ## When
 
-Each app decides, in its deep-scan issue: on demand before a milestone (a first deploy, a feature that handles new untrusted input), or quarterly. The reminder issue is the trigger for the quarterly ones; close it when the scan is recorded (below), because the next reminder reads the last scan's revision from it.
+Each app decides, in its [own settings](#per-app-settings): on demand before a milestone (a first deploy, a feature that handles new untrusted input), quarterly, or both. The reminder issue is the trigger for the quarterly ones; close it when the scan is recorded (below), because the next reminder reads the last scan's revision from it.
 
 ## Where
 
@@ -76,13 +76,24 @@ Challenge a finding before filing it: the plugin's verifier panel reduces false 
 
 ## The scan record
 
-In the tracking issue (the app's deep-scan issue, or the "Deep security scan due" reminder you're closing), write only:
+In the tracking issue (the app's first-run issue for its first scan, a milestone's issue, or the "Deep security scan due" reminder you're closing), write only:
 
 - the revision stamp's file name (`CLAUDE-SECURITY-REVISION-<sha12>.json`),
 - the effort (`high`),
 - the counts by severity, and the stamp's `verification.status`.
 
 Nothing else from the report. The next reminder reads the revision from this record and counts the commits since, so the stamp's name (or the full commit id) has to appear in the issue or one of its comments before it's closed.
+
+## Per-app settings
+
+The procedure above and the quarterly reminder are fleet's. What differs between apps lives in each app's own repository: a short `## Deep security scans` section in its `AGENTS.md`, outside the `fleet:begin`/`fleet:end` blocks (`fleet sync` rewrites only what is between the markers), beside the app's other rules. Not in `docs/`, which in the apps is the published documentation site, and not in an open issue, which goes stale and is easy to miss. The section links to this runbook and records four things:
+
+1. **When it scans:** the quarterly reminder (the app calls the `deep-scan-due` workflow, [adopting](adopting.md#deep-scan-reminder)), or that it has none, plus the milestones or new providers that also need a scan (before a new bank or brokerage provider ships, before a first deploy, after a set of security-sensitive changes merges).
+2. **Where findings go:** for a public repository, never a public issue and never pull request text that describes the exploit; one draft security advisory per confirmed finding, fixed through the advisory's private fork or a pull request with a neutral title labelled `security` ([Where findings go](#where-findings-go)). A private repository says so, and files one issue per confirmed finding labelled `security`.
+3. **The model:** `claude-fable-5-1`, at the effort this runbook names.
+4. **Where the first scan is tracked:** the app's one first-run issue, which closes once [the scan record](#the-scan-record) (the revision stamp's file name, the effort and the counts by severity) is written there. From then on the "Deep security scan due" reminder issues carry the schedule. An app with no quarterly reminder tracks each scan in its milestone's issue instead.
+
+The first-run issue tracks that one scan and nothing else; the rules are in `AGENTS.md`, so the issue doesn't repeat them.
 
 ## Optional: suggest patches
 
