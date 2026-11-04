@@ -82,7 +82,7 @@ In the tracking issue (the app's first-run issue for its first scan, a milestone
 - the effort (`high`),
 - the counts by severity, and the stamp's `verification.status`.
 
-Nothing else from the report. The next reminder reads the revision from this record and counts the commits since, so the stamp's name (or the full commit id) has to appear in the issue or one of its comments before it's closed.
+Nothing else from the report. The next reminder reads the revision from this record and counts the commits since, so the stamp's name (or the full commit id) has to appear in the issue or one of its comments before it's closed. The reminder reads only closed issues titled exactly "Deep security scan due" (the newest one closed), so in an app that calls it, a scan recorded in any other issue (the first-run issue, a milestone's issue) is invisible to it: retitle that issue to exactly "Deep security scan due" before closing it, or open and close one with that title carrying the same record. An app with no reminder needs neither.
 
 ## Per-app settings
 
@@ -91,7 +91,7 @@ The procedure above and the quarterly reminder are fleet's. What differs between
 1. **When it scans:** the quarterly reminder (the app calls the `deep-scan-due` workflow, [adopting](adopting.md#deep-scan-reminder)), or that it has none, plus the milestones or new providers that also need a scan (before a new bank or brokerage provider ships, before a first deploy, after a set of security-sensitive changes merges).
 2. **Where findings go:** for a public repository, never a public issue and never pull request text that describes the exploit; one draft security advisory per confirmed finding, fixed through the advisory's private fork or a pull request with a neutral title labelled `security` ([Where findings go](#where-findings-go)). A private repository says so, and files one issue per confirmed finding labelled `security`.
 3. **The model:** `claude-fable-5-1`, at the effort this runbook names.
-4. **Where the first scan is tracked:** the app's one first-run issue, which closes once [the scan record](#the-scan-record) (the revision stamp's file name, the effort and the counts by severity) is written there. From then on the "Deep security scan due" reminder issues carry the schedule. An app with no quarterly reminder tracks each scan in its milestone's issue instead.
+4. **Where the first scan is tracked:** the app's one first-run issue, which closes once [the scan record](#the-scan-record) (the revision stamp's file name, the effort and the counts by severity) is written there. In an app with the reminder, it is retitled to exactly "Deep security scan due" before it closes (the reminder reads only issues with that title), so the first reminder counts the commits since the first scan; from then on the reminder issues carry the schedule. An app with no quarterly reminder tracks each scan in its milestone's issue instead, with no retitle.
 
 The first-run issue tracks that one scan and nothing else; the rules are in `AGENTS.md`, so the issue doesn't repeat them.
 

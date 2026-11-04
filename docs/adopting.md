@@ -122,7 +122,7 @@ jobs:
 
 Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `fleet-ref`.
 
-The app's own deep-scan settings live in its repository, not in an open issue: add a `## Deep security scans` section to `AGENTS.md`, outside the `fleet:begin`/`fleet:end` blocks, with the four things the runbook's [Per-app settings](deep-scan.md#per-app-settings) lists (when it scans, where findings go, the model, where the first scan is tracked), and open one first-run issue for the first scan, which closes once the scan record is written in it. The reminder issues take over from there.
+The app's own deep-scan settings live in its repository, not in an open issue: add a `## Deep security scans` section to `AGENTS.md`, outside the `fleet:begin`/`fleet:end` blocks, with the four things the runbook's [Per-app settings](deep-scan.md#per-app-settings) lists (when it scans, where findings go, the model, where the first scan is tracked), and open one first-run issue for the first scan, which closes once the scan record is written in it. Retitle it to exactly "Deep security scan due" before closing it (or open and close one with that title carrying the record): the reminder reads the last scan's revision only from a closed issue with that title. The reminder issues take over from there.
 
 
 ## Agent review
