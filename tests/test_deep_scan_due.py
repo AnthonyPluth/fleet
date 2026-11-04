@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import re
@@ -208,6 +209,41 @@ class FailuresTest(unittest.TestCase):
         result = reminder.run({})
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(reminder.created(), [])
+
+
+class DocsTest(unittest.TestCase):
+    def script_title(self) -> str:
+        spec = importlib.util.spec_from_file_location("deep_scan_due", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        title = module.TITLE
+        assert isinstance(title, str)
+        return title
+
+    def section(self, doc: str, heading: str) -> str:
+        text = (ROOT / "docs" / doc).read_text()
+        start = text.index(f"\n{heading}\n")
+        end = text.find("\n## ", start + len(heading) + 2)
+        return text[start:] if end == -1 else text[start:end]
+
+    def assert_retitle(self, text: str, where: str) -> None:
+        title = self.script_title()
+        self.assertRegex(text, r"[Rr]etitle", where)
+        self.assertIn(f'exactly "{title}"', text, where)
+
+    def test_the_scan_record_says_to_retitle_to_the_title_the_reminder_reads(self) -> None:
+        self.assert_retitle(self.section("deep-scan.md", "## The scan record"), "docs/deep-scan.md: The scan record")
+
+    def test_per_app_settings_says_the_first_run_issue_takes_that_title(self) -> None:
+        settings = self.section("deep-scan.md", "## Per-app settings")
+        item = next(line for line in settings.splitlines() if line.startswith("4. "))
+        self.assert_retitle(item, "docs/deep-scan.md: Per-app settings, item 4")
+
+    def test_the_adoption_step_says_to_retitle_the_first_run_issue(self) -> None:
+        reminder = self.section("adopting.md", "## Deep-scan reminder")
+        step = next(line for line in reminder.splitlines() if "first-run issue" in line)
+        self.assert_retitle(step, "docs/adopting.md: Deep-scan reminder")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
    ```
 
 5. **Point `.claude/settings.json`** at the vendored hook and declare fleet's marketplace at the same tag ([Claude Code plugin](#claude-code-plugin)), and add `.claude/hooks/fleet.conf`. Add `.github/agent-review/context.md` (and `invariants.md` with `second-review-paths`) for the reviews.
-6. **Create the labels** the workflows use: `safety-critical` and `security` (they make a pull request risky for the second review; `security` also marks the deep-scan issue), `manual` (the deep-scan issue) and `review-mining` (the "Repeated review findings" issue). An issue opened with a label that doesn't exist fails.
+6. **Create the labels** the workflows use: `safety-critical` and `security` (they make a pull request risky for the second review; `security` also marks the "Deep security scan due" issue), `manual` (the "Deep security scan due" issue) and `review-mining` (the "Repeated review findings" issue). An issue opened with a label that doesn't exist fails.
 7. **Add the secrets and variables**: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (the reviews), the variable `FLEET_BOT_APP_ID` and the secret `FLEET_BOT_PRIVATE_KEY` (the content sync's App), and optionally the variables `RUNS_ON`, `AGENT_REVIEW_BUDGET_USD` and `AGENT_REVIEW_MAX_TURNS`.
 8. **Protect `main` with a ruleset** (Settings, Rules, Rulesets, a branch ruleset targeting the default branch): require a pull request before merging, block force pushes and deletions, and require one status check, **Merge gate**, and nothing else. The gate already waits for every workflow, check run and status the pull request started, and for the required ones; requiring them again in the ruleset would keep a pull request whose path filters skip a workflow from ever merging. Don't allow bypass for bots: Dependabot's merges go through the gate.
 9. **Let Dependabot bump the pins**, in one group so every fleet workflow moves at once, a few days after a release:
@@ -121,6 +121,8 @@ jobs:
 ```
 
 Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `fleet-ref`.
+
+The app's own deep-scan settings live in its repository, not in an open issue: add a `## Deep security scans` section to `AGENTS.md`, outside the `fleet:begin`/`fleet:end` blocks, with the four things the runbook's [Per-app settings](deep-scan.md#per-app-settings) lists (when it scans, where findings go, the model, where the first scan is tracked), and open one first-run issue for the first scan, which closes once the scan record is written in it. Retitle it to exactly "Deep security scan due" before closing it (or open and close one with that title carrying the record): the reminder reads the last scan's revision only from a closed issue with that title. The reminder issues take over from there.
 
 
 ## Agent review
