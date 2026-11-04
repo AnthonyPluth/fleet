@@ -4,6 +4,8 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-04
+
 ### Added
 
 - The `review-guidance` skill (vendored as `fleet-review-guidance`) has a new section, "After resolving a thread": GitHub fires no event when a review thread is resolved, so after an agent resolves the review threads on a pull request it owns, it starts that pull request's merge gate itself, once, with `gh workflow run <gate workflow> --ref main -f pr=<number>` (or the GitHub MCP server's `actions_run_trigger`), where the gate workflow is the file the agent review caller's `merge-gate-workflow` names (`merge-gate.yml` by default; Codex on #94), the way the agent review starts it after setting its status. It needs no new permission, workflow or secret; where the repository has no such workflow, or `merge-gate-workflow` is empty, it is a no-op; it is never done for a pull request the agent doesn't own. `docs/adopting.md`'s "Open review threads" says the same and gives the `--ref main` form. No workflow, input or `AGENTS.md` block changes; apps get it with the content sync of the next release. `tests/test_sync_vendor.py` fails when the skill or the docs stop giving the instruction, or when the agent review's own invocation changes.
