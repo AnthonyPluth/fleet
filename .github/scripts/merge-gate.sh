@@ -30,6 +30,7 @@
 # Configuration, each set by the reusable workflow from its inputs (an unset variable takes the default shown; an empty
 # one means none):
 #   REQUIRED_WORKFLOWS   workflows that must have run, one per line        (default: Security scans, CodeQL)
+#                        (CodeQL isn't required on Dependabot's pull requests or a fork's)
 #   IGNORED_WORKFLOWS    workflow names to leave out, as a regex alternation ("Preview|Screenshot diff");
 #                        "Cancel runs on close" and "Merge gate" are always left out
 #   REQUIRED_STATUSES    commit statuses that must be set, one per line    (default: Second review)
@@ -99,7 +100,9 @@ if [ "$(wc -l <<< "$prs")" -gt 1 ]; then
     -f description="More than one open pull request has this commit as its head" ${RUN_URL:+-f target_url="$RUN_URL"}
   exit 1
 fi
-IFS=$'\t' read -r number author head_repo draft <<< "$prs"
+# Field by field: a tab is whitespace to read, so an empty field (a deleted fork's head repository) would shift the rest.
+field() { cut -f"$1" <<< "$prs"; }
+number=$(field 1) author=$(field 2) head_repo=$(field 3) draft=$(field 4)
 CODEX_REVIEWED_HEAD='.[] | select(.user.login == "'"$CODEX"'" and .commit_id == "'"$SHA"'") | "reviewed"'
 CODEX_COMMENTED_HEAD='.[] | select(.user.login == "'"$CODEX"'") | (.body // "") | (
   (capture("<!-- codex-review-state:v1 (?<s>[^\n]*) -->") | .s | fromjson? | .code_review?
@@ -110,11 +113,25 @@ echo "Pull request #$number by $author at $SHA"
 # so none of its runs ever comes: waiting for one would keep the gate pending, and the merge below, forever. A run that
 # does come still counts, as for any workflow; the tests and the security scans are still required. Nor do the reviews
 # run on them (no agent wrote them), so their statuses aren't asked for either.
-if [ "$author" = "dependabot[bot]" ]; then
-  required=(); for w in "${required_workflows[@]}"; do [ "$w" = CodeQL ] || required+=("$w"); done
+without_codeql() {
+  local w required=()
+  for w in "${required_workflows[@]}"; do [ "$w" = CodeQL ] || required+=("$w"); done
   required_workflows=("${required[@]}")
+}
+if [ "$author" = "dependabot[bot]" ]; then
+  without_codeql
   required_statuses=()
   REQUIRE_CODEX_REVIEW=false
+fi
+# CodeQL's default setup doesn't analyse a pull request from a fork (a head repository other than this one), going by
+# the apps' callers, so it isn't required there either. Only CodeQL is dropped (every copy of it): the other required
+# workflows, the statuses and the reviews stay, and a CodeQL run that does come still counts. It reads the pull request
+# itself, so it decides the same on every trigger (workflow_run, check_suite, workflow_dispatch). A fork whose
+# repository was deleted has no head repository and counts as one. GitHub's repository names ignore case, so a pull
+# request from this repository is never taken for a fork.
+if [ "${head_repo,,}" != "${REPO,,}" ]; then
+  echo "From a fork (${head_repo:-a deleted repository}): CodeQL isn't required."
+  without_codeql
 fi
 
 list() { local out="" x; for x in "$@"; do out+="${out:+, }$x"; done; echo "$out"; }

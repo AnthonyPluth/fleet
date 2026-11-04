@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Fixed
+
+- The merge gate no longer requires CodeQL on a pull request from a fork (#90), as it already didn't on Dependabot's: CodeQL's default setup doesn't analyse a fork's pull request, so "CodeQL (not started)" kept such a pull request pending. An app caller that swapped `CodeQL` for a second `Security scans` on a fork's `workflow_run` only held on that event: a `check_suite` (another app's suite finishing) or a `workflow_dispatch` (a manual run, or the agent review's start) evaluated the list without the swap, and the gate went pending again. `merge-gate.sh` now drops every `CodeQL` entry from `required-workflows` when the pull request's head repository isn't the repository (case-insensitively; a deleted fork counts as one), read from the pull request itself, so every trigger decides the same. Only CodeQL is dropped: the other required workflows (a duplicated name is still tolerated), the required statuses, open blocking threads and `require-codex-review` stay, a CodeQL run that does come still counts, and a pull request from the repository itself still waits for CodeQL. A deleted fork's empty head repository no longer shifts the pull request's draft field into it. What apps do: nothing to keep working; an app whose caller swaps `CodeQL` per event can list it plainly once its pin moves here. `docs/adopting.md` (`required-workflows`); `tests/test_merge_gate.py` (`ForkTest`).
+
 ## [2.2.2] - 2026-11-04
 
 ### Changed
