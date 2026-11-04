@@ -387,7 +387,7 @@ Inputs, each with the default fleet's own gate uses:
 | Input | Default | What |
 | --- | --- | --- |
 | `sha`, `pr` | | The head commit, or a pull request number; one of the two |
-| `required-workflows` | `Security scans`, `CodeQL` | Workflows that must have run, one per line. CodeQL isn't required on Dependabot's pull requests (its default setup skips them) |
+| `required-workflows` | `Security scans`, `CodeQL` | Workflows that must have run, one per line. CodeQL isn't required on Dependabot's pull requests or on a pull request from a fork (its default setup skips both); the gate reads the pull request's head repository itself, so it decides the same on every trigger, and every other required workflow stays required. A CodeQL run that does come still counts. List `CodeQL` plainly: a caller that swaps it for another name on a fork's `workflow_run` isn't needed, and its swap didn't hold on `check_suite` or `workflow_dispatch`, where `github.event.workflow_run` is empty |
 | `ignored-workflows` | none | Workflows whose runs don't count, as a regex alternation (`Preview\|Screenshot diff`). `Merge gate` and `Cancel runs on close` never count |
 | `required-statuses` | `Second review` | Commit statuses that must be set on the head, one per line. None are required on Dependabot's pull requests. An empty string requires none. An app that turns the first review on passes `Agent review` and `Second review`. Any status that fails fails the gate, required or not |
 | `ignored-apps` | `codecov\|github-actions` | Apps whose check runs don't count (Codecov's are informational; Actions' runs are counted as workflows) |
