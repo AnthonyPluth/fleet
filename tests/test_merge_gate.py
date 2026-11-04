@@ -642,6 +642,87 @@ class DependabotTest(unittest.TestCase):
         self.assertEqual([call for call in result.calls if call[1:3] == ["workflow", "run"]], [])
 
 
+FORK = "someone/app"
+
+
+def deleted_fork_pull() -> Json:
+    return {**pull(), "head": {"sha": SHA, "repo": None}}
+
+
+class ForkTest(unittest.TestCase):
+    def fork(self, head_repo: str = FORK) -> Gate:
+        gate = Gate(self)
+        gate.pulls([pull(head_repo=head_repo)])
+        gate.runs([run("Security scans")])
+        gate.checks([])
+        return gate
+
+    def test_a_fork_needs_no_codeql_and_does_not_poll_for_it(self) -> None:
+        result = self.fork().run(POLL_ATTEMPTS="5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertEqual(result.reads_of("actions/runs"), 1)
+        self.assertIn(f"From a fork ({FORK}): CodeQL isn't required.", result.stdout)
+
+    def test_every_trigger_decides_the_same(self) -> None:
+        gate = self.fork()
+        gate.record("pulls__N", {"head": {"sha": SHA}})
+        by_sha = gate.run(REQUIRED_WORKFLOWS=None)
+        by_number = gate.run(REQUIRED_WORKFLOWS=None, SHA=None, PR=str(NUMBER))
+        self.assertEqual(by_sha.posted, [("success", "Every check passed")])
+        self.assertEqual(by_number.posted, [("success", "Every check passed")])
+
+    def test_only_codeql_is_dropped_and_duplicates_are_still_tolerated(self) -> None:
+        gate = self.fork()
+        gate.runs([])
+        result = gate.run(REQUIRED_WORKFLOWS="Docker image\nSecurity scans\nCodeQL\nCodeQL\n")
+        self.assertEqual(result.posted, [("pending", "Waiting for: Docker image (not started), Security scans (not started)")])
+        result = gate.run(REQUIRED_WORKFLOWS="Docker image\nSecurity scans\nSecurity scans\n")
+        self.assertEqual(result.posted, [(
+            "pending", "Waiting for: Docker image (not started), Security scans (not started), Security scans (not started)",
+        )])
+        gate.runs([run("Docker image"), run("Security scans")])
+        self.assertEqual(gate.run(REQUIRED_WORKFLOWS="Docker image\nSecurity scans\nSecurity scans\n").posted, [("success", "Every check passed")])
+
+    def test_a_fork_still_needs_the_statuses_the_reviews_and_no_blocking_thread(self) -> None:
+        gate = self.fork()
+        gate.statuses([])
+        self.assertEqual(gate.run(REQUIRED_STATUSES=None).posted, [("pending", "Waiting for: Second review (not started)")])
+        gate.statuses([status("Second review", "failure")])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: Second review (failure)")])
+        gate.statuses([status("Second review")])
+        gate.threads([thread(P1)])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: 1 open P1|P2 review comment")])
+        gate.threads([])
+        gate.reviews([])
+        gate.comments([])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+
+    def test_a_codeql_run_that_does_come_still_counts(self) -> None:
+        gate = self.fork()
+        gate.runs([run("Security scans"), codeql_run(conclusion="failure")])
+        self.assertEqual(gate.run().posted, [("failure", "Failed: CodeQL (failure)")])
+        gate.runs([run("Security scans"), codeql_run(status="in_progress", conclusion=None)])
+        self.assertEqual(gate.run().posted, [("pending", "Waiting for: CodeQL")])
+
+    def test_a_deleted_fork_counts_as_a_fork(self) -> None:
+        gate = self.fork()
+        gate.pulls([deleted_fork_pull()])
+        result = gate.run()
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+        self.assertIn("From a fork (a deleted repository): CodeQL isn't required.", result.stdout)
+
+    def test_a_pull_request_from_this_repository_still_needs_codeql(self) -> None:
+        for head_repo in (REPO, REPO.upper()):
+            result = self.fork(head_repo=head_repo).run()
+            self.assertEqual(result.posted, [("pending", "Waiting for: CodeQL (not started)")])
+            self.assertNotIn("From a fork", result.stdout)
+
+    def test_a_fork_named_like_this_repository_with_a_suffix_is_a_fork(self) -> None:
+        result = self.fork(head_repo=f"{REPO}-fork").run()
+        self.assertEqual(result.posted, [("success", "Every check passed")])
+
+
 WAYPOINT = {
     "REQUIRED_WORKFLOWS": "Docker image\nSecurity scans\nCodeQL\n",
     "IGNORED_WORKFLOWS": "",
