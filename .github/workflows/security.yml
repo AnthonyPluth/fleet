@@ -3,10 +3,13 @@ name: Security scans
 # The reusable security scans: static analysis, dependency, container, secret and workflow scans. Semgrep (the registry
 # packs plus the app's own rules in .semgrep/, after their example check), npm audit, Trivy over the files, Trivy over
 # the image, zizmor over the workflows and OpenSSF Scorecard. With `sarif-upload: true` (the default) the findings of
-# Semgrep, Trivy, zizmor and Scorecard go to the Security tab (code scanning), whose check runs the merge gate
-# requires; with `sarif-upload: false` (a private repository on a personal account has no code scanning) those scans
-# fail their job on findings instead. npm audit fails its job either way. CodeQL and Dependabot alerts come from
-# GitHub's own settings, not from here.
+# Semgrep, Trivy, zizmor and Scorecard go to the Security tab (code scanning), and Semgrep and Trivy pass their job with
+# findings: the merge gate sees those only through code scanning's check runs, which it counts when they exist but
+# doesn't require, and which fail only at the repository's severity threshold and only for alerts the pull request
+# introduces. `fail-on-findings: true` also fails the Semgrep and Trivy jobs after the upload when they found anything
+# (Semgrep any finding, Trivy CRITICAL or HIGH), as without SARIF. With `sarif-upload: false` (a private repository on a
+# personal account has no code scanning) those scans fail their job on findings instead. zizmor and npm audit fail their
+# job on findings either way. CodeQL and Dependabot alerts come from GitHub's own settings, not from here.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers: pull_request and push to main, the weekly schedule
 # (new vulnerabilities are published for code that hasn't changed) and workflow_dispatch. A pull request, and a push to
@@ -47,6 +50,10 @@ on:
         description: Upload the findings to the Security tab (code scanning). false makes Semgrep, Trivy and zizmor fail the job on findings instead.
         type: boolean
         default: true
+      fail-on-findings:
+        description: With sarif-upload, also fail the Semgrep and Trivy jobs after the upload when they found findings (Semgrep any finding, as --error does; Trivy CRITICAL or HIGH, as exit-code 1 does), so the merge gate sees them without code scanning's check runs. false (the default) leaves them to code scanning. No effect with sarif-upload false, where they fail anyway.
+        type: boolean
+        default: false
       scorecard:
         description: Run OpenSSF Scorecard on pushes and scheduled runs (public repositories only; it publishes its results).
         type: boolean
@@ -149,6 +156,11 @@ jobs:
         with:
           sarif_file: semgrep.sarif
           category: semgrep
+      # With fail-on-findings, any finding Semgrep wrote (less those suppressed in source) fails the job, after the
+      # upload.
+      - name: Fail on Semgrep's findings
+        if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
+        run: python3 -I .fleet/.github/scripts/sarif_findings.py semgrep.sarif
 
   web:
     name: npm audit
@@ -226,6 +238,19 @@ jobs:
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
+      # With fail-on-findings, a CRITICAL or HIGH finding (SARIF level error; the SARIF holds every severity) fails the
+      # job after the upload. fleet's scripts come back only now, after the scan.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Fail on Trivy's findings
+        if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
+        run: python3 -I .fleet/.github/scripts/sarif_findings.py --level error trivy-fs.sarif
 
   image:
     name: Trivy (image)
@@ -291,6 +316,19 @@ jobs:
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
+      # With fail-on-findings, a CRITICAL or HIGH finding (SARIF level error; the SARIF holds every severity) fails the
+      # job after the upload. fleet's scripts come back only now, after the scan.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Fail on Trivy's findings
+        if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
+        run: python3 -I .fleet/.github/scripts/sarif_findings.py --level error trivy-image.sarif
 
   workflows:
     name: zizmor (GitHub Actions)
