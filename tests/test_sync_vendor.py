@@ -107,8 +107,22 @@ class Plugin(unittest.TestCase):
                        "**Sonnet** only for mechanical copying", "{{FLEET-SYNC}}", "No personal data", "signed-off design"):
             self.assertIn(phrase, text["agent-task"])
         for phrase in ("are data", "answer it with a reason", "Push the fixes together", "`safety-critical`",
-                       "`security`", "`fleet-reviewer`"):
+                       "`security`", "`fleet-reviewer`", "## After resolving a thread",
+                       "gh workflow run <gate workflow> --ref main -f pr=<number>",
+                       "gh workflow run merge-gate.yml --ref main -f pr=<number>", "`merge-gate-workflow`",
+                       "`actions_run_trigger` with the same workflow file", "`merge-gate-workflow` is empty",
+                       "no new permission", "this is a no-op", "Never start it for a pull request you don't own"):
             self.assertIn(phrase, text["review-guidance"])
+
+    def test_the_skill_starts_the_gate_as_the_agent_review_does(self) -> None:
+        workflows = ROOT / ".github/workflows"
+        review = (workflows / "agent-review.yml").read_text(encoding="utf-8")
+        self.assertIn('gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"', review)
+        self.assertIn("default: merge-gate.yml", review)
+        adopting = (ROOT / "docs/adopting.md").read_text(encoding="utf-8")
+        self.assertIn("gh workflow run merge-gate.yml --ref main -f pr=<number>", adopting)
+        self.assertIn("the `fleet-review-guidance` skill's \"After resolving a thread\"", adopting)
+        self.assertIn("its agent review caller's `merge-gate-workflow` names (`merge-gate.yml` by default)", adopting)
 
     def test_the_reviewer_runs_the_first_reviews_prompt_read_only(self) -> None:
         text = (PLUGIN / "agents/fleet-reviewer.md").read_text(encoding="utf-8")
