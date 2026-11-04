@@ -10,6 +10,14 @@ name: Merge gate threads
 # The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them:
 # pull_request_review (submitted) and pull_request_review_comment (created, edited, deleted). A pull request from a fork gets a read-only token there, so the caller skips it; the gate of such a pull
 # request looks again on the next push or check, or by hand.
+#
+# Neither this workflow nor its caller has a concurrency group. Codex's review and its comments arrive in one
+# burst, all on the same head commit, so a group that cancels runs in progress cancelled each one but the last, and
+# every cancelled job stays on the pull request's head as a check GitHub lists as failing. The caller's merge gate
+# already replaces an older evaluation of the same pull request (its own group); the runs it replaces belong to
+# main. A workflow-level group in the caller would be worse still: it is joined before any job's `if:`, so every
+# comment on the pull request would cancel a gate restart in flight and leave the gate pending. docs/adopting.md has
+# the reasoning in full.
 on:
   workflow_call:
     inputs:
