@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fleet_tools import cli, self_check
 
@@ -19,6 +20,15 @@ TRIVY_ACTION = "aquasecurity/trivy-action@"
 CACHE = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 CACHE_RESTORE = "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 Node = dict[str, Any]
+RETIRED_HOST = ".".join(("get", "trivy", "dev"))
+
+
+def code_naming(name: str, text: str) -> list[str]:
+    return [line for line in text.splitlines() if name in line and not line.lstrip().startswith("#")]
+
+
+def hosts(text: str) -> set[str]:
+    return {urlsplit(url).hostname or "" for url in re.findall(r"[a-z][a-z0-9+.-]*://[^\s'\"()]+", text)}
 
 
 def workflow() -> Node:
@@ -108,8 +118,9 @@ class InstallScriptTest(unittest.TestCase):
 
     def test_it_never_asks_get_trivy_dev(self) -> None:
         self.install.run()
-        self.assertNotIn("get.trivy.dev", self.install.log.read_text(encoding="utf-8"))
-        self.assertFalse("https://get.trivy.dev" in SCRIPT.read_text(encoding="utf-8"))
+        self.assertEqual(hosts(self.install.log.read_text(encoding="utf-8")), {"github.com"})
+        self.assertEqual(hosts(SCRIPT.read_text(encoding="utf-8")), {"github.com"})
+        self.assertEqual(code_naming(RETIRED_HOST, SCRIPT.read_text(encoding="utf-8")), [])
 
     def test_curl_is_told_https_only_and_to_fail_on_http_errors(self) -> None:
         self.install.run()
@@ -184,7 +195,8 @@ class TrivyJobsTest(unittest.TestCase):
 
     def test_nothing_in_the_workflow_installs_trivy_from_get_trivy_dev(self) -> None:
         text = SECURITY.read_text(encoding="utf-8")
-        self.assertFalse("https://get.trivy.dev" in text)
+        self.assertNotIn(RETIRED_HOST, hosts(text))
+        self.assertEqual(code_naming(RETIRED_HOST, text), [])
         self.assertFalse("setup-trivy@" in text)
 
     def test_both_scans_skip_trivy_actions_own_install_and_install_ours_first(self) -> None:
