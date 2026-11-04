@@ -23,7 +23,7 @@ on:
         type: string
         default: ""
       required-workflows:
-        description: Workflows that must have run on the head, one per line. CodeQL is skipped on Dependabot's pull requests.
+        description: Workflows that must have run on the head, one per line. CodeQL is skipped on Dependabot's pull requests and on a fork's.
         type: string
         default: |
           Security scans
