@@ -2,6 +2,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,13 @@ SHA = "a" * 40
 NUMBER = 12
 DEPENDABOT = "dependabot[bot]"
 Json = dict[str, Any]
+CODEQL_WORKFLOW_ID = 99
+FIRST_NAMED_WORKFLOW_ID = 1000
+WORKFLOW_IDS: dict[str, int] = {}
+
+
+def workflow_id_for(name: str) -> int:
+    return WORKFLOW_IDS.setdefault(name, FIRST_NAMED_WORKFLOW_ID + len(WORKFLOW_IDS))
 
 
 def pull(
@@ -33,7 +41,7 @@ def run(
 ) -> Json:
     return {
         "name": name,
-        "workflow_id": workflow_id if workflow_id is not None else abs(hash(name)) % 10000,
+        "workflow_id": workflow_id if workflow_id is not None else workflow_id_for(name),
         "event": "pull_request",
         "path": f".github/workflows/{name.lower().replace(' ', '-')}.yml",
         "status": status,
@@ -44,7 +52,7 @@ def run(
 
 def codeql_run(status: str = "completed", conclusion: str | None = "success") -> Json:
     return {
-        **run(f"PR #{NUMBER}", status, conclusion, workflow_id=99),
+        **run(f"PR #{NUMBER}", status, conclusion, workflow_id=CODEQL_WORKFLOW_ID),
         "event": "dynamic",
         "path": "dynamic/github-code-scanning/codeql",
     }
@@ -872,6 +880,43 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn('gh workflow run "$WORKFLOW" --repo "$REPO" --ref main -f pr="$PR"', text)
         self.assertNotIn("actions/checkout", text)
         self.assertRegex(text, r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
+
+
+NAMED_WORKFLOWS = [
+    "Security scans", "Docker image", "Docs", "Control smoke", "Verify flows", "Preview",
+    "Screenshot diff", "Cancel runs on close", "Merge gate", "Tests",
+]
+
+
+class RunHelperTest(unittest.TestCase):
+    def test_named_runs_get_distinct_ids_clear_of_codeql_and_the_explicit_ones(self) -> None:
+        ids = [run(name)["workflow_id"] for name in NAMED_WORKFLOWS]
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertEqual(ids, [run(name)["workflow_id"] for name in NAMED_WORKFLOWS])
+        self.assertTrue(all(workflow_id >= FIRST_NAMED_WORKFLOW_ID for workflow_id in ids))
+        self.assertLess(CODEQL_WORKFLOW_ID, FIRST_NAMED_WORKFLOW_ID)
+        self.assertEqual(codeql_run()["workflow_id"], CODEQL_WORKFLOW_ID)
+
+    def test_ids_do_not_depend_on_the_hash_seed(self) -> None:
+        script = (
+            "import sys; sys.path.insert(0, 'tests'); import test_merge_gate as gate; "
+            "print([gate.run(name)['workflow_id'] for name in gate.NAMED_WORKFLOWS])"
+        )
+        seen = {}
+        for seed in ("0", "724", "5280"):
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                cwd=cli.ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            seen[seed] = json.loads(completed.stdout)
+            self.assertNotIn(CODEQL_WORKFLOW_ID, seen[seed], f"PYTHONHASHSEED={seed}")
+        self.assertEqual(seen["724"], seen["0"])
+        self.assertEqual(seen["5280"], seen["0"])
 
 
 if __name__ == "__main__":
