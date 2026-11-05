@@ -10,6 +10,7 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ### Fixed
 
+- `docs/deep-scan.md`'s Per-app settings item 4 now names all four fields "The scan record" lists (#88): its summary of the record left out the stamp's `verification.status`, so an app writing its `AGENTS.md` section from that list would drop the only lasting record of whether the scan was verified. Docs only: no workflow, input, tool or `AGENTS.md` block changes. What apps do: nothing; Darkroom's, Runway's and Waypoint's `## Deep security scans` sections already list it. `tests/test_deep_scan_due.py` (`DocsTest`) fails when "The scan record" or item 4 stops naming `verification.status`.
 - `tests/test_merge_gate.py` no longer fails under some `PYTHONHASHSEED` values (#84): its `run()` helper derived a fixture run's `workflow_id` from `hash(name)`, which could equal CodeQL's fixed id 99, so the gate dropped one of the two runs and waited for CodeQL. Each named run now gets a stable id from 1000 up, clear of CodeQL's and the ids tests pass; `RunHelperTest` checks the ids are distinct and the same under different hash seeds. Tests only: no workflow, input or check changes, and nothing for apps to do.
 
 ## [2.3.0] - 2026-11-04
