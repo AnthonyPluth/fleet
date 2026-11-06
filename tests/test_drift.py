@@ -295,15 +295,32 @@ class OtherVersions(unittest.TestCase):
                                                     "it in fleet (agents-md/sections/mistakes.md), not here, or run "
                                                     "`fleet sync`"])
 
-    def test_a_released_version_is_read_from_its_tag_not_the_working_tree(self) -> None:
+    def test_fleets_own_version_is_read_from_the_working_tree_and_another_from_its_tag(self) -> None:
         fleet = self.fleet()
         path = fleet / "agents-md/sections/mistakes.md"
         path.write_text(path.read_text(encoding="utf-8").replace("Old layout", "Newer layout"), encoding="utf-8")
         with mock.patch.object(agents_md, "own_version", return_value="v0.0.5"):
-            found = agents_md.sections_at("v0.0.5", fleet)
-        assert found is not None
-        self.assertIn("Old layout", found["mistakes"].body)
-        self.assertNotIn("Newer layout", found["mistakes"].body)
+            own = agents_md.sections_at("v0.0.5", fleet)
+        with mock.patch.object(agents_md, "own_version", return_value=VERSION):
+            released = agents_md.sections_at("v0.0.5", fleet)
+        assert own is not None and released is not None
+        self.assertIn("Newer layout", own["mistakes"].body)
+        self.assertNotIn("Old layout", own["mistakes"].body)
+        self.assertIn("Old layout", released["mistakes"].body)
+        self.assertNotIn("Newer layout", released["mistakes"].body)
+
+    def test_a_consumer_synced_between_releases_matches_the_working_tree_not_the_tag(self) -> None:
+        fleet = self.fleet()
+        path = fleet / "agents-md/sections/mistakes.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("Old layout", "Newer layout"), encoding="utf-8")
+        root = copy(self, WAYPOINT, repository=False)
+        with mock.patch.object(agents_md, "ROOT", fleet), mock.patch.object(agents_md, "own_version", return_value="v0.0.5"):
+            agents = root / "AGENTS.md"
+            agents.write_text(agents_md.sync(agents.read_text(encoding="utf-8"), agents_md.sections(fleet), "v0.0.5")[0], encoding="utf-8")
+            write(root, ".fleet/version", f"v0.0.5\n{FIXTURE_COMMIT}\n")
+            pin(root, "v0.0.5")
+            marketplace.sync(root, "v0.0.5")
+            self.assertEqual(drift.drift(root)[0], [])
 
     def test_an_unknown_tag_cannot_be_compared(self) -> None:
         fleet = self.fleet()
