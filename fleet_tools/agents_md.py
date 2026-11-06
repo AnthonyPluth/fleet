@@ -124,12 +124,9 @@ def tagged_sections(version: str, root: Path) -> dict[str, Section] | None:
 
 def sections_at(version: str, root: Path | None = None) -> dict[str, Section] | None:
     root = root or ROOT
-    tagged = tagged_sections(version, root)
-    if tagged is not None:
-        return tagged
     if version == own_version():
         return sections(root)
-    return None
+    return tagged_sections(version, root)
 
 
 def render(section: Section, version: str) -> str:
