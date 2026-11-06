@@ -136,7 +136,7 @@ class TickTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         created = self.runner.created()
         self.assertEqual([c["title"] for c in created], ['Check for "Layout"', 'Review guidance for "Layout"'])
-        self.assertIn("## Model\n\nFable", created[1]["body"])
+        self.assertIn("## Model\n\nOpus: it changes the reviewer's guidance", created[1]["body"])
         self.assertIn("The row's proposal: Review guidance: say when", created[1]["body"])
         ticks = rm.ticks_of(self.runner.patched()[-1])
         self.assertEqual(ticks["repeated:layout"], (True, "81"))

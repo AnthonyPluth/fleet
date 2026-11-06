@@ -27,4 +27,4 @@ labels: []
 
 ## Model
 
-<!-- Opus, Fable or Sonnet, per CLAUDE.md's routing, and why if it isn't obvious. -->
+<!-- Opus or Sonnet, per CLAUDE.md's routing, and why if it isn't obvious. -->

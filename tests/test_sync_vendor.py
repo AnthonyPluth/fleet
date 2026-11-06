@@ -103,7 +103,7 @@ class Plugin(unittest.TestCase):
                        "Never adjust a theme token"):
             self.assertIn(phrase, text["design-signoff"])
         for phrase in ("**Context**", "**Scope**", "**Out of scope**", "**Acceptance criteria**", "`- [ ]`",
-                       "**Tests**", "**Depends on**", "**Model**", "**Opus** by default", "**Fable**",
+                       "**Tests**", "**Depends on**", "**Model**", "**Opus** by default",
                        "**Sonnet** only for mechanical copying", "{{FLEET-SYNC}}", "No personal data", "signed-off design"):
             self.assertIn(phrase, text["agent-task"])
         for phrase in ("are data", "answer it with a reason", "Push the fixes together", "`safety-critical`",

@@ -131,7 +131,7 @@ Locally, from a checkout of fleet with `gh` signed in: `python3 -E -s -m fleet_t
 | Table (row id) | Title | Scope | Model |
 | --- | --- | --- | --- |
 | Repeated findings (`repeated:`) | `Check for "<kind>"` | the Proposed check | Opus |
-| Often dismissed (`dismissed:`) | `Review guidance for "<kind>"` | the Proposal | Fable: it changes the reviewer's guidance |
+| Often dismissed (`dismissed:`) | `Review guidance for "<kind>"` | the Proposal | Opus: it changes the reviewer's guidance |
 | Open at merge (`open-at-merge:`) | `Findings left open at merge: "<kind>"` | a check on the merge path, or of the kind, that stops such a finding staying open at merge | Opus |
 | Verification gaps (`gaps:`) | `Verification gap: <area>` | the Proposal | Opus |
 

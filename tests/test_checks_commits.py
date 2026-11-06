@@ -22,7 +22,7 @@ class Commits(unittest.TestCase):
         self.assertEqual(commits.check_commit("a" * 40, "fix: something\n\nWhy it changed."), [])
 
     def test_an_agent_s_commit_naming_its_model_passes(self) -> None:
-        for model in ("Opus 4.5", "Sonnet 4", "Haiku 4.5", "Fable 5.1"):
+        for model in ("Opus 4.5", "Sonnet 4", "Haiku 4.5"):
             msg = f"fix: x\n\nCo-Authored-By: Claude {model} <noreply@anthropic.com>\n{SESSION}\n"
             self.assertEqual(commits.check_commit("a" * 40, msg), [], model)
 
@@ -34,7 +34,7 @@ class Commits(unittest.TestCase):
     def test_a_trailer_that_doesnt_name_the_model_fails(self) -> None:
         for trailer in ("Claude <noreply@anthropic.com>", "Claude Opus <noreply@anthropic.com>",
                         "Claude Opus 4.5 <claude@example.com>", "claude-opus-4-5 <noreply@anthropic.com>",
-                        "Claude Gemini 2 <noreply@anthropic.com>"):
+                        "Claude Gemini 2 <noreply@anthropic.com>", "Claude Fable 5.1 <noreply@anthropic.com>"):
             problems = commits.check_commit("a" * 40, f"fix: x\n\nCo-authored-by: {trailer}\n")
             self.assertEqual(len(problems), 1, trailer)
             self.assertIn("should name the model", problems[0])
