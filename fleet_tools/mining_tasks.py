@@ -23,7 +23,7 @@ MAX_CELL = 600
 MAX_TITLE = 200
 MAX_ROW = 400
 MAX_EVENT = 1_000_000
-FABLE = "Fable (`claude-fable-5-1`): it changes the reviewer's guidance, which reads untrusted pull request content."
+GUIDANCE = "Opus: it changes the reviewer's guidance, which reads untrusted pull request content."
 OPUS = "Opus."
 OPEN_PROPOSAL = ("a check on the merge path, or a check of the kind itself, that stops a finding of this kind from staying "
                  "open at merge")
@@ -39,7 +39,7 @@ class Table:
 
 TABLES = {
     rm.TABLE: Table("Repeated findings", 'Check for "{}"', OPUS),
-    rm.DISMISSED_TABLE: Table("Often dismissed", 'Review guidance for "{}"', FABLE),
+    rm.DISMISSED_TABLE: Table("Often dismissed", 'Review guidance for "{}"', GUIDANCE),
     rm.OPEN_TABLE: Table("Open at merge", 'Findings left open at merge: "{}"', OPUS, OPEN_PROPOSAL),
     rm.GAPS_TABLE: Table("Verification gaps", "Verification gap: {}", OPUS),
 }

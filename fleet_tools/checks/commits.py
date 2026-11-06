@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fleet_tools.checks.context import Check, Context, git
 
-MODEL_FAMILIES = ("Opus", "Sonnet", "Haiku", "Fable")
+MODEL_FAMILIES = ("Opus", "Sonnet", "Haiku")
 CO_AUTHOR = re.compile(r"^co-authored-by:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 SESSION = re.compile(r"^claude-session:\s*\S", re.IGNORECASE | re.MULTILINE)
 GOOD_CO_AUTHOR = re.compile(r"^Claude (" + "|".join(MODEL_FAMILIES) + r") \d+(\.\d+)* <noreply@anthropic\.com>$")

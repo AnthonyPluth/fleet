@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 import unittest
 from typing import Any
 
@@ -167,6 +168,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r"^\s+MODEL: claude-opus-5-5$", self.text, re.MULTILINE)), 2)
         self.assertEqual(len(re.findall(r"^\s+MODEL: sonnet$", self.text, re.MULTILINE)), 2)
         self.assertNotIn("inputs.model", self.text)
+        self.assertNotIn("fable", self.text.lower())
         for job in (*REPORT_JOBS.values(),):
             self.assertIsNone(SECRET.search(job_source(self.text, job)), job)
             self.assertNotIn("MODEL", job_source(self.text, job))
@@ -392,6 +394,17 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(env["CLAUDE"], "${{ github.workspace }}/.fleet/tests/fakes/claude")
         self.assertEqual(env["FAKE_REVIEW"], "${{ inputs.fake-review }}")
         self.assertIsNone(SECRET.search(json.dumps(env)))
+
+
+class NoFableTest(unittest.TestCase):
+    def test_no_file_names_fable_but_the_changelog_and_the_tests_that_refuse_it(self) -> None:
+        allowed = {"CHANGELOG.md", "tests/test_agent_review_workflow.py", "tests/test_checks_commits.py"}
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=cli.ROOT, check=True, capture_output=True).stdout
+        for name in filter(None, listed.decode().split("\0")):
+            path = cli.ROOT / name
+            if name in allowed or not path.is_file():
+                continue
+            self.assertIsNone(re.search(r"\bfable\b", path.read_bytes().decode("utf-8", "replace"), re.IGNORECASE), name)
 
 
 class CallerTest(unittest.TestCase):
