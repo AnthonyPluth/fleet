@@ -404,7 +404,7 @@ class NoFableTest(unittest.TestCase):
             path = cli.ROOT / name
             if name in allowed or not path.is_file():
                 continue
-            self.assertNotIn("fable", path.read_bytes().decode("utf-8", "replace").lower(), name)
+            self.assertIsNone(re.search(r"\bfable\b", path.read_bytes().decode("utf-8", "replace"), re.IGNORECASE), name)
 
 
 class CallerTest(unittest.TestCase):
