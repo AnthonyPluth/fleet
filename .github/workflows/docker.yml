@@ -200,12 +200,18 @@ jobs:
             [ -n "$line" ] || continue
             args+=(-e "$line")
           done <<< "$SMOKE_ENV"
+          # A container left by an earlier run on a runner that keeps its state (a self-hosted one) goes first.
+          docker rm -f smoke > /dev/null 2>&1 || true
           docker run -d --name smoke -p "8765:$SMOKE_PORT" "${args[@]}" "$IMAGE:smoke"
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8765/healthz; then docker rm -f smoke; exit 0; fi
+            if curl -fsS http://127.0.0.1:8765/healthz; then exit 0; fi
             sleep 1
           done
           docker logs smoke; exit 1
+      # Whether the check passed, failed or was cancelled, so the name and the port are free for the next run.
+      - name: Remove the start check's container
+        if: always()
+        run: docker rm -f smoke > /dev/null 2>&1 || true
 
       # The slow part (ARM is built under emulation), done now: into the build cache only, which publish reads back.
       # Only when there is a version to release.

@@ -228,11 +228,21 @@ class Scripts(unittest.TestCase):
 
     def test_the_start_check_passes_each_environment_line_as_one_argument(self) -> None:
         text = script("build", "Check the image starts").replace("docker run", "printf '%s\\n'", 1)
-        text = text.split("for _ in", 1)[0]
+        text = text.split("for _ in", 1)[0].replace("docker rm -f smoke", "true", 1)
         result = bash(text, {"IMAGE": "runway", "SMOKE_PORT": "8000", "SMOKE_ENV": "A=1\n\nB=two words\n"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["-d", "--name", "smoke", "-p", "8765:8000", "-e", "A=1", "-e",
                                                       "B=two words", "runway:smoke"])
+
+    def test_the_start_checks_container_is_removed_before_and_always_after(self) -> None:
+        check = script("build", "Check the image starts")
+        self.assertLess(check.index("docker rm -f smoke"), check.index("docker run"))
+        self.assertNotIn("docker rm -f smoke; exit 0", check)
+        cleanup = position("build", "Remove the start check's container")
+        self.assertEqual(cleanup, position("build", "Check the image starts") + 1)
+        step = steps("build")[cleanup]
+        self.assertEqual(step["if"], "always()")
+        self.assertEqual(step["run"], "docker rm -f smoke > /dev/null 2>&1 || true")
 
     def test_the_release_is_titled_with_the_repositorys_name(self) -> None:
         self.assertIn('--title "${GITHUB_REPOSITORY#*/} $VERSION"', script("publish", "Tag and publish the release"))
