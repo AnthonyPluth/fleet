@@ -331,6 +331,25 @@ jobs:
       browser: ""
       timeout-minutes: 10
 
+  # The docs build on a fixture tree (tests/fixtures/docs/): Node from its .nvmrc with npm's cache keyed on its lockfile,
+  # no browser, and its `make docs-build` writes the one page the site check looks for. A pull request never deploys:
+  # the upload and the deploy job run only on main. The called deploy job asks for `pages: write` and `id-token: write`,
+  # so the caller grants them.
+  docs:
+    name: Docs (fixture)
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      working-directory: tests/fixtures/docs
+      site-path: tests/fixtures/docs/docs/dist
+      node-version-file: tests/fixtures/docs/.nvmrc
+      npm-lockfiles: tests/fixtures/docs/docs/package-lock.json
+      timeout-minutes: 5
+
   # The screenshot diff over two fixture PNG sets (one changed, one added, one removed, one the same), committed to a
   # made-up repository on the runner: it uploads the report and summary.json and, in dry run, prints the comment instead
   # of posting it. The called job asks for `pull-requests: write`, so the caller grants it.

@@ -7,7 +7,7 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 ## Adopting, step by step
 
 1. **Pick a release** and pin every fleet workflow at its commit, with the tag in the comment (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<commit>   # vX.Y.Z`). All the pins move together: `sync.yml` fails when they disagree.
-2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining) and [its tasks caller](#ticked-rows-become-agent-tasks), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
+2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining) and [its tasks caller](#ticked-rows-become-agent-tasks), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Docs](#docs), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
 3. **Set `[tool.fleet]`** in `pyproject.toml` ([`[tool.fleet]`](#toolfleet)), key by key: a check runs only where its key is set. Add `[tool.fleet.verification]` (with `guides` once the app has [verification guides](#verification-guides)) when the pull requests carry a [verification record](#verification-records).
 4. **Sync fleet's content** once by hand, from fleet at the pins' commit: `fleet sync` writes the `AGENTS.md` blocks, the vendored `.claude/` files, the shim `tools/fleet` and `.fleet/version` (the release on line 1, and on line 2 the commit the pins name, which `tools/fleet` runs fleet at, so a moved tag can't change what runs). Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
 
@@ -764,6 +764,64 @@ Runway's "Verify flows" passes `make-target: verify` and `poetry-install-args: -
 | `node-dir` | `frontend` | The npm project to `npm ci` in; `""` sets up no Node |
 | `node-version-file` | `.nvmrc` | Where the Node version is read from |
 | `browser` | `chromium` | The Playwright browser to install, with its system dependencies; `""` installs none |
+| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
+
+## Docs
+
+`.github/workflows/docs.yml` (`workflow_call`) builds the documentation site with one `make` target of the app (`make docs-build` by default: it installs `docs/`'s packages and builds the site, which also checks the links between pages), fails when `site-path` holds no `index.html`, and on a push or a manual run on `main` uploads it and publishes it to GitHub Pages. A pull request only builds. The build job has `contents: read` only; the deploy job, which runs none of the app's code, alone has `pages: write` and `id-token: write`, in the `github-pages` environment. No secrets. The caller keeps the workflow name "Docs" (the merge gate lists it), the triggers with their path filters and the concurrency group, and grants all three permissions to the calling job (a called workflow can't be given more than its caller has; on a pull request the deploy job is skipped). The repository needs Settings, Pages, Build and deployment, Source: "GitHub Actions", once.
+
+```yaml
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths: [docs/**, .github/workflows/docs.yml]
+  pull_request:
+    branches: [main]
+    paths: [docs/**, .github/workflows/docs.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  docs:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: AnthonyPluth/fleet/.github/workflows/docs.yml@<commit>   # v2.3.0
+```
+
+That is Runway's caller as it is: the defaults are its build. Waypoint keeps its own paths (`demo/**`, `frontend/**`, the fonts and the logo), passes its `vars.RUNS_ON` expression as `runs-on`, and moves its demo steps into a Makefile target (`make docs-site`: `npm run build:demo` in `frontend/`, `node demo/verify.mjs`, `make docs-build`, then the copy of `frontend/demo-dist/` into `docs/dist/demo/`, in that order, since the site build empties `docs/dist`):
+
+```yaml
+    with:
+      make-target: docs-site
+      npm-lockfiles: |
+        docs/package-lock.json
+        frontend/package-lock.json
+      browser: chromium
+      runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
+```
+
+Each app deletes its `build` and `deploy` jobs (the checkout, its `setup-node-app` steps, the build and demo steps, `upload-pages-artifact` and `deploy-pages`); `.github/actions/setup-node-app` stays while other workflows use it. The statuses become `docs / build` and `docs / deploy`; the merge gate counts the "Docs" workflow, whose name is unchanged.
+
+| Input | Default | What |
+| --- | --- | --- |
+| `make-target` | `docs-build` | The `make` target that builds the site |
+| `working-directory` | `.` | Where `make` runs (the self-test's fixture tree) |
+| `site-path` | `docs/dist` | The built site, relative to the repository: checked for `index.html`, and published |
+| `node-version-file` | `.nvmrc` | Where the Node version is read from |
+| `npm-lockfiles` | `docs/package-lock.json` | The lockfiles npm's cache is keyed on, one per line |
+| `browser` | none | A Playwright browser to install with its system dependencies before the target (`chromium`) |
+| `browser-dir` | `frontend` | The npm project the browser is installed from, after `npm ci` there |
+| `timeout-minutes` | 10 | Each job's limit |
+| `runs-on` | `"ubuntu-latest"` | The runner, as JSON, for both jobs |
 | `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
 
 ## Screenshot diff
