@@ -70,7 +70,7 @@ on:
         default: ""
 
 env:
-  FLEET_REF: v2.4.0   # stamped by the release
+  FLEET_REF: v2.3.0   # stamped by the release
 
 permissions: {}
 
@@ -160,8 +160,9 @@ jobs:
       # so it is only ever names: no option, no path, nothing the shell would read, and no trailing "-" (apt-get install
       # reads "bash-" as remove bash). After the update each name must be exactly a package apt knows (apt-cache pkgnames
       # lists names by prefix, without virtual packages), because apt-get reads a name it doesn't know that holds "." or
-      # "+" as a regular expression ("python3." would install every package starting "python3"). A value that isn't is
-      # printed nowhere.
+      # "+" as a regular expression ("python3." would install every package starting "python3"). The list is read whole
+      # before grep looks at it, so no apt-cache is left writing into a closed pipe (a grep that stops at its first
+      # match would SIGPIPE it, and pipefail would fail a real name). A value that isn't a package is printed nowhere.
       - name: Install the system packages
         if: inputs.needs-faketime || inputs.apt-packages != ''
         env:
@@ -184,7 +185,8 @@ jobs:
           fi
           sudo apt-get update -q
           for name in "${extra[@]}"; do
-            if ! apt-cache pkgnames -- "$name" | grep -xF -- "$name" > /dev/null; then
+            known=$(apt-cache pkgnames -- "$name")
+            if ! grep -xF -- "$name" <<< "$known" > /dev/null; then
               echo "::error::apt-packages names a package apt doesn't know; each name must be exactly a package's, since apt-get reads an unknown name with '.' or '+' as a pattern"
               exit 1
             fi

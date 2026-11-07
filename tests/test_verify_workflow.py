@@ -17,7 +17,8 @@ REJECTED = ("::error::apt-packages must be Debian package names separated by sin
             "'+' and '-', each starting with a letter or digit and not ending in '-', which apt-get reads as remove)\n")
 FAKE_SUDO = '#!/bin/sh\nprintf "%s\\n" "--- $*" >> "$SUDO_LOG"\nfor arg in "$@"; do printf "[%s]\\n" "$arg" >> "$SUDO_LOG"; done\n'
 FAKE_APT_CACHE = ('#!/bin/sh\n[ "$1" = pkgnames ] && [ "$2" = -- ] && [ "$#" = 3 ] || exit 2\n'
-                  'for name in $KNOWN; do case "$name" in "$3"*) echo "$name";; esac; done\n')
+                  'for name in $KNOWN; do case "$name" in "$3"*) echo "$name";; esac; done\n'
+                  'i=0; while [ "$i" -lt 4000 ]; do echo "$3-padding-name-that-is-long-enough-$i"; i=$((i + 1)); done\n')
 KNOWN = ("libfaketime libimage-exiftool-perl libheif1 libheif-plugin-libde265 a-b g++ g++-13 libfoo+bar libstdc++6 "
          "python3 python3-clang-20 python3.12-venv python3.12-venv-extra x hello")
 UNKNOWN = ("::error::apt-packages names a package apt doesn't know; each name must be exactly a package's, since apt-get "
@@ -145,6 +146,15 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(calls(log)[1], ["apt-get", "install", "-yq", "libfaketime", "a-b", "g++", "libfoo+bar", "libstdc++6",
                                          "python3.12-venv", "x"])
 
+    def test_a_real_name_listed_before_more_than_a_pipe_buffer_of_others_is_accepted(self) -> None:
+        listed = subprocess.run(["sh", "-c", FAKE_APT_CACHE, "apt-cache", "pkgnames", "--", "hello"], env={"KNOWN": KNOWN},
+                                capture_output=True, text=True, check=True).stdout
+        self.assertTrue(listed.startswith("hello\n"))
+        self.assertGreater(len(listed), 128 * 1024)
+        result, log = install("hello libheif1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls(log)[1], ["apt-get", "install", "-yq", "libfaketime", "hello", "libheif1"])
+
     def test_a_name_that_is_not_exactly_a_package_fails_after_the_update_and_before_the_install(self) -> None:
         for value in ("python3.", "libheif1 python3.", "g+", "python3.12", "libheif", "libstdc++", "nosuch", "hello x.y"):
             with self.subTest(value=value):
@@ -190,16 +200,14 @@ class DocsTest(unittest.TestCase):
         self.assertIn("apt-packages: libimage-exiftool-perl libheif1", section)
         self.assertIn("node-version-file: frontend/.nvmrc", section)
 
-    def test_the_changelog_lists_it_under_added(self) -> None:
-        heading = ""
-        found = []
-        for line in CHANGELOG.read_text(encoding="utf-8").splitlines():
-            if line.startswith("### "):
-                heading = line
-            elif line.startswith("- The verify workflow takes other Debian packages") and "`apt-packages`" in line:
-                found.append(heading)
-        self.assertEqual(found, ["### Added"])
-
+    def test_the_changelog_lists_it_under_added_in_the_newest_section(self) -> None:
+        text = CHANGELOG.read_text(encoding="utf-8")
+        newest = next(section for section in text.split("\n## [")[1:] if "\n- " in section)
+        added = newest.split("\n### Added\n")[1].split("\n### ")[0]
+        entries = [line for line in added.splitlines() if line.startswith("- The verify workflow takes other Debian packages")]
+        self.assertEqual(len(entries), 1)
+        self.assertIn("`apt-packages`", entries[0])
+        self.assertEqual(text.count("- The verify workflow takes other Debian packages"), 1)
 
 if __name__ == "__main__":
     unittest.main()
