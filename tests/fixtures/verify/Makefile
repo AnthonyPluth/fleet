@@ -6,7 +6,8 @@ smoke:
 	poetry run python -c "import sys; print('python', sys.version.split()[0])"
 	node --version
 	npm --prefix frontend ls
-	dpkg -s libfaketime tree libimage-exiftool-perl
+	dpkg -s libfaketime hello libimage-exiftool-perl
+	hello --version
 	exiftool -ver
 	mkdir -p artifacts
 	echo "verify.yml ran make smoke" > artifacts/marker
