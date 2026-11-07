@@ -7,7 +7,7 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 ## Adopting, step by step
 
 1. **Pick a release** and pin every fleet workflow at its commit, with the tag in the comment (`uses: AnthonyPluth/fleet/.github/workflows/<name>.yml@<commit>   # vX.Y.Z`). All the pins move together: `sync.yml` fails when they disagree.
-2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining) and [its tasks caller](#ticked-rows-become-agent-tasks), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Docs](#docs), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
+2. **Write the callers** you want, one file each in `.github/workflows/`, from the sections below: [Security scans](#security-scans), [Deep-scan reminder](#deep-scan-reminder), [Agent review](#agent-review), [Review mining](#review-mining) and [its tasks caller](#ticked-rows-become-agent-tasks), [Merge gate](#merge-gate) and [its threads caller](#open-review-threads), [Checks](#checks), [Content sync](#content-sync-two-pins-two-bots), [Verify](#verify-control-smoke-verify-flows), [Docs](#docs), [Screenshot diff](#screenshot-diff), [Cancel runs on close](#cancel-runs-on-close), [Docker image](#docker-image) and [Tidy releases](#tidy-releases). A caller passes each secret by name (`secrets: inherit` would hand over every secret the repository has) and grants exactly the permissions its section lists.
 3. **Set `[tool.fleet]`** in `pyproject.toml` ([`[tool.fleet]`](#toolfleet)), key by key: a check runs only where its key is set. Add `[tool.fleet.verification]` (with `guides` once the app has [verification guides](#verification-guides)) when the pull requests carry a [verification record](#verification-records).
 4. **Sync fleet's content** once by hand, from fleet at the pins' commit: `fleet sync` writes the `AGENTS.md` blocks, the vendored `.claude/` files, the shim `tools/fleet` and `.fleet/version` (the release on line 1, and on line 2 the commit the pins name, which `tools/fleet` runs fleet at, so a moved tag can't change what runs). Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
 
@@ -887,6 +887,63 @@ jobs:
 | `groups` | required | A JSON array of group patterns; `{0}` is the pull request's number, and a pattern without it is a prefix the number is appended to |
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
 | `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only) |
+
+## Docker image
+
+`.github/workflows/docker.yml` (`workflow_call`) is the image pipeline: it builds the app's image for Intel/AMD and ARM with the next version baked in (`VERSION` build argument), checks it starts (`/healthz`), publishes it to the GitHub Container Registry as `ghcr.io/<owner>/<image>` with `:1.2.3` and `:v1.2.3` (and, on main's newest commit, `:latest`, `:1.2` and `:1`), tags the release, publishes a GitHub Release titled with the repository's name ("Runway v1.2.3"), and deletes the package's untagged leftovers. The version is `fleet next-version` from fleet at the workflow's pinned ref, so the shim, `uv` and `.fleet/version` take no part. It replaces the app's `build`, `publish` and `cleanup` jobs. The app keeps everything else in its `docker.yml`: the triggers, the name "Docker image" (which the merge gate lists), the concurrency group `docker-image-${{ github.ref }}` (which cancel-on-close and tidy-releases join; the called workflow has none of its own), `changes`, `test`, `web`, `feature-map` and `fleet-checks`, which differ per app.
+
+The caller calls it twice, so the image still builds while the tests run and is published only once they pass: once for the build (`publish: false`, the default) and once for the publish (`publish: true`), which `needs:` the app's test jobs and the build and passes the build's outputs back in. Both calls grant `contents: write` (the tag and the release) and `packages: write` (the push, and the cleanup job's deletions): GitHub checks every job of a called workflow against the calling job's permissions before the run starts, even the jobs the inputs skip, so a call that grants less fails to start. The grant is a ceiling: the workflow's own jobs still take only what each needs, the build `contents: read` and nothing else, the cleanup `packages: write` alone. No secrets: the workflow's own token. The publish runs only on `main`, and never for a `pull_request` or `pull_request_target` event, whatever the caller's condition says; on a pull request the build doesn't work out a version, and builds and start-checks the image only if the caller calls it there (Runway and Waypoint don't). Runway's jobs, after the app's own:
+
+```yaml
+jobs:
+  # changes, test, feature-map, fleet-checks and web: the app's own, unchanged.
+
+  build:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write          # the ceiling every job of the called workflow is checked against; the build job takes contents: read
+      packages: write
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v2.3.0
+    with:
+      image: runway
+      smoke-env: |
+        RUNWAY_ALLOW_NO_AUTH=1
+        RUNWAY_NO_SYNC=1
+
+  publish:
+    needs: [test, web, build]
+    if: needs.build.outputs.skip != 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v2.3.0
+    with:
+      image: runway
+      publish: true
+      version: ${{ needs.build.outputs.version }}
+      new: ${{ needs.build.outputs.new }}
+      newest: ${{ needs.build.outputs.newest }}
+```
+
+Waypoint passes `image: waypoint`, `smoke-env: WAYPOINT_ALLOW_NO_AUTH=1` and, on both calls, its runner as `"runs-on": ${{ vars.RUNS_ON != '' && ... || '"ubuntu-latest"' }}` (the expression its `fleet-checks` job passes, the key quoted for the same reason).
+
+| Input | Default | What |
+| --- | --- | --- |
+| `image` | required | The image's name in the owner's registry (`runway`, `waypoint`), lowercase; also the package the cleanup tidies |
+| `publish` | `false` | `false` builds and start-checks; `true` publishes, from the build's outputs |
+| `version`, `new`, `newest` | none | With `publish: true`, the build's outputs of the same names, passed through; checked to be a `v1.2.3` and `true` or `false` |
+| `context` | `.` | The build context (the self-test's fixture tree) |
+| `dockerfile` | `Dockerfile` | The Dockerfile |
+| `smoke-port` | `8765` | The port the image listens on; the start check maps it to 8765 on the runner and asks it `/healthz` |
+| `smoke-env` | none | The start check's container environment, one `NAME=value` per line; not for secrets |
+| `cleanup` | `true` | After publishing, delete the package's untagged versions |
+| `build-timeout-minutes` | `45` | The build's limit (the publish has 30 minutes and the cleanup 10) |
+| `runs-on` | `"ubuntu-latest"` | The runner for every job, as JSON |
+| `fleet-ref` | the workflow's `FLEET_REF` | Where `fleet next-version` runs from (fleet's self-test only) |
+
+The build's outputs, `version`, `new`, `newest` and `skip`, are `fleet next-version`'s; all four are empty on a pull request.
+
+Moving to it, Runway and Waypoint delete from their `docker.yml` the `build`, `publish` and `cleanup` jobs (about 155 lines, among them the `setup-uv` step, which only the shim needed) and add the two calls above (about 30 lines); `changes`, `test`, `web`, `feature-map` and `fleet-checks`, the triggers, the concurrency group and the header stay. What changes for them: the check runs are named `build / Build`, `publish / Publish` and `publish / Cleanup` (the merge gate counts workflows, not job names, so nothing to change there); Runway's jobs gain the timeouts Waypoint's had (45, 30 and 10 minutes); `fleet next-version` runs from the pin rather than `.fleet/version` (the two are the same release once the content sync has merged). Darkroom, which builds and start-checks on pull requests too, publishes a second image (`Dockerfile.browser`) and validates its Compose file, adopts it later: the second image needs an input this release doesn't have.
 
 ## Tidy releases
 
