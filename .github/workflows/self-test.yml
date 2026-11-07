@@ -345,6 +345,43 @@ jobs:
       fixture: tests/fixtures/screenshot-diff/before tests/fixtures/screenshot-diff/after
       dry-run: true
 
+  # The image pipeline's build on a fixture image (tests/fixtures/docker/), as a pull request runs it: `fleet next-version`
+  # doesn't run (a pull request is never released), the image is built for this runner and its start check passes only
+  # because smoke-env reaches the container, and nothing is built for ARM, cached, pushed or tagged. The publish call
+  # isn't tested here: on a pull request it is skipped by its own condition, which tests/test_docker_workflow.py holds.
+  docker:
+    name: Docker image (fixture, build)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docker.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      image: fleet-self-test
+      context: tests/fixtures/docker
+      dockerfile: tests/fixtures/docker/Dockerfile
+      smoke-env: |
+        FLEET_SMOKE=on
+      build-timeout-minutes: 10
+
+  # The build's outputs on a pull request: no version, nothing new, no skip, so a caller's publish call (`needs:` the
+  # build, `if: skip != 'true'`) would rest on its own condition alone, which refuses a pull request.
+  docker-outputs:
+    name: Docker image (fixture) outputs
+    needs: [docker]
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, a few lines of shell
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: A pull request's build works out no version
+        env:
+          VERSION: ${{ needs.docker.outputs.version }}
+          NEW: ${{ needs.docker.outputs.new }}
+          NEWEST: ${{ needs.docker.outputs.newest }}
+          SKIP: ${{ needs.docker.outputs.skip }}
+        run: |
+          echo "version: '$VERSION'; new: '$NEW'; newest: '$NEWEST'; skip: '$SKIP'"
+          [ -z "$VERSION$NEW$NEWEST$SKIP" ] || { echo "::error::A pull request's build worked out a version"; exit 1; }
+
   # Cancel-on-close joins two groups of its own (a pattern with the pull request's number, and a prefix), which nothing
   # else uses: it checks the matrix and the group names, and cancels nothing.
   cancel-on-close:

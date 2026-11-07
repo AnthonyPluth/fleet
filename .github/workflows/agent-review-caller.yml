@@ -32,6 +32,7 @@ jobs:
         .github/workflows/cancel-on-close.yml
         .github/workflows/checks.yml
         .github/workflows/deep-scan-due.yml
+        .github/workflows/docker.yml
         .github/workflows/merge-gate.yml
         .github/workflows/merge-gate-threads.yml
         .github/workflows/mining-tasks.yml

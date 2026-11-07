@@ -1,0 +1,335 @@
+name: Docker image
+
+# The reusable image pipeline (FLEET-DOCKER): build an app's image for Intel/AMD and ARM with the next version baked
+# in, check it starts, publish it to the GitHub Container Registry as ghcr.io/<owner>/<image>:<version> (plus v<version>
+# and, on main's newest commit, :latest, :<major>.<minor> and :<major>), tag the release and publish a GitHub Release
+# for it, then delete untagged leftovers. It replaces each app's own build, publish and cleanup jobs; the app keeps its
+# tests, its web app's checks and the path filter that picks which of them a pull request runs, which differ per app.
+#
+# It is called twice from the app's docker.yml, so the image builds while the tests run and is published only once they
+# pass, as before: once with `publish: false` (the default) for the build, in parallel with the tests, and once with
+# `publish: true` for the publish, which `needs:` the tests, the web app's checks and the build, and passes the build's
+# outputs (version, new, newest) back in. The build has no permission to publish anything and sends nothing out; the
+# publish runs only on main (never on a pull request, nor on pull_request_target, whose ref is main's), whatever the
+# caller's condition says, and the release comes last, so a failed or cancelled push never leaves a version without an
+# image. The image is pushed from the build cache the build filled, so it isn't built again. Untagged leftovers are
+# deleted by a third-party action in a job of its own, with only `packages: write`.
+#
+# Versions: `fleet next-version` from fleet at this workflow's pinned ref (inputs.fleet-ref || FLEET_REF, the FLEET_REF
+# convention), never from a ref the pull request names: the step from the highest version ever tagged by the commits
+# since the last one in this history (feat: a minor, a ! or BREAKING CHANGE: a major, else a patch), and skip when the
+# commit isn't main's newest any more, so re-running an old build never moves :latest back to it. On a pull request it
+# doesn't run: the image is built and its start checked (for a caller that builds pull requests), and nothing else.
+#
+# The caller (docs/adopting.md has the snippet) keeps the triggers, the workflow name the merge gate lists ("Docker
+# image") and the concurrency group (`docker-image-${{ github.ref }}`, which cancel-on-close.yml and tidy-releases.yml
+# join); this workflow has no concurrency group of its own. No secrets: the workflow's own token, with the permissions
+# the calling job grants.
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: The image's name in the owner's registry ("runway", "waypoint"), lowercase; also the cleanup's package.
+        type: string
+        required: true
+      publish:
+        description: false (the default) builds the image and checks it starts; true publishes it, with version, new and newest from the build's outputs.
+        type: boolean
+        default: false
+      version:
+        description: With publish, the build's `version` output (v1.2.3).
+        type: string
+        default: ""
+      new:
+        description: With publish, the build's `new` output ("true" tags the release and publishes a GitHub Release for it).
+        type: string
+        default: ""
+      newest:
+        description: With publish, the build's `newest` output ("true" also moves :latest, :<major>.<minor> and :<major>).
+        type: string
+        default: ""
+      context:
+        description: The build context, relative to the repository (the self-test passes its fixture tree).
+        type: string
+        default: "."
+      dockerfile:
+        description: The Dockerfile, relative to the repository.
+        type: string
+        default: Dockerfile
+      smoke-port:
+        description: The port the image listens on; the start check maps it to 8765 on the runner and asks it /healthz.
+        type: number
+        default: 8765
+      smoke-env:
+        description: Environment variables for the start check's container, one NAME=value per line ("RUNWAY_ALLOW_NO_AUTH=1"). Not for secrets.
+        type: string
+        default: ""
+      cleanup:
+        description: After publishing, delete the package's untagged versions (every tagged version stays pullable).
+        type: boolean
+        default: true
+      build-timeout-minutes:
+        description: How long the build may take (ARM is built under emulation).
+        type: number
+        default: 45
+      runs-on:
+        description: The runner, as JSON ('"ubuntu-latest"', or a label array). Waypoint passes its vars.RUNS_ON expression.
+        type: string
+        default: '"ubuntu-latest"'
+      fleet-ref:
+        description: The fleet ref to run `fleet next-version` from (the self-test passes its own commit).
+        type: string
+        default: ""
+    outputs:
+      version:
+        description: The version to release (v1.2.3); empty on a pull request.
+        value: ${{ jobs.build.outputs.version }}
+      new:
+        description: Whether the version is new ("true" or "false"); empty on a pull request.
+        value: ${{ jobs.build.outputs.new }}
+      newest:
+        description: Whether the commit is main's newest ("true" or "false"); empty on a pull request.
+        value: ${{ jobs.build.outputs.newest }}
+      skip:
+        description: '"true" when the commit isn''t main''s newest any more and nothing is released; the publish call is skipped on it.'
+        value: ${{ jobs.build.outputs.skip }}
+
+env:
+  FLEET_REF: v2.3.0   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step (without it, only
+# the last command in a pipeline counts, and a failed gh or curl passes silently).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Works out the version, builds the image for this runner and checks it starts, then builds it for Intel/AMD and ARM
+  # into the build cache. It has no permission to publish anything and sends nothing out.
+  build:
+    name: Build
+    if: ${{ !inputs.publish }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.build-timeout-minutes }}
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      new: ${{ steps.next.outputs.new }}
+      newest: ${{ steps.next.outputs.newest }}
+      skip: ${{ steps.next.outputs.skip }}
+    steps:
+      - name: Check the inputs
+        env:
+          IMAGE: ${{ inputs.image }}
+          SMOKE_PORT: ${{ inputs.smoke-port }}
+          SMOKE_ENV: ${{ inputs.smoke-env }}
+        run: |
+          if ! [[ "$IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::image must be a lowercase image name (letters, digits and . _ - between them)"; exit 1
+          fi
+          if ! [[ "$SMOKE_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$SMOKE_PORT" -gt 65535 ]; then
+            echo "::error::smoke-port must be a port number"; exit 1
+          fi
+          number=0
+          while IFS= read -r line; do
+            number=$((number + 1))
+            [ -n "$line" ] || continue
+            if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::smoke-env line $number isn't NAME=value"; exit 1
+            fi
+          done <<< "$SMOKE_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0       # full history and tags, to find the last version
+          persist-credentials: false
+
+      # fleet at the pinned ref, for `fleet next-version` only; removed again before anything is built, so it never
+      # reaches the build context.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: AnthonyPluth/fleet
+          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          path: .fleet
+          sparse-checkout: |
+            fleet_tools
+            VERSION
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Its outputs: version (the number to release), new (whether a release is needed), newest (whether this is main's
+      # newest commit) and skip (true when this run should do nothing more). Not on a pull request, whose merge commit
+      # is never main's newest.
+      - name: Work out the next version
+        id: next
+        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        working-directory: .fleet
+        run: python3 -E -s -m fleet_tools.cli next-version --root "$GITHUB_WORKSPACE"
+
+      - name: Remove fleet's tools from the workspace
+        run: rm -rf .fleet
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1   # v4.4.0
+        if: steps.next.outputs.version != '' && steps.next.outputs.skip != 'true'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
+        if: steps.next.outputs.skip != 'true'
+
+      # Start the image and ask it /healthz.
+      - name: Build for this runner
+        if: steps.next.outputs.skip != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          load: true
+          tags: ${{ inputs.image }}:smoke
+          build-args: ${{ steps.next.outputs.version != '' && format('VERSION={0}', steps.next.outputs.version) || '' }}
+          cache-from: type=gha
+      - name: Check the image starts
+        if: steps.next.outputs.skip != 'true'
+        env:
+          IMAGE: ${{ inputs.image }}
+          SMOKE_PORT: ${{ inputs.smoke-port }}
+          SMOKE_ENV: ${{ inputs.smoke-env }}
+        run: |
+          args=()
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            args+=(-e "$line")
+          done <<< "$SMOKE_ENV"
+          docker run -d --name smoke -p "8765:$SMOKE_PORT" "${args[@]}" "$IMAGE:smoke"
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/healthz; then docker rm -f smoke; exit 0; fi
+            sleep 1
+          done
+          docker logs smoke; exit 1
+
+      # The slow part (ARM is built under emulation), done now: into the build cache only, which publish reads back.
+      # Only when there is a version to release.
+      - name: Build for Intel/AMD and ARM (not pushed)
+        if: steps.next.outputs.version != '' && steps.next.outputs.skip != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ steps.next.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Pushes the image (from the build's cache, so it isn't built again) and then tags the release. The tag and Release
+  # come last, so a failed or cancelled push never leaves a version with no image. Only on main, never for a pull
+  # request.
+  publish:
+    name: Publish
+    if: inputs.publish && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    permissions:
+      contents: write          # create the tag and the release
+      packages: write          # publish to ghcr.io
+    steps:
+      - name: Check the inputs
+        env:
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+          NEW: ${{ inputs.new }}
+          NEWEST: ${{ inputs.newest }}
+        run: |
+          if ! [[ "$IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::image must be a lowercase image name (letters, digits and . _ - between them)"; exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be the build's version output (v1.2.3)"; exit 1
+          fi
+          if ! [[ "$NEW" =~ ^(true|false)$ && "$NEWEST" =~ ^(true|false)$ ]]; then
+            echo "::error::new and newest must be the build's outputs (true or false)"; exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name (registry names must be lowercase)
+        env:
+          NAME: ${{ inputs.image }}
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$NAME" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1   # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6   # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Image tags (latest, 1.2.3, v1.2.3, 1.2 and 1)
+        id: tags
+        env:
+          VERSION: ${{ inputs.version }}
+          NEWEST: ${{ inputs.newest }}
+        run: |
+          v="${VERSION#v}"
+          IFS=. read -r major minor _ <<< "$v"
+          {
+            echo "list<<EOF"
+            echo "$IMAGE:$v"
+            echo "$IMAGE:v$v"
+            if [ "$NEWEST" = true ]; then
+              echo "$IMAGE:latest"
+              echo "$IMAGE:$major.$minor"
+              echo "$IMAGE:$major"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push (from the build's cache)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          build-args: |
+            VERSION=${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+          cache-from: type=gha
+
+      # --target makes GitHub create the tag v1.2.3 on this commit (through the API, so the checkout needs no
+      # credentials); a tag that already exists is used as it is. The release is titled with the repository's name
+      # ("Runway v1.2.3").
+      - name: Tag and publish the release
+        if: inputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "${GITHUB_REPOSITORY#*/} $VERSION" --generate-notes
+
+  # A third-party action, so it runs on its own with only the permission it needs (no access to the repository).
+  cleanup:
+    name: Cleanup
+    needs: publish
+    if: inputs.cleanup
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    permissions:
+      packages: write          # delete old versions from ghcr.io
+    steps:
+      - name: Delete untagged leftovers (every released version stays pullable)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f   # v1.2.2
+        with:
+          package: ${{ inputs.image }}
+          delete-untagged: true      # understands multi-architecture images, so tagged versions stay intact
+          token: ${{ github.token }}
