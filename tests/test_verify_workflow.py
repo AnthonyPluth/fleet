@@ -16,6 +16,12 @@ INSTALL = "Install the system packages"
 REJECTED = ("::error::apt-packages must be Debian package names separated by single spaces (lower case letters, digits, '.', "
             "'+' and '-', each starting with a letter or digit and not ending in '-', which apt-get reads as remove)\n")
 FAKE_SUDO = '#!/bin/sh\nprintf "%s\\n" "--- $*" >> "$SUDO_LOG"\nfor arg in "$@"; do printf "[%s]\\n" "$arg" >> "$SUDO_LOG"; done\n'
+FAKE_APT_CACHE = ('#!/bin/sh\n[ "$1" = pkgnames ] && [ "$2" = -- ] && [ "$#" = 3 ] || exit 2\n'
+                  'for name in $KNOWN; do case "$name" in "$3"*) echo "$name";; esac; done\n')
+KNOWN = ("libfaketime libimage-exiftool-perl libheif1 libheif-plugin-libde265 a-b g++ g++-13 libfoo+bar libstdc++6 "
+         "python3 python3-clang-20 python3.12-venv python3.12-venv-extra x hello")
+UNKNOWN = ("::error::apt-packages names a package apt doesn't know; each name must be exactly a package's, since apt-get "
+           "reads an unknown name with '.' or '+' as a pattern\n")
 Node = dict[str, Any]
 
 
@@ -57,8 +63,11 @@ def install(packages: str, faketime: str = "true") -> tuple[subprocess.Completed
         sudo = bin_dir / "sudo"
         sudo.write_text(FAKE_SUDO, encoding="utf-8")
         sudo.chmod(0o755)
+        apt_cache = bin_dir / "apt-cache"
+        apt_cache.write_text(FAKE_APT_CACHE, encoding="utf-8")
+        apt_cache.chmod(0o755)
         log = Path(root) / "sudo.log"
-        env = {"NEEDS_FAKETIME": faketime, "APT_PACKAGES": packages, "SUDO_LOG": str(log), "PATH": f"{bin_dir}:/usr/bin:/bin"}
+        env = {"NEEDS_FAKETIME": faketime, "APT_PACKAGES": packages, "SUDO_LOG": str(log), "KNOWN": KNOWN, "PATH": f"{bin_dir}:/usr/bin:/bin"}
         result = subprocess.run(["bash", "-eo", "pipefail", "-c", run_block(INSTALL)], env=env, cwd=root,
                                 capture_output=True, text=True, check=False)
         return result, log.read_text(encoding="utf-8") if log.exists() else ""
@@ -136,6 +145,14 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(calls(log)[1], ["apt-get", "install", "-yq", "libfaketime", "a-b", "g++", "libfoo+bar", "libstdc++6",
                                          "python3.12-venv", "x"])
 
+    def test_a_name_that_is_not_exactly_a_package_fails_after_the_update_and_before_the_install(self) -> None:
+        for value in ("python3.", "libheif1 python3.", "g+", "python3.12", "libheif", "libstdc++", "nosuch", "hello x.y"):
+            with self.subTest(value=value):
+                result, log = install(value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls(log), [["apt-get", "update", "-q"]])
+                self.assertEqual(result.stdout, UNKNOWN)
+
     def test_a_value_that_is_not_package_names_fails_before_apt_get_and_is_not_echoed(self) -> None:
         for value in ("exiftool; touch pwned", "$(touch pwned)", "`touch pwned`", "a|b", "a && b", "a>b", "a\nb", "a\tb",
                       "-o APT::Get::AllowUnauthenticated=true", "--allow-unauthenticated", "a  b", " a", "a ", "Exiftool",
@@ -173,9 +190,15 @@ class DocsTest(unittest.TestCase):
         self.assertIn("apt-packages: libimage-exiftool-perl libheif1", section)
         self.assertIn("node-version-file: frontend/.nvmrc", section)
 
-    def test_the_changelog_lists_it(self) -> None:
-        unreleased = CHANGELOG.read_text(encoding="utf-8").split("## [Unreleased]")[1].split("\n## [")[0]
-        self.assertIn("`apt-packages`", unreleased.split("### Added")[1].split("### ")[0])
+    def test_the_changelog_lists_it_under_added(self) -> None:
+        heading = ""
+        found = []
+        for line in CHANGELOG.read_text(encoding="utf-8").splitlines():
+            if line.startswith("### "):
+                heading = line
+            elif line.startswith("- The verify workflow takes other Debian packages") and "`apt-packages`" in line:
+                found.append(heading)
+        self.assertEqual(found, ["### Added"])
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ on:
         type: boolean
         default: true
       apt-packages:
-        description: Other Debian packages to install with libfaketime, in the same apt-get run, separated by single spaces ("libimage-exiftool-perl libheif1"). Each must be a Debian package name (lower case letters, digits, ".", "+" and "-", starting with a letter or digit, not ending in "-", which apt-get reads as remove); anything else fails the job. Empty installs none.
+        description: Other Debian packages to install with libfaketime, in the same apt-get run, separated by single spaces ("libimage-exiftool-perl libheif1"). Each must be a Debian package name (lower case letters, digits, ".", "+" and "-", starting with a letter or digit, not ending in "-", which apt-get reads as remove), and exactly the name of a package apt knows after its update (no pattern, no virtual package); anything else fails the job. Empty installs none.
         type: string
         default: ""
       timeout-minutes:
@@ -70,7 +70,7 @@ on:
         default: ""
 
 env:
-  FLEET_REF: v2.3.0   # stamped by the release
+  FLEET_REF: v2.4.0   # stamped by the release
 
 permissions: {}
 
@@ -158,7 +158,10 @@ jobs:
       # One apt-get update and install for libfaketime (the frozen clock) and the caller's apt-packages. The list reaches
       # the script only through the environment and is checked against Debian's package-name form before apt-get sees it,
       # so it is only ever names: no option, no path, nothing the shell would read, and no trailing "-" (apt-get install
-      # reads "bash-" as remove bash). A value that isn't is printed nowhere.
+      # reads "bash-" as remove bash). After the update each name must be exactly a package apt knows (apt-cache pkgnames
+      # lists names by prefix, without virtual packages), because apt-get reads a name it doesn't know that holds "." or
+      # "+" as a regular expression ("python3." would install every package starting "python3"). A value that isn't is
+      # printed nowhere.
       - name: Install the system packages
         if: inputs.needs-faketime || inputs.apt-packages != ''
         env:
@@ -166,6 +169,7 @@ jobs:
           APT_PACKAGES: ${{ inputs.apt-packages }}
         run: |
           packages=()
+          extra=()
           if [ "$NEEDS_FAKETIME" = "true" ]; then
             packages+=(libfaketime)
           fi
@@ -179,6 +183,12 @@ jobs:
             packages+=("${extra[@]}")
           fi
           sudo apt-get update -q
+          for name in "${extra[@]}"; do
+            if ! apt-cache pkgnames -- "$name" | grep -xF -- "$name" > /dev/null; then
+              echo "::error::apt-packages names a package apt doesn't know; each name must be exactly a package's, since apt-get reads an unknown name with '.' or '+' as a pattern"
+              exit 1
+            fi
+          done
           sudo apt-get install -yq "${packages[@]}"
 
       # Exits non-zero on a failed step (a selector that matches nothing, a focus that never arrives), a console error or
