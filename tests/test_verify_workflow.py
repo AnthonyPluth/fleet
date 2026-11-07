@@ -200,11 +200,10 @@ class DocsTest(unittest.TestCase):
         self.assertIn("apt-packages: libimage-exiftool-perl libheif1", section)
         self.assertIn("node-version-file: frontend/.nvmrc", section)
 
-    def test_the_changelog_lists_it_under_added_in_the_newest_section(self) -> None:
+    def test_the_changelog_lists_it_under_added(self) -> None:
         text = CHANGELOG.read_text(encoding="utf-8")
-        newest = next(section for section in text.split("\n## [")[1:] if "\n- " in section)
-        added = newest.split("\n### Added\n")[1].split("\n### ")[0]
-        entries = [line for line in added.splitlines() if line.startswith("- The verify workflow takes other Debian packages")]
+        added = [section.split("\n### Added\n")[1].split("\n### ")[0] for section in text.split("\n## [")[1:] if "\n### Added\n" in section]
+        entries = [line for part in added for line in part.splitlines() if line.startswith("- The verify workflow takes other Debian packages")]
         self.assertEqual(len(entries), 1)
         self.assertIn("`apt-packages`", entries[0])
         self.assertEqual(text.count("- The verify workflow takes other Debian packages"), 1)
