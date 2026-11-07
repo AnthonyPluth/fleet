@@ -1,0 +1,134 @@
+name: Docs
+
+# The reusable documentation site build and GitHub Pages deploy, for Runway's and Waypoint's docs/ (Astro Starlight).
+# The build job runs one `make` target of the app (`make docs-build`, which installs docs/'s packages and builds the
+# site; building also checks every link between pages), checks the site is there, and, on a push or a manual run on
+# main, uploads it as the Pages artifact. The deploy job publishes that artifact, on main only, as before. A pull request
+# only builds. It needs no secret.
+#
+# Permissions: the build job reads the repository and nothing else; only the deploy job, which runs no code of the
+# app's, gets `pages: write` (publish) and `id-token: write` (deploy-pages proves to Pages the artifact came from this
+# run), in the `github-pages` environment. The caller grants all three to the job that calls this, since a called
+# workflow can't be given more than its caller has, and on a pull request the deploy job is skipped.
+#
+# The caller (docs/adopting.md has the snippets) keeps the workflow name "Docs" (the merge gate lists it), the
+# triggers with their path filters and the concurrency group. Node is set up from `node-version-file` with npm's cache
+# keyed on `npm-lockfiles`; anything else the target needs is the app's own Makefile's to do (Waypoint's builds and
+# checks its standalone demo and copies it into the site), except a Playwright browser with its system dependencies,
+# which `browser` installs from `browser-dir` (after `npm ci` there, so the locked version's browser is the one taken).
+# The repository needs Settings, Pages, Build and deployment, Source: "GitHub Actions", once.
+on:
+  workflow_call:
+    inputs:
+      make-target:
+        description: The `make` target that builds the site ("docs-build").
+        type: string
+        default: docs-build
+      working-directory:
+        description: Where to run `make` (the self-test passes its fixture tree).
+        type: string
+        default: "."
+      site-path:
+        description: The built site, relative to the repository; it must hold an index.html. This is what is published.
+        type: string
+        default: docs/dist
+      node-version-file:
+        description: The file naming the Node version, relative to the repository.
+        type: string
+        default: .nvmrc
+      npm-lockfiles:
+        description: The package-lock.json files npm's cache is keyed on, relative to the repository, one per line.
+        type: string
+        default: docs/package-lock.json
+      browser:
+        description: A Playwright browser to install with its system dependencies before the target ("chromium"). Empty installs none.
+        type: string
+        default: ""
+      browser-dir:
+        description: The npm project the browser is installed from (`npm ci` runs there first), relative to the repository.
+        type: string
+        default: frontend
+      timeout-minutes:
+        description: How long each job may take.
+        type: number
+        default: 10
+      runs-on:
+        description: The runner, as JSON ('"ubuntu-latest"', or a label array). Waypoint passes its vars.RUNS_ON expression.
+        type: string
+        default: '"ubuntu-latest"'
+      fleet-ref:
+        description: The fleet ref (the self-test passes its own commit). Nothing of fleet's runs here; kept for the convention every reusable workflow follows.
+        type: string
+        default: ""
+
+env:
+  FLEET_REF: v2.3.0   # stamped by the release
+
+permissions: {}
+
+# bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.npm-lockfiles }}
+
+      - name: Install the browser
+        if: inputs.browser != ''
+        working-directory: ${{ inputs.browser-dir }}
+        env:
+          BROWSER: ${{ inputs.browser }}
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps "$BROWSER"
+
+      - name: make ${{ inputs.make-target }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TARGET: ${{ inputs.make-target }}
+        run: make "$TARGET"
+
+      # A target that built nothing fails here, on the pull request, rather than at the deploy on main.
+      - name: Check the site was built
+        env:
+          SITE: ${{ inputs.site-path }}
+        run: |
+          if [ ! -f "$SITE/index.html" ]; then
+            echo "::error::make built no site at $SITE (no index.html)"
+            exit 1
+          fi
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9   # v5.0.0
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: ${{ inputs.site-path }}
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      pages: write      # publish the site
+      id-token: write   # prove to Pages the artifact came from this run
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346   # v5.0.1
+        id: deploy
