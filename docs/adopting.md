@@ -772,7 +772,7 @@ jobs:
 | `make-target` | required | The `make` target to run |
 | `working-directory` | `.` | Where `make` and `poetry install` run (the self-test's fixture tree) |
 | `needs-faketime` | `true` | Install libfaketime first |
-| `apt-packages` | none | Other Debian package names to install with libfaketime, in the same `apt-get update` and `install`, separated by single spaces (`libimage-exiftool-perl libheif1`); each must match `^[a-z0-9][a-z0-9.+-]*$`, and any other value (an option, a path, a shell character, a doubled space) fails the job before `apt-get` runs. The value reaches the script only through the environment |
+| `apt-packages` | none | Other Debian package names to install with libfaketime, in the same `apt-get update` and `install`, separated by single spaces (`libimage-exiftool-perl libheif1`); each must match `^[a-z0-9]([a-z0-9.+-]*[a-z0-9.+])?$` (no trailing `-`, which `apt-get install` reads as remove that package), and any other value (an option, a path, a shell character, a doubled space, a trailing `-`) fails the job before `apt-get` runs. The value reaches the script only through the environment |
 | `timeout-minutes` | 15 | The job's limit |
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
 | `python-version` | `3.14` | The Python to set up; `""` sets up none |

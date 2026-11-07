@@ -29,7 +29,7 @@ on:
         type: boolean
         default: true
       apt-packages:
-        description: Other Debian packages to install with libfaketime, in the same apt-get run, separated by single spaces ("libimage-exiftool-perl libheif1"). Each must be a Debian package name (lower case letters, digits, ".", "+" and "-", starting with a letter or digit); anything else fails the job. Empty installs none.
+        description: Other Debian packages to install with libfaketime, in the same apt-get run, separated by single spaces ("libimage-exiftool-perl libheif1"). Each must be a Debian package name (lower case letters, digits, ".", "+" and "-", starting with a letter or digit, not ending in "-", which apt-get reads as remove); anything else fails the job. Empty installs none.
         type: string
         default: ""
       timeout-minutes:
@@ -157,7 +157,8 @@ jobs:
 
       # One apt-get update and install for libfaketime (the frozen clock) and the caller's apt-packages. The list reaches
       # the script only through the environment and is checked against Debian's package-name form before apt-get sees it,
-      # so it is only ever names: no option, no path, nothing the shell would read. A value that isn't is printed nowhere.
+      # so it is only ever names: no option, no path, nothing the shell would read, and no trailing "-" (apt-get install
+      # reads "bash-" as remove bash). A value that isn't is printed nowhere.
       - name: Install the system packages
         if: inputs.needs-faketime || inputs.apt-packages != ''
         env:
@@ -169,9 +170,9 @@ jobs:
             packages+=(libfaketime)
           fi
           if [ -n "$APT_PACKAGES" ]; then
-            names='^[a-z0-9][a-z0-9.+-]*( [a-z0-9][a-z0-9.+-]*)*$'
+            names='^[a-z0-9]([a-z0-9.+-]*[a-z0-9.+])?( [a-z0-9]([a-z0-9.+-]*[a-z0-9.+])?)*$'
             if ! [[ "$APT_PACKAGES" =~ $names ]]; then
-              echo "::error::apt-packages must be Debian package names separated by single spaces (lower case letters, digits, '.', '+' and '-', each starting with a letter or digit)"
+              echo "::error::apt-packages must be Debian package names separated by single spaces (lower case letters, digits, '.', '+' and '-', each starting with a letter or digit and not ending in '-', which apt-get reads as remove)"
               exit 1
             fi
             read -ra extra <<< "$APT_PACKAGES"

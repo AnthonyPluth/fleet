@@ -14,7 +14,7 @@ ADOPTING = cli.ROOT / "docs" / "adopting.md"
 CHANGELOG = cli.ROOT / "CHANGELOG.md"
 INSTALL = "Install the system packages"
 REJECTED = ("::error::apt-packages must be Debian package names separated by single spaces (lower case letters, digits, '.', "
-            "'+' and '-', each starting with a letter or digit)\n")
+            "'+' and '-', each starting with a letter or digit and not ending in '-', which apt-get reads as remove)\n")
 FAKE_SUDO = '#!/bin/sh\nprintf "%s\\n" "--- $*" >> "$SUDO_LOG"\nfor arg in "$@"; do printf "[%s]\\n" "$arg" >> "$SUDO_LOG"; done\n'
 Node = dict[str, Any]
 
@@ -130,10 +130,17 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls(log)[1], ["apt-get", "install", "-yq", "libstdc++6", "python3.12-venv"])
 
+    def test_names_with_inner_hyphens_dots_and_plus_signs_are_accepted(self) -> None:
+        result, log = install("a-b g++ libfoo+bar libstdc++6 python3.12-venv x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls(log)[1], ["apt-get", "install", "-yq", "libfaketime", "a-b", "g++", "libfoo+bar", "libstdc++6",
+                                         "python3.12-venv", "x"])
+
     def test_a_value_that_is_not_package_names_fails_before_apt_get_and_is_not_echoed(self) -> None:
         for value in ("exiftool; touch pwned", "$(touch pwned)", "`touch pwned`", "a|b", "a && b", "a>b", "a\nb", "a\tb",
                       "-o APT::Get::AllowUnauthenticated=true", "--allow-unauthenticated", "a  b", " a", "a ", "Exiftool",
-                      "../x", "a/b", "a*", "a?", "a'b", 'a"b', "a\\b", "a:amd64", "a=1.0", "::error::x", "a${IFS}b"):
+                      "../x", "a/b", "a*", "a?", "a'b", 'a"b', "a\\b", "a:amd64", "a=1.0", "::error::x", "a${IFS}b",
+                      "hello-", "bash-", "a-b-", "libheif1 bash-", "-", "a -"):
             with self.subTest(value=value):
                 result, log = install(value)
                 self.assertNotEqual(result.returncode, 0)
