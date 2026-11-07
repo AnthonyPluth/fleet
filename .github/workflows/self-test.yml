@@ -349,10 +349,13 @@ jobs:
   # doesn't run (a pull request is never released), the image is built for this runner and its start check passes only
   # because smoke-env reaches the container, and nothing is built for ARM, cached, pushed or tagged. The publish call
   # isn't tested here: on a pull request it is skipped by its own condition, which tests/test_docker_workflow.py holds.
+  # The call grants what its publish and cleanup jobs ask for, as an app's does: GitHub checks every called job against
+  # the caller's permissions before the run starts, even the skipped ones. The build job itself takes `contents: read`.
   docker:
     name: Docker image (fixture, build)
     permissions:
-      contents: read
+      contents: write
+      packages: write
     uses: ./.github/workflows/docker.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
     with:
       fleet-ref: ${{ github.sha }}

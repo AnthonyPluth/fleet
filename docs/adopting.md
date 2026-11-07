@@ -834,7 +834,7 @@ jobs:
 
 `.github/workflows/docker.yml` (`workflow_call`) is the image pipeline: it builds the app's image for Intel/AMD and ARM with the next version baked in (`VERSION` build argument), checks it starts (`/healthz`), publishes it to the GitHub Container Registry as `ghcr.io/<owner>/<image>` with `:1.2.3` and `:v1.2.3` (and, on main's newest commit, `:latest`, `:1.2` and `:1`), tags the release, publishes a GitHub Release titled with the repository's name ("Runway v1.2.3"), and deletes the package's untagged leftovers. The version is `fleet next-version` from fleet at the workflow's pinned ref, so the shim, `uv` and `.fleet/version` take no part. It replaces the app's `build`, `publish` and `cleanup` jobs. The app keeps everything else in its `docker.yml`: the triggers, the name "Docker image" (which the merge gate lists), the concurrency group `docker-image-${{ github.ref }}` (which cancel-on-close and tidy-releases join; the called workflow has none of its own), `changes`, `test`, `web`, `feature-map` and `fleet-checks`, which differ per app.
 
-The caller calls it twice, so the image still builds while the tests run and is published only once they pass: once for the build (`publish: false`, the default) and once for the publish (`publish: true`), which `needs:` the app's test jobs and the build and passes the build's outputs back in. The build job gets `contents: read` and nothing else; the publish job gets `contents: write` (the tag and the release) and `packages: write` (the push, and the cleanup job's deletions). No secrets: the workflow's own token. The publish runs only on `main`, and never for a `pull_request` or `pull_request_target` event, whatever the caller's condition says; on a pull request the build doesn't work out a version, and builds and start-checks the image only if the caller calls it there (Runway and Waypoint don't). Runway's jobs, after the app's own:
+The caller calls it twice, so the image still builds while the tests run and is published only once they pass: once for the build (`publish: false`, the default) and once for the publish (`publish: true`), which `needs:` the app's test jobs and the build and passes the build's outputs back in. Both calls grant `contents: write` (the tag and the release) and `packages: write` (the push, and the cleanup job's deletions): GitHub checks every job of a called workflow against the calling job's permissions before the run starts, even the jobs the inputs skip, so a call that grants less fails to start. The grant is a ceiling: the workflow's own jobs still take only what each needs, the build `contents: read` and nothing else, the cleanup `packages: write` alone. No secrets: the workflow's own token. The publish runs only on `main`, and never for a `pull_request` or `pull_request_target` event, whatever the caller's condition says; on a pull request the build doesn't work out a version, and builds and start-checks the image only if the caller calls it there (Runway and Waypoint don't). Runway's jobs, after the app's own:
 
 ```yaml
 jobs:
@@ -843,7 +843,8 @@ jobs:
   build:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     permissions:
-      contents: read
+      contents: write          # the ceiling every job of the called workflow is checked against; the build job takes contents: read
+      packages: write
     uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v2.3.0
     with:
       image: runway

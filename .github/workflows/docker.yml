@@ -23,8 +23,9 @@ name: Docker image
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers, the workflow name the merge gate lists ("Docker
 # image") and the concurrency group (`docker-image-${{ github.ref }}`, which cancel-on-close.yml and tidy-releases.yml
-# join); this workflow has no concurrency group of its own. No secrets: the workflow's own token, with the permissions
-# the calling job grants.
+# join); this workflow has no concurrency group of its own. No secrets: the workflow's own token. Both calls grant
+# `contents: write` and `packages: write`: GitHub checks every job here against the calling job's permissions before the
+# run starts, even the jobs the inputs skip. That grant is a ceiling; each job below takes only what it needs.
 on:
   workflow_call:
     inputs:

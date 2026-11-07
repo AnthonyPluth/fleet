@@ -252,7 +252,7 @@ class SelfTest(unittest.TestCase):
     def test_the_self_test_builds_the_fixture_with_its_environment(self) -> None:
         job = parsed(SELF_TEST)["jobs"]["docker"]
         self.assertEqual(job["uses"], "./.github/workflows/docker.yml")
-        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertEqual(job["permissions"], {"contents": "write", "packages": "write"})
         self.assertEqual(job["with"]["fleet-ref"], "${{ github.sha }}")
         self.assertEqual(job["with"]["dockerfile"], "tests/fixtures/docker/Dockerfile")
         self.assertNotIn("publish", job["with"])
@@ -273,6 +273,21 @@ def docs_section() -> str:
     return found.group(1)
 
 
+def called_permissions() -> dict[str, str]:
+    union: dict[str, str] = {}
+    for job in jobs().values():
+        for scope, level in job["permissions"].items():
+            if level == "write" or scope not in union:
+                union[scope] = level
+    return union
+
+
+class CallerGrants(unittest.TestCase):
+    def test_a_caller_grants_every_called_jobs_permissions_or_the_run_cannot_start(self) -> None:
+        self.assertEqual(called_permissions(), {"contents": "write", "packages": "write"})
+        self.assertEqual(parsed(SELF_TEST)["jobs"]["docker"]["permissions"], called_permissions())
+
+
 class Docs(unittest.TestCase):
     def test_the_table_lists_every_input(self) -> None:
         listed: set[str] = set()
@@ -286,8 +301,8 @@ class Docs(unittest.TestCase):
         caller: Any = self_check.parse(block.group(1).replace("@<commit>", "@" + "0" * 40))
         assert isinstance(caller, dict)
         build, publish = caller["jobs"]["build"], caller["jobs"]["publish"]
-        self.assertEqual(build["permissions"], {"contents": "read"})
-        self.assertEqual(publish["permissions"], {"contents": "write", "packages": "write"})
+        self.assertEqual(build["permissions"], called_permissions())
+        self.assertEqual(publish["permissions"], called_permissions())
         self.assertEqual(publish["with"]["publish"], "true")
         self.assertEqual(publish["needs"], "[test, web, build]")
         self.assertEqual(publish["if"], "needs.build.outputs.skip != 'true'")
