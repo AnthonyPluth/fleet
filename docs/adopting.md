@@ -717,7 +717,7 @@ Secret, passed by name: `FLEET_BOT_PRIVATE_KEY`. Outputs: `action` (`none`, `syn
 
 ## Verify (control smoke, verify flows)
 
-`.github/workflows/verify.yml` (`workflow_call`) runs one `make` target of the app in a real browser against its demo server: Waypoint's `make control-smoke`, Runway's `make verify`. It sets up Python with Poetry's virtualenv (cached by `poetry.lock`), Node with the app's packages (cached by `package-lock.json`), the Playwright browser and libfaketime, then runs the target. `contents: read` only, no secrets. The caller keeps the workflow name (the status the merge gate lists), the triggers with their path filters and the concurrency group; its job name is what the status shows.
+`.github/workflows/verify.yml` (`workflow_call`) runs one `make` target of the app in a real browser against its demo server: Waypoint's `make control-smoke`, Runway's `make verify`. It sets up Python with Poetry's virtualenv (cached by `poetry.lock`), Node with the app's packages (cached by `package-lock.json`), the Playwright browser, and libfaketime with any other Debian packages the target needs (`apt-packages`, in the same `apt-get` run), then runs the target. `contents: read` only, no secrets. The caller keeps the workflow name (the status the merge gate lists), the triggers with their path filters and the concurrency group; its job name is what the status shows.
 
 ```yaml
 name: Control smoke
@@ -751,11 +751,28 @@ jobs:
 
 Runway's "Verify flows" passes `make-target: verify` and `poetry-install-args: --only main`, and keeps its own paths.
 
+Darkroom's "Control smoke" keeps its own paths and runs on GitHub's runner (the default `runs-on`); its demo seed reads photos with exiftool and libheif, so it passes them as `apt-packages`, and its Node version is in `frontend/.nvmrc`:
+
+```yaml
+jobs:
+  smoke:
+    name: Control smoke
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v2.3.0
+    with:
+      make-target: control-smoke
+      timeout-minutes: 20
+      node-version-file: frontend/.nvmrc
+      apt-packages: libimage-exiftool-perl libheif1
+```
+
 | Input | Default | What |
 | --- | --- | --- |
 | `make-target` | required | The `make` target to run |
 | `working-directory` | `.` | Where `make` and `poetry install` run (the self-test's fixture tree) |
 | `needs-faketime` | `true` | Install libfaketime first |
+| `apt-packages` | none | Other Debian package names to install with libfaketime, in the same `apt-get update` and `install`, separated by single spaces (`libimage-exiftool-perl libheif1`); each must match `^[a-z0-9]([a-z0-9.+-]*[a-z0-9.+])?$` (no trailing `-`, which `apt-get install` reads as remove that package), and any other value (an option, a path, a shell character, a doubled space, a trailing `-`) fails the job before `apt-get` runs. After `apt-get update`, each name must also be exactly a package apt knows (`apt-cache pkgnames`; a virtual package doesn't count), because `apt-get install` reads an unknown name holding `.` or `+` as a regular expression (`python3.` would install every `python3…` package); one that isn't fails the job before the install. The value reaches the script only through the environment |
 | `timeout-minutes` | 15 | The job's limit |
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
 | `python-version` | `3.14` | The Python to set up; `""` sets up none |

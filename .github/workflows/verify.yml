@@ -10,8 +10,9 @@ name: Verify
 # wait for) and the concurrency group, and names its job for the status the merge gate lists ("Control smoke",
 # "Verify flows"). This sets up what the target needs: Python with Poetry's virtualenv (cached by poetry.lock), Node
 # with the app's packages (cached by package-lock.json), Chromium for the locked Playwright, and libfaketime, which
-# freezes the demo server's clock so the screenshots only change when the UI or its data does. Each piece has an input,
-# so the self-test runs it on a fixture tree with no browser.
+# freezes the demo server's clock so the screenshots only change when the UI or its data does, with any other Debian
+# packages the target needs (apt-packages: Darkroom's demo seed reads photos with exiftool and libheif). Each piece has
+# an input, so the self-test runs it on a fixture tree with no browser.
 on:
   workflow_call:
     inputs:
@@ -27,6 +28,10 @@ on:
         description: Install libfaketime first (the demo server's frozen clock).
         type: boolean
         default: true
+      apt-packages:
+        description: Other Debian packages to install with libfaketime, in the same apt-get run, separated by single spaces ("libimage-exiftool-perl libheif1"). Each must be a Debian package name (lower case letters, digits, ".", "+" and "-", starting with a letter or digit, not ending in "-", which apt-get reads as remove), and exactly the name of a package apt knows after its update (no pattern, no virtual package); anything else fails the job. Empty installs none.
+        type: string
+        default: ""
       timeout-minutes:
         description: How long the job may take.
         type: number
@@ -150,11 +155,43 @@ jobs:
           BROWSER: ${{ inputs.browser }}
         run: npx playwright install --with-deps "$BROWSER"
 
-      - name: Install libfaketime, which freezes the clock
-        if: inputs.needs-faketime
+      # One apt-get update and install for libfaketime (the frozen clock) and the caller's apt-packages. The list reaches
+      # the script only through the environment and is checked against Debian's package-name form before apt-get sees it,
+      # so it is only ever names: no option, no path, nothing the shell would read, and no trailing "-" (apt-get install
+      # reads "bash-" as remove bash). After the update each name must be exactly a package apt knows (apt-cache pkgnames
+      # lists names by prefix, without virtual packages), because apt-get reads a name it doesn't know that holds "." or
+      # "+" as a regular expression ("python3." would install every package starting "python3"). The list is read whole
+      # before grep looks at it, so no apt-cache is left writing into a closed pipe (a grep that stops at its first
+      # match would SIGPIPE it, and pipefail would fail a real name). A value that isn't a package is printed nowhere.
+      - name: Install the system packages
+        if: inputs.needs-faketime || inputs.apt-packages != ''
+        env:
+          NEEDS_FAKETIME: ${{ inputs.needs-faketime }}
+          APT_PACKAGES: ${{ inputs.apt-packages }}
         run: |
+          packages=()
+          extra=()
+          if [ "$NEEDS_FAKETIME" = "true" ]; then
+            packages+=(libfaketime)
+          fi
+          if [ -n "$APT_PACKAGES" ]; then
+            names='^[a-z0-9]([a-z0-9.+-]*[a-z0-9.+])?( [a-z0-9]([a-z0-9.+-]*[a-z0-9.+])?)*$'
+            if ! [[ "$APT_PACKAGES" =~ $names ]]; then
+              echo "::error::apt-packages must be Debian package names separated by single spaces (lower case letters, digits, '.', '+' and '-', each starting with a letter or digit and not ending in '-', which apt-get reads as remove)"
+              exit 1
+            fi
+            read -ra extra <<< "$APT_PACKAGES"
+            packages+=("${extra[@]}")
+          fi
           sudo apt-get update -q
-          sudo apt-get install -yq libfaketime
+          for name in "${extra[@]}"; do
+            known=$(apt-cache pkgnames -- "$name")
+            if ! grep -xF -- "$name" <<< "$known" > /dev/null; then
+              echo "::error::apt-packages names a package apt doesn't know; each name must be exactly a package's, since apt-get reads an unknown name with '.' or '+' as a pattern"
+              exit 1
+            fi
+          done
+          sudo apt-get install -yq "${packages[@]}"
 
       # Exits non-zero on a failed step (a selector that matches nothing, a focus that never arrives), a console error or
       # a 5xx, and prints each as a FAIL line naming the flow and the width.

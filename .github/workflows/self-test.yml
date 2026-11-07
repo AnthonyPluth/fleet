@@ -315,8 +315,9 @@ jobs:
       - name: The run that started later decides, whichever finishes first
         run: python3 -m unittest -v tests.test_second_review_order
 
-  # The verify run on a fixture tree (tests/fixtures/verify/): Python with Poetry's virtualenv, Node with the packages
-  # and libfaketime are set up as for an app, no browser, and its `make smoke` checks each is there and writes a marker.
+  # The verify run on a fixture tree (tests/fixtures/verify/): Python with Poetry's virtualenv, Node with the packages,
+  # libfaketime and two small apt-packages (exiftool, as Darkroom asks for, and GNU hello, which the runner image
+  # lacks) are set up as for an app, no browser, and its `make smoke` checks each is there and writes a marker.
   verify:
     name: Verify (fixture)
     permissions:
@@ -329,6 +330,7 @@ jobs:
       node-dir: tests/fixtures/verify/frontend
       node-version-file: tests/fixtures/verify/.nvmrc
       browser: ""
+      apt-packages: hello libimage-exiftool-perl
       timeout-minutes: 10
 
   # The docs build on a fixture tree (tests/fixtures/docs/): Node from its .nvmrc with npm's cache keyed on its lockfile,
