@@ -10,7 +10,7 @@ Only the latest release gets security fixes. The apps pick it up through Dependa
 
 ## The trust model
 
-fleet's reusable workflows run inside the consumers, with the consumers' secrets and token permissions: a workflow an app calls from here is, for every purpose that matters, that app's own workflow. The same goes for the scripts, prompts and tools those workflows fetch from fleet at their `FLEET_REF`, and for what `fleet sync` vendors into each app. So a change here is reviewed as a change to every consumer's own workflows:
+fleet's reusable workflows run inside the consumers, with the consumers' secrets and token permissions: a workflow an app calls from here is, for every purpose that matters, that app's own workflow. The same goes for the scripts, prompts and tools those workflows fetch from fleet at their own commit (the one the app pins), and for what `fleet sync` vendors into each app. So a change here is reviewed as a change to every consumer's own workflows:
 
 - Everything is pinned. The apps call fleet by commit SHA (with a `# vX.Y.Z` comment), never by branch; fleet pins every action it uses by SHA too, and its release tags don't move.
 - Workflows ask for the least they need: `permissions: {}` at the top, then per job; `persist-credentials: false` on every checkout; nothing from a pull request (title, body, branch name, file contents) is expanded into a shell command.

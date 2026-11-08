@@ -82,10 +82,17 @@ jobs:
         with:
           fetch-depth: 0   # the merge base of the pull request's base and head
           persist-credentials: false
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: |
             fleet_tools

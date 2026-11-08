@@ -15,11 +15,12 @@ name: Docker image
 # image. The image is pushed from the build cache the build filled, so it isn't built again. Untagged leftovers are
 # deleted by a third-party action in a job of its own, with only `packages: write`.
 #
-# Versions: `fleet next-version` from fleet at this workflow's pinned ref (inputs.fleet-ref || FLEET_REF, the FLEET_REF
-# convention), never from a ref the pull request names: the step from the highest version ever tagged by the commits
-# since the last one in this history (feat: a minor, a ! or BREAKING CHANGE: a major, else a patch), and skip when the
-# commit isn't main's newest any more, so re-running an old build never moves :latest back to it. On a pull request it
-# doesn't run: the image is built and its start checked (for a caller that builds pull requests), and nothing else.
+# Versions: `fleet next-version` from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the
+# FLEET_REF convention), never from a ref the pull request names: the step from the highest version ever tagged by the
+# commits since the last one in this history (feat: a minor, a ! or BREAKING CHANGE: a major, else a patch), and skip
+# when the commit isn't main's newest any more, so re-running an old build never moves :latest back to it. On a pull
+# request it doesn't run: the image is built and its start checked (for a caller that builds pull requests), and nothing
+# else.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers, the workflow name the merge gate lists ("Docker
 # image") and the concurrency group (`docker-image-${{ github.ref }}`, which cancel-on-close.yml and tidy-releases.yml
@@ -148,12 +149,19 @@ jobs:
           fetch-depth: 0       # full history and tags, to find the last version
           persist-credentials: false
 
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       # fleet at the pinned ref, for `fleet next-version` only; removed again before anything is built, so it never
       # reaches the build context.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: |
             fleet_tools

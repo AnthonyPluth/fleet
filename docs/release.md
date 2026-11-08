@@ -1,6 +1,6 @@
 # Releasing fleet
 
-The apps call fleet by pinned reference: each caller pins a reusable workflow by commit SHA with the tag in a comment (`@<sha>   # vX.Y.Z`), Dependabot bumps those pins, and the reusable workflows fetch fleet's own scripts, prompts and tools at the tag stamped into them (`FLEET_REF`). So a release is one commit where every version agrees, tagged once and never moved.
+The apps call fleet by pinned reference: each caller pins a reusable workflow by commit SHA with the tag in a comment (`@<sha>   # vX.Y.Z`), Dependabot bumps those pins, and the reusable workflows fetch fleet's own scripts, prompts and tools at their own commit (`job.workflow_sha`, the commit the pin names). A release is one commit where every version below agrees, tagged once and never moved. `FLEET_REF` is still among those versions, though nothing reads it any more; the stamps go when fleet releases on every merge (#112).
 
 ## What a release stamps
 

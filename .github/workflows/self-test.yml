@@ -1,8 +1,9 @@
 name: Self-test
 
 # Calls each of fleet's reusable workflows by local path, with `fleet-ref: ${{ github.sha }}` so it fetches its scripts
-# from this pull request's own commit rather than its FLEET_REF, and with test inputs. Each extraction issue adds its
-# case here; `fleet self-check` fails on a call without that fleet-ref.
+# from this pull request's own commit, and with test inputs. Each extraction issue adds its case here; `fleet
+# self-check` fails on a call without that fleet-ref, except `checks-own-commit`, the one call that must have none: it
+# runs the default, fleet's files at the workflow's own commit (job.workflow_sha).
 on:
   pull_request:
 
@@ -425,6 +426,17 @@ jobs:
     uses: ./.github/workflows/checks.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
     with:
       fleet-ref: ${{ github.sha }}
+      working-directory: tests/fixtures/consumer-waypoint
+
+  # The same clean-fixture checks without fleet-ref, the one call that has none (fleet self-check holds it), so the
+  # default path runs on every pull request: the fleet checkout at job.workflow_sha (this pull request's commit, as a
+  # local call's own commit is the caller's) behind its guard step, as an app's call runs it at the commit it pins.
+  checks-own-commit:
+    name: Checks (clean fixture, at its own commit)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
       working-directory: tests/fixtures/consumer-waypoint
 
   checks-drifted:

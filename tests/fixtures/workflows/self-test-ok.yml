@@ -11,6 +11,10 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       other: value
+  checks-own-commit:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      other: value
   external:
     uses: AnthonyPluth/fleet/.github/workflows/reusable.yml@main
   noop:

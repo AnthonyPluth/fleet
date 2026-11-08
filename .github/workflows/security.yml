@@ -100,10 +100,17 @@ jobs:
       image: ${{ steps.what.outputs.image }}
       workflows: ${{ steps.what.outputs.workflows }}
     steps:
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -134,10 +141,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -197,10 +211,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -244,7 +265,7 @@ jobs:
         if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -276,11 +297,18 @@ jobs:
           load: true
           tags: app:scan
           cache-from: type=gha
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       # After the build, so fleet's scripts never reach the build context.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -322,7 +350,7 @@ jobs:
         if: ${{ inputs.sarif-upload && inputs.fail-on-findings }}
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: .github/scripts
           persist-credentials: false
