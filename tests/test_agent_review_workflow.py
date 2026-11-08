@@ -111,9 +111,11 @@ class ReusableWorkflowTest(unittest.TestCase):
         job = mapping(mapping(self.workflow["jobs"])["second-pending"])
         self.assertEqual(mapping(job["outputs"]), {"event-class": "${{ steps.class.outputs.class }}"})
         steps = steps_of(self.workflow, "second-pending")
-        self.assertEqual([step_name(s) for s in steps][:2], ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        self.assertEqual([step_name(s) for s in steps][:3], ["Check fleet's commit",
+                                                             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                                                              "Classify the event for the second review's concurrency group"])
-        step = steps[1]
+        self.assertTrue(self_check.is_guard(steps[0]))
+        step = steps[2]
         self.assertEqual(step["id"], "class")
         self.assertNotIn("if", step)
         self.assertEqual(mapping(step["env"]), {"ACTION": "${{ github.event.action }}", "LABEL": "${{ github.event.label.name }}",
@@ -133,7 +135,7 @@ class ReusableWorkflowTest(unittest.TestCase):
             trusted = [mapping(step["with"]) for step in checkouts if mapping(step["with"]).get("path") in ("trusted", ".fleet")]
             self.assertEqual(len(trusted), 2)
             for inputs in trusted:
-                self.assertIn(inputs["ref"], ("${{ github.event.pull_request.base.sha }}", "${{ inputs.fleet-ref || env.FLEET_REF }}"))
+                self.assertIn(inputs["ref"], ("${{ github.event.pull_request.base.sha }}", "${{ inputs.fleet-ref || job.workflow_sha }}"))
         self.assertEqual(self.text.count("actions/checkout@"), 9)
         self.assertEqual(self.text.count("persist-credentials: false"), 9)
 
@@ -219,9 +221,10 @@ class ReusableWorkflowTest(unittest.TestCase):
             checkouts = [step for step in steps if "uses" in step]
             self.assertEqual(len(checkouts), 1)
             self.assertTrue(str(checkouts[0]["uses"]).startswith("actions/checkout@"))
-            self.assertEqual(mapping(checkouts[0]["with"]), {"repository": "AnthonyPluth/fleet", "ref": "${{ inputs.fleet-ref || env.FLEET_REF }}",
+            self.assertEqual(mapping(checkouts[0]["with"]), {"repository": "AnthonyPluth/fleet", "ref": "${{ inputs.fleet-ref || job.workflow_sha }}",
                                                              "path": ".fleet", "sparse-checkout": "fleet_tools", "persist-credentials": "false"})
-            self.assertEqual(steps.index(checkouts[0]), 0)
+            self.assertTrue(self_check.is_guard(steps[0]))
+            self.assertEqual(steps.index(checkouts[0]), 1)
             for line in report.splitlines():
                 if "python3" in line:
                     self.assertRegex(line, r"python3 -I \.fleet/fleet_tools/review_outcomes\.py --finish comment\.md"

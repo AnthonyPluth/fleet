@@ -155,13 +155,13 @@ class FleetRefTest(unittest.TestCase):
         (repo.workflows / "reusable.yml").write_text(text, encoding="utf-8")
         errors = self_check.check(repo.root)
         lines = text.splitlines()
+        env_line = lines.index("          REF: ${{ env.FLEET_REF }}   # env.FLEET_REF in a comment is fine") + 1
+        run_line = lines.index('          echo "${FLEET_REF}"') + 1
         self.assertEqual(errors, [
-            f".github/workflows/reusable.yml:{lines.index('          REF: ${{ env.FLEET_REF }}   # env.FLEET_REF in a comment is fine') + 1}: "
-            "reads FLEET_REF (REF: ${{ env.FLEET_REF }}), the release's stamp only: fleet's files come from "
-            "`${{ inputs.fleet-ref || job.workflow_sha }}`",
-            f".github/workflows/reusable.yml:{lines.index('          echo \"${FLEET_REF}\"') + 1}: reads FLEET_REF "
-            "(echo \"${FLEET_REF}\"), the release's stamp only: fleet's files come from "
-            "`${{ inputs.fleet-ref || job.workflow_sha }}`"])
+            f".github/workflows/reusable.yml:{env_line}: reads FLEET_REF (REF: ${{{{ env.FLEET_REF }}}}), the release's "
+            "stamp only: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`",
+            f".github/workflows/reusable.yml:{run_line}: reads FLEET_REF (echo \"${{FLEET_REF}}\"), the release's stamp "
+            "only: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`"])
 
     def test_fleets_own_fleet_checkouts_are_at_the_workflows_own_commit(self) -> None:
         checkouts = 0

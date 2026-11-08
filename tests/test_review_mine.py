@@ -1002,7 +1002,8 @@ class WorkflowTest(unittest.TestCase):
         for step in map(mapping, steps):
             if str(step.get("uses", "")).startswith("actions/checkout@"):
                 self.assertIn(mapping(step["with"]).get("path"), ("app", ".fleet"))
-        self.assertEqual([s.get("name") for s in map(mapping, steps) if "run" in s], ["Measure the loop", "Rewrite the report"])
+        self.assertEqual([s.get("name") for s in map(mapping, steps) if "run" in s],
+                         ["Check fleet's commit", "Measure the loop", "Rewrite the report"])
         upload = [mapping(s) for s in steps if str(mapping(s).get("uses", "")).startswith("actions/upload-artifact@")]
         self.assertEqual(len(upload), 1)
         self.assertRegex(str(upload[0]["uses"]), r"^actions/upload-artifact@[0-9a-f]{40}$")
@@ -1015,7 +1016,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertLess(names.index(upload[0]["uses"]), names.index("Rewrite the report"))
         rewrite = mapping(next(s for s in steps if mapping(s).get("name") == "Rewrite the report"))
         self.assertEqual(rewrite["if"], "${{ !cancelled() && steps.app.outcome == 'success' && steps.fleet.outcome == 'success' }}")
-        self.assertEqual([mapping(s).get("id") for s in steps], ["app", "fleet", None, "upload", None])
+        self.assertEqual([mapping(s).get("id") for s in steps], ["app", None, "fleet", None, "upload", None])
         self.assertNotIn("success()", str(rewrite["if"]))
         self.assertNotIn("steps.upload", str(rewrite["if"]))
         self.assertNotIn("Measure", str(rewrite["if"]))
