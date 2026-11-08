@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- The second review runs Opus at `xhigh` effort (owner decision; a model setting change, so it changes what the second review says without a line of the app changing): `.github/workflows/agent-review.yml`'s `second-review` job sets `EFFORT: xhigh` beside `MODEL: claude-opus-5-5`, fixed in the workflow with no input, and `.github/scripts/agent-review-run.sh` passes `--effort "$EFFORT"` only when `EFFORT` is set, so the first review (Sonnet) runs exactly as before with no `--effort`. Budget, turns, inputs and statuses are unchanged. The `agent-task` skill (vendored as `fleet-agent-task`) and `CLAUDE.md` route Opus work at `xhigh` effort (the Agent tool's `effort: xhigh`); `invariants.md` item 7, `docs/agent-review.md`, `docs/adopting.md` and `docs/drift.md` say so, and `tests/test_agent_review.py` (`Run`) and `tests/test_agent_review_workflow.py` hold it, including that the locked Claude Code's `--help` lists the workflow's effort level, so a lock bump that drops it fails `make check` rather than every second review. Deep scans stay at `high` (`docs/deep-scan.md`; the scan has no `xhigh`). What apps do: nothing; the next `fleet sync` brings the skill's line.
+
 ## [3.0.0] - 2026-11-07
 
 ### Changed

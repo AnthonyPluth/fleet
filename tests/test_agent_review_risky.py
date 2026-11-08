@@ -425,6 +425,7 @@ class Prompts(unittest.TestCase):
         for item in items:
             self.assertIn("Held by", item)
         self.assertIn("claude-opus-5-5", text)
+        self.assertIn("`claude-opus-5-5` at `xhigh` effort", text)
 
 
 if __name__ == "__main__":

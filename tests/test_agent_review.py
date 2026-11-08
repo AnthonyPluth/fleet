@@ -970,6 +970,21 @@ class Run(unittest.TestCase):
         self.assertEqual(args[args.index("--max-turns") + 1], "60")
         self.assertNotIn("--bare", args)
 
+    def test_no_effort_is_passed_unless_one_is_set(self) -> None:
+        for env in ({}, {"EFFORT": ""}):
+            done, args, _ = self.run_script(ANTHROPIC_API_KEY="api-key", **env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assert_isolated(args)
+            self.assertNotIn("--effort", args)
+
+    def test_an_effort_that_is_set_is_passed_as_one_argument(self) -> None:
+        for effort in ("xhigh", "a b"):
+            done, args, _ = self.run_script(ANTHROPIC_API_KEY="api-key", EFFORT=effort)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assert_isolated(args)
+            self.assertEqual(args.count("--effort"), 1)
+            self.assertEqual(args[args.index("--effort") + 1], effort)
+
     def test_the_subscription_s_token_alone_is_used(self) -> None:
         done, args, output = self.run_script(CLAUDE_CODE_OAUTH_TOKEN="oat-token")
         self.assertEqual(done.returncode, 0, done.stderr)
