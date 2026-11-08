@@ -1,0 +1,65 @@
+name: Scratch probe (reusable)
+
+# Throwaway: what a reusable workflow can learn about its own ref at runtime. Deleted with its branch.
+on:
+  workflow_call:
+    inputs:
+      label:
+        type: string
+        required: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probe:
+    name: Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Print the contexts
+        env:
+          LABEL: ${{ inputs.label }}
+          GITHUB_WORKFLOW_REF_CTX: ${{ github.workflow_ref }}
+          GITHUB_WORKFLOW_SHA_CTX: ${{ github.workflow_sha }}
+          GITHUB_SHA_CTX: ${{ github.sha }}
+          GITHUB_REF_CTX: ${{ github.ref }}
+          GITHUB_REPOSITORY_CTX: ${{ github.repository }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          JOB_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          JOB_WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+        run: |
+          echo "label=$LABEL"
+          echo "github.workflow_ref=$GITHUB_WORKFLOW_REF_CTX"
+          echo "github.workflow_sha=$GITHUB_WORKFLOW_SHA_CTX"
+          echo "github.sha=$GITHUB_SHA_CTX"
+          echo "github.ref=$GITHUB_REF_CTX"
+          echo "github.repository=$GITHUB_REPOSITORY_CTX"
+          echo "job.workflow_ref=$JOB_WORKFLOW_REF"
+          echo "job.workflow_sha=$JOB_WORKFLOW_SHA"
+          echo "job.workflow_repository=$JOB_WORKFLOW_REPOSITORY"
+          echo "job.workflow_file_path=$JOB_WORKFLOW_FILE_PATH"
+          echo "runner env GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF GITHUB_WORKFLOW_SHA=$GITHUB_WORKFLOW_SHA"
+          [ -n "$JOB_WORKFLOW_SHA" ] || { echo "::error::job.workflow_sha is empty"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .fleet
+          sparse-checkout: |
+            scratch-probe-marker.txt
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Which commit the checkout got
+        env:
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          head=$(git -C .fleet rev-parse HEAD)
+          echo "checked out $head; marker: $(cat .fleet/scratch-probe-marker.txt)"
+          [ "$head" = "$JOB_WORKFLOW_SHA" ] || { echo "::error::checkout is $head, not job.workflow_sha"; exit 1; }
