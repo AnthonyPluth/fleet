@@ -21,6 +21,6 @@ jobs:
       statuses: write
       actions: write
       checks: read
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@0123456789abcdef0123456789abcdef01234567   # v3.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@0123456789abcdef0123456789abcdef01234567   # v3.1.0
     with:
       pr: ${{ inputs.pr }}
