@@ -153,25 +153,33 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r"secrets\.CLAUDE_CODE_OAUTH_TOKEN", self.text)), 2)
         env = mapping(next(s for s in steps_of(self.workflow, "review") if s.get("id") == "review")["env"])
         self.assertEqual(env["MODEL"], "sonnet")
+        self.assertNotIn("EFFORT", env)
         self.assertEqual(env["BUDGET"], "${{ inputs.budget-usd }}")
         self.assertEqual(env["MAX_TURNS"], "${{ inputs.max-turns }}")
 
     def test_the_models_are_fixed_and_each_review_s_secrets_stay_in_its_own_job(self) -> None:
         second = mapping(next(s for s in steps_of(self.workflow, "second-review") if s.get("id") == "review")["env"])
         self.assertEqual(second["MODEL"], "claude-opus-5-5")
+        self.assertEqual(second["EFFORT"], "xhigh")
         self.assertEqual(second["BUDGET"], "${{ inputs.second-review-budget-usd }}")
         self.assertEqual(second["MAX_TURNS"], "${{ inputs.second-review-max-turns }}")
         stub = mapping(next(s for s in steps_of(self.workflow, "second-review") if step_name(s).startswith("Review with the stub"))["env"])
         self.assertEqual(stub["MODEL"], "claude-opus-5-5")
+        self.assertEqual(stub["EFFORT"], "xhigh")
         self.assertNotIn("claude-opus-5-5", job_source(self.text, "review"))
+        self.assertNotIn("EFFORT", job_source(self.text, "review"))
         self.assertNotIn("MODEL: sonnet", job_source(self.text, "second-review"))
         self.assertEqual(len(re.findall(r"^\s+MODEL: claude-opus-5-5$", self.text, re.MULTILINE)), 2)
         self.assertEqual(len(re.findall(r"^\s+MODEL: sonnet$", self.text, re.MULTILINE)), 2)
+        self.assertEqual(len(re.findall(r"^\s+EFFORT: xhigh$", self.text, re.MULTILINE)), 2)
+        self.assertEqual(len(re.findall(r"^\s+EFFORT:", self.text, re.MULTILINE)), 2)
         self.assertNotIn("inputs.model", self.text)
+        self.assertNotIn("inputs.effort", self.text)
         self.assertNotIn("fable", self.text.lower())
         for job in (*REPORT_JOBS.values(),):
             self.assertIsNone(SECRET.search(job_source(self.text, job)), job)
             self.assertNotIn("MODEL", job_source(self.text, job))
+            self.assertNotIn("EFFORT", job_source(self.text, job))
 
     def test_every_step_with_a_token_runs_before_the_pull_request_is_checked_out(self) -> None:
         for job in REVIEW_JOBS:

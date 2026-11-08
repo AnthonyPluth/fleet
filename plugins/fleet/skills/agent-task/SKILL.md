@@ -25,7 +25,7 @@ Write them in this order, each as a bold heading line (`**Context**`):
 
 ## The model
 
-- **Opus** by default, including security work, the review workflows, CI secrets, anything that handles untrusted pull request content, and security scanning.
+- **Opus** by default, at `xhigh` effort (the Agent tool's `effort: xhigh`), including security work, the review workflows, CI secrets, anything that handles untrusted pull request content, and security scanning.
 - **Sonnet** only for mechanical copying: renames, typo fixes, moving text without changing it.
 
 ## Drafts that refer to each other

@@ -18,7 +18,8 @@
 # Needs: CLAUDE (the claude executable), MODEL, BUDGET (US dollars, the most it may spend), MAX_TURNS (the most
 # round trips to the model it may take; --max-turns, a print-mode flag the locked version has but its --help doesn't
 # list), and one of the two secrets. Hitting either limit ends the run with an error result, which fails the review
-# rather than passing it (agent_review.py report).
+# rather than passing it (agent_review.py report). EFFORT is optional: when set, it is passed as --effort (the second
+# review sets xhigh, for Opus); unset or empty, no --effort is passed and Claude Code uses the model's default.
 set -euo pipefail
 
 : "${CLAUDE:?}" "${MODEL:?}" "${BUDGET:?}" "${MAX_TURNS:?}"
@@ -42,8 +43,9 @@ status=0
 "$CLAUDE" --print "$(cat prompt.md)" \
   --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --restricted --safe-mode \
   --setting-sources "" --settings '{"disableAllHooks":true}' --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
-  --disable-slash-commands --no-session-persistence --model "$MODEL" --max-budget-usd "$BUDGET" --max-turns "$MAX_TURNS" \
-  --json-schema "$(cat schema.json)" --output-format json > output.json || status=$?
+  --disable-slash-commands --no-session-persistence --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} \
+  --max-budget-usd "$BUDGET" --max-turns "$MAX_TURNS" --json-schema "$(cat schema.json)" --output-format json \
+  > output.json || status=$?
 echo "Claude Code exited with $status"
 
 if grep -qF -- "$secret" output.json; then
