@@ -1,0 +1,25 @@
+name: Scratch probe (caller)
+
+# Throwaway: calls the probe pinned by SHA at an older commit (as the apps pin fleet) and by local path. Deleted with
+# its branch.
+on:
+  push:
+    branches: [scratch/workflow-sha-probe]
+
+permissions: {}
+
+jobs:
+  pinned:
+    name: Pinned by SHA
+    permissions:
+      contents: read
+    uses: AnthonyPluth/fleet/.github/workflows/scratch-probe-reusable.yml@194f2e852ffb5526b8d37b99dae0322a9158aa4e
+    with:
+      label: pinned-by-sha
+  local:
+    name: Local path
+    permissions:
+      contents: read
+    uses: ./.github/workflows/scratch-probe-reusable.yml
+    with:
+      label: local-path
