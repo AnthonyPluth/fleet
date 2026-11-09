@@ -68,7 +68,7 @@ on:
         default: ""
 
 env:
-  FLEET_REF: v3.1.0   # stamped by the release
+  FLEET_REF: v3.2.0   # stamped by the release
   # The Trivy both Trivy jobs install from its GitHub release (.github/scripts/security-trivy-install.sh), and the
   # SHA-256 of each Linux tarball, from the release's trivy_<version>_checksums.txt. Dependabot can't bump these: change
   # all three together (docs/adopting.md, "Trivy's version").
