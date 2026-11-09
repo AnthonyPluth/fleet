@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- Reusable workflows fetch fleet's own files at their own commit (#112, step A). Every checkout of `AnthonyPluth/fleet` is now at `inputs.fleet-ref || job.workflow_sha` instead of `inputs.fleet-ref || env.FLEET_REF`. `job.workflow_sha` is the commit of the reusable workflow's own file, which is the commit the caller pins (`github.workflow_sha` is still the caller's), and `deep-scan-due.yml`'s runbook link points at it too. Before its first fleet checkout, each job runs a new step, "Check fleet's commit". It fails the job when `fleet-ref` is empty and `job.workflow_sha` isn't a commit, which happens on a runner too old to report it; without the step, the checkout would quietly take fleet's `main`. Not breaking: callers change nothing (their inputs, secrets, permissions, statuses and outputs are the same), and for a pin at a release tag the commit is the one `FLEET_REF` named. A pin at any other commit now gets that commit's files instead of the last release's. The release still stamps `FLEET_REF`, but nothing reads it; it goes when fleet releases on every merge (#112). `fleet self-check` now requires the new ref and the guard step, and fails on any read of `FLEET_REF`. The self-test has a new case, `checks-own-commit`, which calls `checks.yml` without `fleet-ref` so that the default runs on every pull request. `.github/actionlint.yaml` ignores the one message actionlint 1.7.12 gets wrong (`job.workflow_sha` "is not defined"; GitHub documents it).
+
 ## [3.1.0] - 2026-11-08
 
 ### Changed

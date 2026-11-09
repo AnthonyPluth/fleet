@@ -8,6 +8,10 @@ jobs:
     uses: ./.github/workflows/reusable.yml
     with:
       other: value
+  checks-own-commit:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      other: value
   pinned:
     uses: ./.github/workflows/reusable.yml
     with:

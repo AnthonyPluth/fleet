@@ -1,6 +1,7 @@
 import contextlib
 import io
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,21 @@ def stamps(root: Path, version: str) -> None:
     (root / "AGENTS.md").write_text(agents_md.sync("# Agent guide\n", agents_md.sections(), f"v{version}")[0], encoding="utf-8")
     (root / "docs").mkdir()
     (root / "docs" / "adopting.md").write_text(f"# Adopting fleet\n\n```sh\ntools/fleet sync --to v{version}\n```\n", encoding="utf-8")
+
+
+def ok_text() -> str:
+    return (WORKFLOW_FIXTURES / "reusable-ok.yml").read_text(encoding="utf-8")
+
+
+def guard_lines() -> str:
+    text = ok_text()
+    start = text.index("      - name: Check fleet's commit\n")
+    return text[start:text.index("      - uses: actions/checkout@", start)]
+
+
+def moved_after_checkout(text: str, guard: str) -> str:
+    text = text.replace(guard, "")
+    return text.replace("      - name: Say so\n", guard + "      - name: Say so\n")
 
 
 class Repo:
@@ -89,9 +105,71 @@ class FleetRefTest(unittest.TestCase):
         repo.add("reusable-fleet-at-another-ref.yml")
         errors = self_check.check(repo.root)
         self.assertEqual(len(errors), 2)
-        self.assertIn("checks out AnthonyPluth/fleet at '${{ steps.version.outputs.ref }}', not `${{ inputs.fleet-ref || env.FLEET_REF }}`", errors[0])
+        self.assertIn("checks out AnthonyPluth/fleet at '${{ steps.version.outputs.ref }}', not `${{ inputs.fleet-ref || job.workflow_sha }}`", errors[0])
         self.assertIn("checks out AnthonyPluth/fleet at None", errors[1])
         self.assertTrue(all(".github/workflows/reusable-fleet-at-another-ref.yml: job run" in error for error in errors))
+
+    def test_a_fleet_checkout_without_the_guard_step_fails(self) -> None:
+        guard = guard_lines()
+        for case, text in (("missing", ok_text().replace(guard, "")),
+                           ("after the checkout", moved_after_checkout(ok_text(), guard)),
+                           ("another run", ok_text().replace("exit 1; }", "true; }")),
+                           ("a condition", ok_text().replace("      - name: Check fleet's commit\n",
+                                                             "      - name: Check fleet's commit\n        if: false\n")),
+                           ("another env value", ok_text().replace("WORKFLOW_SHA: ${{ job.workflow_sha }}",
+                                                                   "WORKFLOW_SHA: ${{ github.workflow_sha }}")),
+                           ("another name", ok_text().replace("name: Check fleet's commit", "name: Check fleet"))):
+            with self.subTest(case=case):
+                repo = Repo(self)
+                (repo.workflows / "reusable.yml").write_text(text, encoding="utf-8")
+                errors = self_check.check(repo.root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("job run checks out AnthonyPluth/fleet with no `Check fleet's commit` step before it", errors[0])
+
+    def test_one_guard_step_covers_the_later_fleet_checkouts_of_its_job_only(self) -> None:
+        again = ("      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1\n"
+                 "        with:\n"
+                 "          repository: AnthonyPluth/fleet\n"
+                 "          ref: ${{ inputs.fleet-ref || job.workflow_sha }}\n"
+                 "          path: .fleet\n"
+                 "          persist-credentials: false\n")
+        repo = Repo(self)
+        (repo.workflows / "reusable.yml").write_text(ok_text() + again, encoding="utf-8")
+        self.assertEqual(self_check.check(repo.root), [])
+        (repo.workflows / "reusable.yml").write_text(
+            ok_text() + "  other:\n    runs-on: ubuntu-latest\n    steps:\n" + again, encoding="utf-8")
+        errors = self_check.check(repo.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("job other checks out AnthonyPluth/fleet with no `Check fleet's commit` step", errors[0])
+
+    def test_reading_fleet_ref_fails_and_naming_it_in_a_comment_passes(self) -> None:
+        repo = Repo(self)
+        text = ok_text().replace("      - name: Say so\n",
+                                 "      - name: Read it\n"
+                                 "        env:\n"
+                                 "          REF: ${{ env.FLEET_REF }}   # env.FLEET_REF in a comment is fine\n"
+                                 "        run: |\n"
+                                 "          # $FLEET_REF in a comment is fine\n"
+                                 "          echo \"${FLEET_REF}\"\n"
+                                 "      - name: Say so\n")
+        (repo.workflows / "reusable.yml").write_text(text, encoding="utf-8")
+        errors = self_check.check(repo.root)
+        lines = text.splitlines()
+        env_line = lines.index("          REF: ${{ env.FLEET_REF }}   # env.FLEET_REF in a comment is fine") + 1
+        run_line = lines.index('          echo "${FLEET_REF}"') + 1
+        self.assertEqual(errors, [
+            f".github/workflows/reusable.yml:{env_line}: reads FLEET_REF (REF: ${{{{ env.FLEET_REF }}}}), the release's "
+            "stamp only: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`",
+            f".github/workflows/reusable.yml:{run_line}: reads FLEET_REF (echo \"${{FLEET_REF}}\"), the release's stamp "
+            "only: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`"])
+
+    def test_fleets_own_fleet_checkouts_are_at_the_workflows_own_commit(self) -> None:
+        checkouts = 0
+        for path in sorted((cli.ROOT / ".github" / "workflows").glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("env.FLEET_REF", text, path.name)
+            checkouts += text.count("ref: ${{ inputs.fleet-ref || job.workflow_sha }}")
+        self.assertGreater(checkouts, 0)
 
     def test_a_workflow_that_isnt_reusable_needs_no_fleet_ref(self) -> None:
         repo = Repo(self)
@@ -110,6 +188,34 @@ class FleetRefTest(unittest.TestCase):
         self.assertEqual(self_check.expected_ref("0.12.3"), "main")
         self.assertEqual(self_check.expected_ref("1.0.0"), "v1.0.0")
         self.assertEqual(self_check.expected_ref("10.0.1"), "v10.0.1")
+
+
+class GuardScriptTest(unittest.TestCase):
+    def run_guard(self, fleet_ref: str, workflow_sha: str) -> subprocess.CompletedProcess[str]:
+        if shutil.which("bash") is None:
+            self.skipTest("bash isn't installed")
+        return subprocess.run(["bash", "-eo", "pipefail", "-c", self_check.GUARD_RUN], capture_output=True, text=True,
+                              check=False, env={"FLEET_REF_INPUT": fleet_ref, "WORKFLOW_SHA": workflow_sha})
+
+    def test_a_commit_in_job_workflow_sha_passes_and_names_it(self) -> None:
+        done = self.run_guard("", "0123456789abcdef0123456789abcdef01234567")
+        self.assertEqual((done.returncode, done.stdout), (0, "fleet at 0123456789abcdef0123456789abcdef01234567\n"))
+
+    def test_fleet_ref_wins_whatever_job_workflow_sha_holds(self) -> None:
+        for sha in ("", "0123456789abcdef0123456789abcdef01234567"):
+            with self.subTest(sha=sha):
+                done = self.run_guard("abcdef", sha)
+                self.assertEqual((done.returncode, done.stdout), (0, "fleet at abcdef\n"))
+
+    def test_no_commit_and_no_fleet_ref_fails_naming_the_runner(self) -> None:
+        for sha in ("", "main", "0123456789abcdef", "0123456789ABCDEF0123456789ABCDEF01234567",
+                    "0123456789abcdef0123456789abcdef01234567\n"):
+            with self.subTest(sha=sha):
+                done = self.run_guard("", sha)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("::error::job.workflow_sha is", done.stdout)
+                self.assertIn("this runner doesn't report the commit of the workflow it runs", done.stdout)
+                self.assertNotIn("fleet at", done.stdout)
 
 
 class EventNamesTest(unittest.TestCase):
@@ -154,6 +260,28 @@ class SelfTestCallsTest(unittest.TestCase):
         self.assertIn("job reusable", errors[0])
         self.assertIn("job pinned", errors[1])
 
+    def test_the_own_commit_call_must_pass_no_fleet_ref(self) -> None:
+        repo = Repo(self)
+        text = (WORKFLOW_FIXTURES / "self-test-ok.yml").read_text(encoding="utf-8")
+        own = "  checks-own-commit:\n    uses: ./.github/workflows/reusable.yml\n    with:\n"
+        (repo.workflows / "self-test.yml").write_text(text.replace(own, own + "      fleet-ref: ${{ github.sha }}\n"),
+                                                     encoding="utf-8")
+        self.assertEqual(self_check.check(repo.root), [
+            ".github/workflows/self-test.yml: job checks-own-commit passes fleet-ref; it is the one call without it, which "
+            "runs ./.github/workflows/reusable.yml at its own commit (job.workflow_sha)"])
+
+    def test_a_self_test_without_the_own_commit_call_fails(self) -> None:
+        repo = Repo(self)
+        text = (WORKFLOW_FIXTURES / "self-test-ok.yml").read_text(encoding="utf-8")
+        for case, changed in (("missing", text.replace("checks-own-commit:", "checks-at-head:")),
+                              ("not a local call", text.replace("  checks-own-commit:\n    uses: ./.github/workflows/",
+                                                                "  checks-own-commit:\n    uses: AnthonyPluth/fleet/.github/workflows/"))):
+            with self.subTest(case=case):
+                (repo.workflows / "self-test.yml").write_text(changed, encoding="utf-8")
+                errors = self_check.check(repo.root)
+                self.assertIn(".github/workflows/self-test.yml: no job checks-own-commit calling a reusable workflow "
+                              "without fleet-ref, so nothing runs one at its own commit (job.workflow_sha)", errors)
+
     def test_a_missing_self_test_fails(self) -> None:
         repo = Repo(self)
         (repo.workflows / "self-test.yml").unlink()
@@ -196,13 +324,16 @@ class ParseTest(unittest.TestCase):
         assert isinstance(run, dict)
         steps = run["steps"]
         assert isinstance(steps, list)
-        self.assertEqual(len(steps), 2)
-        first, second = steps
-        assert isinstance(first, dict) and isinstance(second, dict)
+        self.assertEqual(len(steps), 3)
+        guard, first, second = steps
+        assert isinstance(guard, dict) and isinstance(first, dict) and isinstance(second, dict)
+        self.assertEqual(guard, {"name": "Check fleet's commit",
+                                 "env": {"FLEET_REF_INPUT": "${{ inputs.fleet-ref }}", "WORKFLOW_SHA": "${{ job.workflow_sha }}"},
+                                 "run": self_check.GUARD_RUN})
         self.assertEqual(first["uses"], "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
         self.assertEqual(first["with"], {
             "repository": "AnthonyPluth/fleet",
-            "ref": "${{ inputs.fleet-ref || env.FLEET_REF }}",
+            "ref": "${{ inputs.fleet-ref || job.workflow_sha }}",
             "path": ".fleet",
             "sparse-checkout": "fleet_tools",
             "persist-credentials": "false",

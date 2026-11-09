@@ -513,7 +513,7 @@ class SyncWorkflow(unittest.TestCase):
         self.assertIn('fleet_tools.cli sync-plan --root "$GITHUB_WORKSPACE/app" | tee -a "$GITHUB_OUTPUT"', plan)
         fleet_checkouts = [source for source in self.steps.values() if "repository: AnthonyPluth/fleet" in source]
         self.assertEqual(len(fleet_checkouts), 1)
-        self.assertIn("ref: ${{ inputs.fleet-ref || env.FLEET_REF }}", fleet_checkouts[0])
+        self.assertIn("ref: ${{ inputs.fleet-ref || job.workflow_sha }}", fleet_checkouts[0])
         pin = self.steps["fleet at the pins' version"]
         self.assertIn("if: steps.plan.outputs.action != 'none'", pin)
         self.assertIn("COMMIT: ${{ steps.plan.outputs.commit }}", pin)
@@ -530,13 +530,14 @@ class SyncWorkflow(unittest.TestCase):
     def test_the_callers_default_branch_is_checked_out_before_fleet_and_the_fixture_replaces_it(self) -> None:
         names = list(self.steps)
         self.assertTrue(names[0].startswith("actions/checkout@") and names[0].endswith(" path: app"), names[0])
-        self.assertTrue(names[1].startswith("actions/checkout@") and names[1].endswith(" path: .fleet"), names[1])
+        self.assertEqual(names[1], "Check fleet's commit")
+        self.assertTrue(names[2].startswith("actions/checkout@") and names[2].endswith(" path: .fleet"), names[2])
         app = self.steps[names[0]]
         self.assertIn("if: inputs.fixture == ''", app)
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", app)
         self.assertNotIn("repository:", app)
         self.assertIn("if: inputs.fixture != ''", self.steps["Build the fixture consumer (self-test)"])
-        self.assertLess(names.index(names[1]), names.index("Build the fixture consumer (self-test)"))
+        self.assertLess(names.index(names[2]), names.index("Build the fixture consumer (self-test)"))
         self.assertLess(names.index("Build the fixture consumer (self-test)"), names.index("Plan"))
 
 
@@ -679,11 +680,11 @@ class ChecksWorkflow(unittest.TestCase):
         self.assertNotIn("ref", first)
         fleet = next(step for step in steps if "repository" in mapping(step.get("with", {})))
         inputs = mapping(fleet["with"])
-        self.assertEqual(inputs["ref"], "${{ inputs.fleet-ref || env.FLEET_REF }}")
+        self.assertEqual(inputs["ref"], "${{ inputs.fleet-ref || job.workflow_sha }}")
         self.assertEqual((inputs["path"], inputs["fetch-depth"], inputs["fetch-tags"], inputs["persist-credentials"]), (".fleet", "0", "true", "false"))
         self.assertLess(steps.index(fleet), [step_name(step) for step in steps].index("fleet checks"))
         self.assertEqual([step_name(step) for step in steps if not str(step.get("uses", "")).startswith("actions/checkout@")],
-                         ["fleet checks", "fleet drift"])
+                         ["Check fleet's commit", "fleet checks", "fleet drift"])
         for step in steps:
             if isinstance(step.get("uses"), str):
                 self.assertRegex(str(step["uses"]), r"@[0-9a-f]{40}$")

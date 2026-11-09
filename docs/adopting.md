@@ -93,7 +93,7 @@ With `sarif-upload: true` (the default) Semgrep and Trivy pass their jobs with f
 | `fail-on-findings` | `false` | With `sarif-upload`, also fail the Semgrep and Trivy jobs after the upload when they found findings (Semgrep any, Trivy CRITICAL or HIGH); `false` leaves them to code scanning's check runs. No effect with `sarif-upload: false` |
 | `scorecard` | `true` | Run OpenSSF Scorecard (public repositories only) |
 | `runs-on` | `"ubuntu-latest"` | The runner for every job but Scorecard's, as JSON |
-| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch scripts from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | The fleet ref to fetch scripts from (fleet's self-test only) |
 
 ### Trivy's version
 
@@ -190,7 +190,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | `dry-run` | `false` | Self-test only: the report jobs print the comment and the status instead of posting them |
 | `fake-review` | none | Self-test only: the answer fleet's stub reviewer gives in place of Claude Code (`pass`, `advisory`, `blocking`, `verification`, `malformed`) |
 | `fake-event` | none | Self-test only, with `fake-review`: the event the second review decides on (`action=… sender=… label=… labels=a,b files=x,y`) |
-| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the prompt, scripts and tools from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | The fleet ref to fetch the prompt, scripts and tools from (fleet's self-test only) |
 
 Secrets, both optional and passed by name: `ANTHROPIC_API_KEY` (an API key, which wins when both are set) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Pro or Max subscription's token from `claude setup-token`); both reviews use them, each in its own job. Outputs: `verdict` (`pass`, `blocking`, `error`, `skip`) and `description` for the first review, `second-verdict` and `second-description` for the second. The models are `sonnet` (first) and `claude-opus-5-5` (second) and not inputs: changing either is a fleet pull request.
 
@@ -222,7 +222,7 @@ jobs:
 | `days` | `90` | The window, in days before the run, a pull request must have been updated in |
 | `loop-stats-days` | `30` | The loop stats' window, in days before the run |
 | `dry-run` | `false` | Print the issue instead of opening or rewriting it (the job summary and the loop-stats artifact are still produced) |
-| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the tool from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | The fleet ref to fetch the tool from (fleet's self-test only) |
 
 ### Ticked rows become Agent tasks
 
@@ -248,7 +248,7 @@ jobs:
 | --- | --- | --- |
 | `dry-run` | `false` | Print the issues and links instead of writing them |
 | `fixture` | none | Self-test only: an issues event payload in fleet's checkout, read in place of the real event; implies `dry-run` |
-| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to fetch the tool from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | The fleet ref to fetch the tool from (fleet's self-test only) |
 
 ## The `fleet` command
 
@@ -399,7 +399,7 @@ Inputs, each with the default fleet's own gate uses:
 | `automerge-fleet-bumps` | `false` | `true` also merges a Dependabot pull request that changes a fleet reference, once the gate passes; `false` leaves it for the owner. List the content sync's caller in `after-merge-workflows` with it, since the gate's merge starts no `push` workflow |
 | `after-merge-workflows` | `docker.yml security.yml` | Workflow files to start on `main` after such a merge, space-separated; a merge made with the token starts none by itself. With `automerge-fleet-bumps`, add the content sync's caller (`docker.yml security.yml fleet-sync.yml`) so it follows a merged fleet bump |
 | `dry-run` | `false` | Print the status posts, the merge and the workflow starts instead of doing them |
-| `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the script from; the self-test passes its own commit |
+| `fleet-ref` | the workflow's own commit | Where to fetch the script from; the self-test passes its own commit |
 
 ### Open review threads
 
@@ -578,7 +578,7 @@ jobs:
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
 | `working-directory` | `.` | The app's root within its checkout (fleet's self-test passes a fixture consumer) |
 | `expect-drift` | `false` | Self-test only: the drift step passes only when `fleet drift` fails |
-| `fleet-ref` | the workflow's `FLEET_REF` | The fleet ref to run the tools from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | The fleet ref to run the tools from (fleet's self-test only) |
 
 ## Verification records
 
@@ -711,7 +711,7 @@ jobs:
 | `app-id` | none | The fleet-bot App's id (`vars.FLEET_BOT_APP_ID`); needed unless `dry-run` |
 | `dry-run` | `false` | Print the plan, the diff and the pull request or issue; mint no token, push and open nothing |
 | `fixture` | none | Self-test only: build a fixture consumer (`pins=v1.1.0 content=v1.0.0`) in place of the checkout; implies `dry-run` |
-| `fleet-ref` | the workflow's `FLEET_REF` | Where to fetch the planner from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | Where to fetch the planner from (fleet's self-test only) |
 
 Secret, passed by name: `FLEET_BOT_PRIVATE_KEY`. Outputs: `action` (`none`, `sync`, `migration`), `title`, `changed` (the sync commit's files, base64) and `body` (base64). `fleet sync-plan --root APP [--changelog CHANGELOG.md --body FILE]` is the planner (`fleet_tools/sync_workflow.py`): it prints the plan as `key=value` lines and exits 1 when the pins disagree, a pin has no version comment, the pins at one version name two commits or any of them is a ref that can move (`@main`, a tag), `.fleet/version` is missing or malformed, or the content is newer than the pins. The plan's `commit` is the pins' commit; pins at the content's version but another commit than `.fleet/version`'s plan a sync too, so the tag-versus-pin check runs.
 
@@ -781,7 +781,7 @@ jobs:
 | `node-dir` | `frontend` | The npm project to `npm ci` in; `""` sets up no Node |
 | `node-version-file` | `.nvmrc` | Where the Node version is read from |
 | `browser` | `chromium` | The Playwright browser to install, with its system dependencies; `""` installs none |
-| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
+| `fleet-ref` | the workflow's own commit | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
 
 ## Docs
 
@@ -839,7 +839,7 @@ Each app deletes its `build` and `deploy` jobs (the checkout, its `setup-node-ap
 | `browser-dir` | `frontend` | The npm project the browser is installed from, after `npm ci` there |
 | `timeout-minutes` | 10 | Each job's limit |
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON, for both jobs |
-| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
+| `fleet-ref` | the workflow's own commit | Kept for the convention (fleet's self-test only); nothing of fleet's runs here |
 
 ## Screenshot diff
 
@@ -875,7 +875,7 @@ jobs:
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
 | `dry-run` | `false` | Print the comment to the log instead of posting it |
 | `fixture` | none | Two PNG directories to compare in a made-up repository (fleet's self-test only) |
-| `fleet-ref` | the workflow's `FLEET_REF` | Where to install the tool from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | Where to install the tool from (fleet's self-test only) |
 
 Locally: `python3 -m fleet_tools.cli screenshot-diff --base origin/main --head HEAD --dir screenshots/ --repo /path/to/app --dry-run`, with Pillow installed (`pip install "fleet[images]"` from a checkout of fleet).
 
@@ -903,7 +903,7 @@ jobs:
 | --- | --- | --- |
 | `groups` | required | A JSON array of group patterns; `{0}` is the pull request's number, and a pattern without it is a prefix the number is appended to |
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
-| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | Kept for the convention (fleet's self-test only) |
 
 ## Docker image
 
@@ -956,7 +956,7 @@ Waypoint passes `image: waypoint`, `smoke-env: WAYPOINT_ALLOW_NO_AUTH=1` and, on
 | `cleanup` | `true` | After publishing, delete the package's untagged versions |
 | `build-timeout-minutes` | `45` | The build's limit (the publish has 30 minutes and the cleanup 10) |
 | `runs-on` | `"ubuntu-latest"` | The runner for every job, as JSON |
-| `fleet-ref` | the workflow's `FLEET_REF` | Where `fleet next-version` runs from (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | Where `fleet next-version` runs from (fleet's self-test only) |
 
 The build's outputs, `version`, `new`, `newest` and `skip`, are `fleet next-version`'s; all four are empty on a pull request.
 
@@ -1007,6 +1007,6 @@ jobs:
 | `image` | required | The container image in the owner's registry (`waypoint`, `runway`) |
 | `versions`, `retag`, `confirm` | | The dispatch inputs, passed through; `confirm` must be `delete` |
 | `runs-on` | `"ubuntu-latest"` | The runner, as JSON |
-| `fleet-ref` | the workflow's `FLEET_REF` | Kept for the convention (fleet's self-test only) |
+| `fleet-ref` | the workflow's own commit | Kept for the convention (fleet's self-test only) |
 
 Runway's preview (`preview.yml`, a live copy of its own image behind a Cloudflare quick tunnel) stays in Runway: nothing for the others to reuse yet.

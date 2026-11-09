@@ -5,12 +5,12 @@ name: Checks
 # and `fleet drift` (the AGENTS.md blocks, the vendored files and .fleet/version against fleet's, and that version
 # within the workflow pins). It replaces each app's own `fleet-checks` job. `contents: read` only, no secrets.
 #
-# The tools run from fleet at this workflow's own pinned ref (inputs.fleet-ref || FLEET_REF, the FLEET_REF convention),
-# never from a ref the pull request names: a pull request could otherwise pick which fleet checks it. The consumer's
-# .fleet/version is data to `fleet drift`, which reads the blocks and the vendored files of that version from fleet's
-# history (the checkout brings the tags), so the content may trail the workflow pins within one major while a sync pull
-# request (sync.yml) is open. The consumer is checked out into app/, beside fleet's .fleet/, so a consumer's own
-# .fleet/version at its root is never touched by the fleet checkout.
+# The tools run from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the FLEET_REF
+# convention), never from a ref the pull request names: a pull request could otherwise pick which fleet checks it. The
+# consumer's .fleet/version is data to `fleet drift`, which reads the blocks and the vendored files of that version from
+# fleet's history (the checkout brings the tags), so the content may trail the workflow pins within one major while a
+# sync pull request (sync.yml) is open. The consumer is checked out into app/, beside fleet's .fleet/, so a consumer's
+# own .fleet/version at its root is never touched by the fleet checkout.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers (pull requests and pushes to main) and the
 # concurrency group, and passes its runner as `runs-on`.
@@ -59,12 +59,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       # fleet at the pinned ref: the tools, and, with its history and tags, the AGENTS.md sections and plugin files of
       # every released version, which fleet drift compares the consumer's content against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           fetch-depth: 0
           fetch-tags: true

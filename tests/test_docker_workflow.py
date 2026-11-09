@@ -13,7 +13,7 @@ SELF_TEST = cli.ROOT / ".github" / "workflows" / "self-test.yml"
 ADOPTING = cli.ROOT / "docs" / "adopting.md"
 FIXTURE = cli.ROOT / "tests" / "fixtures" / "docker" / "Dockerfile"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-FLEET_REF = "${{ inputs.fleet-ref || env.FLEET_REF }}"
+FLEET_CHECKOUT_REF = "${{ inputs.fleet-ref || job.workflow_sha }}"
 Node = dict[str, Any]
 
 
@@ -170,7 +170,7 @@ class Version(unittest.TestCase):
     def test_next_version_runs_from_fleets_checkout_at_the_pin_never_on_a_pull_request(self) -> None:
         build = steps("build")
         fleet = build[position("build", "AnthonyPluth/fleet")]
-        self.assertEqual(fleet["with"]["ref"], FLEET_REF)
+        self.assertEqual(fleet["with"]["ref"], FLEET_CHECKOUT_REF)
         self.assertEqual(fleet["with"]["path"], ".fleet")
         sparse = job_text("build").split("sparse-checkout: |\n", 1)[1].split("sparse-checkout-cone-mode", 1)[0].split()
         self.assertEqual(sparse, ["fleet_tools", "VERSION"])

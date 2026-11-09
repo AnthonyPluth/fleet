@@ -420,7 +420,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(self.text, r"actions/checkout@[0-9a-f]{40}   # v")
         steps = job["steps"]
         assert isinstance(steps, list)
-        checkout = mapping(mapping(steps[0])["with"])
+        self.assertTrue(self_check.is_guard(steps[0]))
+        checkout = mapping(mapping(steps[1])["with"])
         self.assertEqual(checkout["repository"], "AnthonyPluth/fleet")
         self.assertEqual(checkout["persist-credentials"], "false")
         script = self.text.split("run: |", 1)[1]

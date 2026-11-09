@@ -226,12 +226,19 @@ jobs:
       touched: ${{ steps.plan.outputs.touched }}
       record: ${{ steps.plan.outputs.record }}
     steps:
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       # fleet at the pinned ref: the prompt, the schema, the locked Claude Code, the runner script, agent_review.py and
       # the stub reviewer the self-test uses.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: |
             .github/agent-review
@@ -449,11 +456,18 @@ jobs:
       statuses: write          # the "Agent review" status
       actions: write           # start the merge gate
     steps:
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       # fleet's tools at the pinned ref, for the finding outcomes (review_outcomes.py); nothing of the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: fleet_tools
           persist-credentials: false
@@ -529,10 +543,17 @@ jobs:
     outputs:
       event-class: ${{ steps.class.outputs.class }}
     steps:
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: fleet_tools
           persist-credentials: false
@@ -651,10 +672,17 @@ jobs:
       incremental: ${{ steps.plan.outputs.incremental }}
       touched: ${{ steps.plan.outputs.touched }}
     steps:
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: |
             .github/agent-review
@@ -914,11 +942,18 @@ jobs:
       statuses: write          # the "Second review" status
       actions: write           # start the merge gate
     steps:
+      # The commit fleet's files come from: this workflow's own (job.workflow_sha, which the caller pins) or fleet-ref.
+      - name: Check fleet's commit
+        env:
+          FLEET_REF_INPUT: ${{ inputs.fleet-ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: '[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is ''${WORKFLOW_SHA:0:40}'', not a commit: this runner doesn''t report the commit of the workflow it runs. Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"'
+
       # fleet's tools at the pinned ref, for the finding outcomes (review_outcomes.py); nothing of the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           repository: AnthonyPluth/fleet
-          ref: ${{ inputs.fleet-ref || env.FLEET_REF }}
+          ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
           sparse-checkout: fleet_tools
           persist-credentials: false

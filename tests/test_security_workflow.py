@@ -106,7 +106,7 @@ class FailOnFindingsWorkflowTest(unittest.TestCase):
             self.assertEqual(len(fetches), 2, job)
             again = steps[fetches[-1]]
             self.assertEqual(again["if"], FAIL_IF, job)
-            self.assertEqual(again["with"]["ref"], "${{ inputs.fleet-ref || env.FLEET_REF }}", job)
+            self.assertEqual(again["with"]["ref"], "${{ inputs.fleet-ref || job.workflow_sha }}", job)
             self.assertEqual(again["with"]["persist-credentials"], "false", job)
             self.assertGreater(fetches[-1], position(steps, SCANS[job][0]), job)
             self.assertGreater(position(steps, "sarif_findings.py"), fetches[-1], job)

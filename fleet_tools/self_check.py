@@ -7,7 +7,8 @@ from typing import TypeAlias
 
 from fleet_tools import release
 
-HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, the self-test's calls, "
+HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, fleet's checkouts at the "
+        "workflow's own commit behind their guard step, the self-test's calls, "
         "VERSION agreeing with CHANGELOG.md, plugin.json, pyproject.toml and the snippets in docs/, and no doc or "
         "workflow naming an event Actions doesn't have)")
 
@@ -15,7 +16,14 @@ WORKFLOWS = Path(".github/workflows")
 SELF_TEST = "self-test.yml"
 SELF_TEST_REF = "${{github.sha}}"
 FLEET_REPOSITORY = "AnthonyPluth/fleet"
-FLEET_CHECKOUT_REF = "${{inputs.fleet-ref||env.FLEET_REF}}"
+FLEET_CHECKOUT_REF = "${{inputs.fleet-ref||job.workflow_sha}}"
+GUARD_NAME = "Check fleet's commit"
+GUARD_ENV = {"FLEET_REF_INPUT": "${{inputs.fleet-ref}}", "WORKFLOW_SHA": "${{job.workflow_sha}}"}
+GUARD_RUN = ('[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha '
+             "is '${WORKFLOW_SHA:0:40}', not a commit: this runner doesn't report the commit of the workflow it runs. "
+             'Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"')
+OWN_COMMIT_JOB = "checks-own-commit"
+READS_FLEET_REF = re.compile(r"\benv\s*\.\s*FLEET_REF\b|\$\{?FLEET_REF\b")
 VERSION_PATTERN = release.VERSION_PATTERN
 NOT_ACTIONS_EVENTS = ("pull_request_review_thread",)
 EVENT_NAME_FILES = ("README.md", "docs/*.md", ".github/workflows/*.y*ml", "plugins/**/*.md")
@@ -397,8 +405,9 @@ def check(root: Path) -> list[str]:
     trees: dict[str, Node] = {}
     for path in files:
         name = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
         try:
-            workflow = parse(path.read_text(encoding="utf-8"))
+            workflow = parse(source)
         except Unreadable as error:
             errors.append(unreadable(name, error))
             continue
@@ -412,6 +421,7 @@ def check(root: Path) -> list[str]:
         elif ref != expected:
             errors.append(f"{name}: FLEET_REF is {ref!r}, but VERSION {version} needs {expected!r}")
         errors.extend(check_fleet_checkouts(name, workflow))
+        errors.extend(check_fleet_ref_reads(name, source))
     self_test = directory / SELF_TEST
     if not self_test.is_file():
         errors.append(f"{(WORKFLOWS / SELF_TEST).as_posix()}: missing")
@@ -441,7 +451,8 @@ def check_fleet_checkouts(name: str, workflow: Node) -> list[str]:
         return errors
     for job_name, job in jobs.items():
         steps = job.get("steps") if isinstance(job, dict) else None
-        for step in steps if isinstance(steps, list) else []:
+        steps = steps if isinstance(steps, list) else []
+        for index, step in enumerate(steps):
             if not isinstance(step, dict) or not str(step.get("uses", "")).startswith("actions/checkout@"):
                 continue
             inputs = step.get("with")
@@ -450,8 +461,28 @@ def check_fleet_checkouts(name: str, workflow: Node) -> list[str]:
             ref = inputs.get("ref")
             if not isinstance(ref, str) or re.sub(r"\s+", "", ref) != FLEET_CHECKOUT_REF:
                 errors.append(f"{name}: job {job_name} checks out {FLEET_REPOSITORY} at {ref!r}, not "
-                              "`${{ inputs.fleet-ref || env.FLEET_REF }}`: fleet's own files come from the pinned ref only")
+                              "`${{ inputs.fleet-ref || job.workflow_sha }}`: fleet's own files come from the workflow's "
+                              "own commit only (or the self-test's fleet-ref)")
+            if not any(is_guard(earlier) for earlier in steps[:index]):
+                errors.append(f"{name}: job {job_name} checks out {FLEET_REPOSITORY} with no `{GUARD_NAME}` step before "
+                              "it in the job (copy it from .github/workflows/checks.yml): without it, a runner that "
+                              "reports no job.workflow_sha would check out fleet's default branch")
     return errors
+
+
+def is_guard(step: Node) -> bool:
+    if not isinstance(step, dict) or set(step) != {"name", "env", "run"}:
+        return False
+    env = step["env"]
+    return (step["name"] == GUARD_NAME and step["run"] == GUARD_RUN and isinstance(env, dict) and set(env) == set(GUARD_ENV)
+            and all(isinstance(value, str) and re.sub(r"\s+", "", value) == GUARD_ENV[key] for key, value in env.items()))
+
+
+def check_fleet_ref_reads(name: str, source: str) -> list[str]:
+    return [f"{name}:{number}: reads FLEET_REF ({code.strip()[:80]}), the release's stamp only: fleet's files come from "
+            "`${{ inputs.fleet-ref || job.workflow_sha }}`"
+            for number, line in enumerate(source.splitlines(), start=1)
+            if READS_FLEET_REF.search(code := strip_comment(line))]
 
 
 def check_self_test(name: str, workflow: Node) -> list[str]:
@@ -466,9 +497,18 @@ def check_self_test(name: str, workflow: Node) -> list[str]:
         if not isinstance(uses, str) or not uses.startswith("./.github/workflows/"):
             continue
         inputs = job.get("with")
+        if job_name == OWN_COMMIT_JOB:
+            if isinstance(inputs, dict) and "fleet-ref" in inputs:
+                errors.append(f"{name}: job {OWN_COMMIT_JOB} passes fleet-ref; it is the one call without it, which runs "
+                              f"{uses} at its own commit (job.workflow_sha)")
+            continue
         ref = inputs.get("fleet-ref") if isinstance(inputs, dict) else None
         if not isinstance(ref, str) or re.sub(r"\s+", "", ref) != SELF_TEST_REF:
             errors.append(f"{name}: job {job_name} calls {uses} without `fleet-ref: ${{{{ github.sha }}}}`")
+    own = jobs.get(OWN_COMMIT_JOB)
+    if not isinstance(own, dict) or not str(own.get("uses", "")).startswith("./.github/workflows/"):
+        errors.append(f"{name}: no job {OWN_COMMIT_JOB} calling a reusable workflow without fleet-ref, so nothing runs one "
+                      "at its own commit (job.workflow_sha)")
     return errors
 
 
