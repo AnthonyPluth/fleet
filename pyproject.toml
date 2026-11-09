@@ -30,8 +30,8 @@ include = [
 # The tools `make check` and CI run, pinned so every run uses the same versions; Dependabot updates them here.
 # actionlint isn't a Python package: `make setup` downloads its pinned binary (Makefile).
 [tool.poetry.group.dev.dependencies]
-ruff = "0.17.2"
-mypy = "2.4.0"
+ruff = "0.17.3"
+mypy = "2.4.1"
 coverage = "7.17.0"
 zizmor = "1.31.1"
 pillow = "13.0.0"   # the `images` extra, pinned for the tests of fleet_tools/screenshot_diff.py
