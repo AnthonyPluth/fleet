@@ -408,15 +408,22 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertIsNone(SECRET.search(json.dumps(env)))
 
 
-class NoFableTest(unittest.TestCase):
-    def test_no_file_names_fable_but_the_changelog_and_the_tests_that_refuse_it(self) -> None:
-        allowed = {"CHANGELOG.md", "tests/test_agent_review_workflow.py", "tests/test_checks_commits.py"}
+class FableIsAcceptedNotRequiredTest(unittest.TestCase):
+    def test_no_workflow_prompt_or_routing_names_fable_only_the_trailer_check_its_tests_and_its_docs_row(self) -> None:
+        whole_files = {"CHANGELOG.md", "tests/test_agent_review_workflow.py", "tests/test_checks_commits.py"}
+        trailer_check_lines = {
+            "fleet_tools/checks/commits.py": "MODEL_FAMILIES = (",
+            "docs/drift.md": "| Commit trailers (`checks/commits.py`) |",
+        }
         listed = subprocess.run(["git", "ls-files", "-z"], cwd=cli.ROOT, check=True, capture_output=True).stdout
         for name in filter(None, listed.decode().split("\0")):
             path = cli.ROOT / name
-            if name in allowed or not path.is_file():
+            if name in whole_files or not path.is_file():
                 continue
-            self.assertIsNone(re.search(r"\bfable\b", path.read_bytes().decode("utf-8", "replace"), re.IGNORECASE), name)
+            allowed_line = trailer_check_lines.get(name)
+            for line in path.read_bytes().decode("utf-8", "replace").splitlines():
+                if re.search(r"\bfable\b", line, re.IGNORECASE):
+                    self.assertTrue(allowed_line is not None and line.startswith(allowed_line), f"{name}: {line}")
 
 
 class CallerTest(unittest.TestCase):

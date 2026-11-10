@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- `fleet checks commits` accepts `Fable` again as the model in a `Co-Authored-By: Claude <Model> <version> <noreply@anthropic.com>` trailer (#117), beside `Opus`, `Sonnet` and `Haiku`, so an agent run on Fable can name the model that wrote its commit. This narrows 3.0.0's breaking change "Fable is no longer used anywhere" (#102), by owner decision: that change was meant to stop fleet forcing Fable, not to fail commits Fable wrote. The rest of #102 stands: no workflow, prompt, model default or routing rule names Fable, and the second review stays on `claude-opus-5-5`. The test that held #102 (`NoFableTest`, now `FableIsAcceptedNotRequiredTest`) still fails when a tracked file names Fable, except this changelog, the trailer check's `MODEL_FAMILIES` line, its tests and its row in `docs/drift.md`. A trailer that names no model gets the same error, which lists all four families. What apps do: nothing; once an app moves its fleet pin, a commit with a `Co-Authored-By: Claude Fable <version> <noreply@anthropic.com>` trailer passes `fleet checks`. Tests: `tests/test_checks_commits.py` (Fable moved to the accepted trailers; `Claude Fable` without a version and a Fable trailer with another address still fail; the message lists every family) and `tests/test_agent_review_workflow.py`.
+
 ## [3.2.0] - 2026-11-09
 
 ### Changed
