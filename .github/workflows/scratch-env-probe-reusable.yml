@@ -1,0 +1,93 @@
+name: Scratch environment probe (reusable)
+
+# Throwaway (fleet#116): how a called workflow's job-level `environment` resolves, from an input and from an
+# expression, and which secrets the job then sees. Deleted with its branch; never merged.
+on:
+  workflow_call:
+    inputs:
+      label:
+        type: string
+        required: true
+      environment:
+        type: string
+        default: ""
+    secrets:
+      PROBE_SECRET:
+        required: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plain:
+    name: Plain
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    permissions: {}
+    steps:
+      - name: Report
+        env:
+          LABEL: ${{ inputs.label }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          PROBE_SECRET: ${{ secrets.PROBE_SECRET }}
+          JOB: ${{ toJSON(job) }}
+        run: |
+          echo "label=$LABEL job=plain environment-input='$ENVIRONMENT' ref=$GITHUB_REF event=$GITHUB_EVENT_NAME"
+          if [ "$PROBE_SECRET" = from-the-caller ]; then echo "secret=caller"; elif [ -z "$PROBE_SECRET" ]; then echo "secret=empty"; else echo "secret=other"; fi
+          echo "job context: $JOB"
+          env | cut -d= -f1 | sort | tr '\n' ' '; echo
+
+  guarded:
+    name: Guarded
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}
+    permissions: {}
+    steps:
+      - name: Report
+        env:
+          LABEL: ${{ inputs.label }}
+          PROBE_SECRET: ${{ secrets.PROBE_SECRET }}
+        run: |
+          echo "label=$LABEL job=guarded (no pull request on push, so the head repository can't match)"
+          if [ "$PROBE_SECRET" = from-the-caller ]; then echo "secret=caller"; elif [ -z "$PROBE_SECRET" ]; then echo "secret=empty"; else echo "secret=other"; fi
+
+  matched:
+    name: Matched
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ github.event_name == 'push' && inputs.environment || '' }}
+    permissions: {}
+    steps:
+      - name: Report
+        env:
+          LABEL: ${{ inputs.label }}
+        run: echo "label=$LABEL job=matched (the same && || form with a true condition)"
+
+  skipped:
+    name: Skipped
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    permissions: {}
+    steps:
+      - run: echo "never runs"
+
+  none:
+    name: No environment key
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Report
+        env:
+          LABEL: ${{ inputs.label }}
+          PROBE_SECRET: ${{ secrets.PROBE_SECRET }}
+        run: |
+          echo "label=$LABEL job=none"
+          if [ "$PROBE_SECRET" = from-the-caller ]; then echo "secret=caller"; elif [ -z "$PROBE_SECRET" ]; then echo "secret=empty"; else echo "secret=other"; fi

@@ -1,0 +1,38 @@
+name: Scratch environment probe (caller)
+
+# Throwaway (fleet#116): calls the probe with no environment, with one (passing a secret by name), and with one
+# without passing it. Deleted with its branch; never merged.
+on:
+  push:
+    branches: [scratch/agent-review-environment-probe]
+
+permissions: {}
+
+jobs:
+  empty:
+    name: Empty environment
+    permissions: {}
+    uses: ./.github/workflows/scratch-env-probe-reusable.yml
+    with:
+      label: empty
+      environment: ""
+    secrets:
+      PROBE_SECRET: from-the-caller
+
+  named:
+    name: Named environment, secret passed
+    permissions: {}
+    uses: ./.github/workflows/scratch-env-probe-reusable.yml
+    with:
+      label: named
+      environment: agent-review-self-test
+    secrets:
+      PROBE_SECRET: from-the-caller
+
+  named-unpassed:
+    name: Named environment, secret not passed
+    permissions: {}
+    uses: ./.github/workflows/scratch-env-probe-reusable.yml
+    with:
+      label: named-unpassed
+      environment: agent-review-self-test

@@ -1,0 +1,36 @@
+name: Scratch environment probe (deployment false)
+
+# Throwaway (fleet#116): the object form of `environment` with `deployment: false`, named and empty. Deleted with its
+# branch; never merged.
+on:
+  push:
+    branches: [scratch/agent-review-environment-probe]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  object-named:
+    name: Object form, named, no deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: agent-review-self-test
+      deployment: false
+    permissions: {}
+    steps:
+      - run: echo "object-named ran, ref=$GITHUB_REF"
+
+  object-empty:
+    name: Object form, empty name, no deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ${{ '' }}
+      deployment: false
+    permissions: {}
+    steps:
+      - run: echo "object-empty ran, ref=$GITHUB_REF"
