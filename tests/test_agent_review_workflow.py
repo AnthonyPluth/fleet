@@ -56,8 +56,10 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(sorted(call["inputs"]), sorted([
             "generated", "first-review", "verification", "budget-usd", "max-turns", "merge-gate-workflow", "fleet-ref", "dry-run", "fake-review",
             "second-review-labels", "second-review-paths", "second-review-always", "second-review-budget-usd", "second-review-max-turns", "fake-event",
+            "environment",
         ]))
         inputs = mapping(call["inputs"])
+        self.assertEqual((mapping(inputs["environment"])["type"], mapping(inputs["environment"])["default"]), ("string", ""))
         self.assertEqual((mapping(inputs["first-review"])["type"], mapping(inputs["first-review"])["default"]), ("boolean", "false"))
         self.assertEqual((mapping(inputs["verification"])["type"], mapping(inputs["verification"])["default"]), ("boolean", "false"))
         self.assertEqual(mapping(inputs["budget-usd"])["default"], "3")
@@ -106,6 +108,18 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertNotIn("label.name", second["group"])
         self.assertEqual(mapping(jobs["second-review"])["needs"], "second-pending")
         self.assertNotEqual(second["group"][:13], "agent-review-")
+
+    def test_only_the_review_jobs_run_in_the_caller_s_environment_and_only_for_this_repository_s_branches(self) -> None:
+        jobs = mapping(self.workflow["jobs"])
+        guarded = "${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}"
+        for job in REVIEW_JOBS:
+            self.assertEqual(mapping(jobs[job])["environment"], guarded, job)
+            who = mapping(next(s for s in steps_of(self.workflow, job) if s.get("id") == "who")["env"])
+            self.assertEqual((who["HEAD_REPO"], who["REPO"]), ("${{ github.event.pull_request.head.repo.full_name }}", "${{ github.repository }}"))
+        for job in (*REPORT_JOBS.values(), "second-pending"):
+            self.assertNotIn("environment", mapping(jobs[job]), job)
+        self.assertEqual(self.text.count("inputs.environment"), 2)
+        self.assertEqual(len(re.findall(r"^    environment:", self.text, re.MULTILINE)), 2)
 
     def test_second_pending_classifies_the_event_with_split_list_before_anything_can_exit(self) -> None:
         job = mapping(mapping(self.workflow["jobs"])["second-pending"])
@@ -454,7 +468,7 @@ class SelfTestTest(unittest.TestCase):
         workflow = mapping(self_check.parse(SELF_TEST.read_text(encoding="utf-8")))
         jobs = mapping(workflow["jobs"])
         calls = {name: mapping(job) for name, job in jobs.items() if mapping(job).get("uses") == "./.github/workflows/agent-review.yml"}
-        first = {name: job for name, job in calls.items() if name.startswith("agent-review-")}
+        first = {name: job for name, job in calls.items() if name.startswith("agent-review-") and name != "agent-review-environment"}
         self.assertEqual(sorted(first), ["agent-review-blocking", "agent-review-malformed", "agent-review-pass", "agent-review-verification"])
         answers = []
         for name, job in calls.items():
@@ -468,6 +482,8 @@ class SelfTestTest(unittest.TestCase):
                 self.assertEqual(inputs["verification"], "true")
             else:
                 self.assertNotIn("verification", inputs, name)
+            if name != "agent-review-environment":
+                self.assertNotIn("environment", inputs, name)
         for job in first.values():
             inputs = mapping(job["with"])
             self.assertEqual(inputs["first-review"], "true")
@@ -516,6 +532,30 @@ class SelfTestTest(unittest.TestCase):
         self.assertIn('[ "$LABEL" = blocking ]', source)
         self.assertIn('"Not a risky pull request"', source)
         self.assertIn('[ "$OTHER" = skip ]', source)
+
+    def test_one_call_runs_both_reviews_in_an_environment_and_a_check_sees_only_those_two_in_one(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8")
+        jobs = mapping(mapping(self_check.parse(text))["jobs"])
+        calls = sorted(name for name, job in jobs.items() if mapping(job).get("uses") == "./.github/workflows/agent-review.yml")
+        case = mapping(jobs["agent-review-environment"])
+        inputs = mapping(case["with"])
+        self.assertEqual(inputs["environment"], "agent-review-self-test")
+        self.assertEqual(inputs["first-review"], "true")
+        self.assertTrue(inputs["fake-event"])
+        others = [mapping(mapping(jobs[name])["with"]) for name in calls if name != "agent-review-environment"]
+        self.assertNotIn(inputs["fake-review"], [other["fake-review"] for other in others if other.get("first-review") == "true"])
+        self.assertNotIn(inputs["fake-event"], [other.get("fake-event") for other in others])
+        check = mapping(jobs["agent-review-environment-verdicts"])
+        self.assertEqual(sorted(str(check["needs"]).strip("[]").split(", ")), calls)
+        self.assertEqual(check["permissions"], {"actions": "read", "deployments": "read"})
+        source = job_source(text, "agent-review-environment-verdicts")
+        self.assertRegex(source, r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
+        for called in ("Review", "Second review"):
+            self.assertIn(f'"{case["name"]} / {called}"', source)
+        self.assertIn("printf 'agent-review-self-test\\t%s\\n'", source)
+        self.assertIn('if [ "$HEAD_REPO" = "$REPO" ]; then', source)
+        self.assertIn("diff -u expected.tsv ran-in.tsv", source)
+        self.assertNotRegex(source.split("run: |", 1)[1], r"\$\{\{")
 
 
 class FindingOutcomesSelfTestTest(unittest.TestCase):

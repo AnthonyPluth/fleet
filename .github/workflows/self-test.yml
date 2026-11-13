@@ -246,6 +246,29 @@ jobs:
       verification: true
       merge-gate-workflow: ""
 
+  # The review secrets' environment (the `environment` input, #116): both reviews of this pull request in the
+  # environment agent-review-self-test, which GitHub created in this repository the first time a job named it. It holds
+  # no secret (the stub reviewer needs none), and has no required reviewer and no branch restriction, because the
+  # self-test runs on pull_request, whose ref is refs/pull/<n>/merge; an app's own environment is limited to its
+  # default branch instead. Every other call here leaves the input empty. The faked event (a security label) starts
+  # second-pending too, so all five of this call's jobs run; agent-review-environment-verdicts checks which ran in it.
+  agent-review-environment:
+    name: Agent review (dry run, environment)
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      actions: write
+    uses: ./.github/workflows/agent-review.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
+    with:
+      fleet-ref: ${{ github.sha }}
+      dry-run: true
+      first-review: true
+      fake-review: advisory
+      fake-event: action=synchronize labels=security files=README.md
+      environment: agent-review-self-test
+      merge-gate-workflow: ""
+
   # The verdicts the four runs reached, through the reusable workflow's outputs. A pull request that isn't an agent's
   # (the owner's by hand) gets "Not an agent's pull request" from each and runs no stub, which is the right answer too.
   # The verification case also reports the hash of the record it read: empty means this pull request's description has
@@ -660,3 +683,63 @@ jobs:
           if ! { [ "$NOT_RISKY" = pass ] && [ "$NOT_RISKY_WHY" = "Not a risky pull request" ]; }; then echo "::error::The not-risky case gave $NOT_RISKY ($NOT_RISKY_WHY)"; exit 1; fi
           [ "$OTHER" = skip ] || { echo "::error::A non-owner's unlabeled event gave $OTHER, not skip"; exit 1; }
           if ! { [ "$OWNER" = pass ] && [ "$OWNER_WHY" = "Not a risky pull request" ]; }; then echo "::error::The owner's unlabeled event gave $OWNER ($OWNER_WHY)"; exit 1; fi
+
+  # Which jobs of this run ran in an environment. GitHub records a deployment for each job that names one, and its
+  # statuses link the job, so this run's deployments must be exactly the environment case's Review and Second review,
+  # both in agent-review-self-test: the other three jobs of that call, and every job of the calls that leave
+  # `environment` empty, ran in none. It waits for every call of agent-review.yml, so no job can start in one after it
+  # looked. On a pull request from a fork no job may run in one at all (the reviews keep a fork's out of it).
+  agent-review-environment-verdicts:
+    name: Agent review (dry run, environment) verdicts
+    needs: [agent-review-environment, agent-review-pass, agent-review-blocking, agent-review-malformed, agent-review-verification, second-review-label, second-review-path, second-review-github, second-review-not-risky, second-review-unlabeled-by-another, second-review-unlabeled-by-owner]
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, a few reads of the API
+    timeout-minutes: 5
+    permissions:
+      actions: read            # this run's jobs, their ids and names
+      deployments: read        # the deployments of this run's commit and their statuses
+    steps:
+      - name: Only the environment case's two review jobs ran in an environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FIRST: ${{ needs.agent-review-environment.outputs.verdict }}
+          FIRST_WHY: ${{ needs.agent-review-environment.outputs.description }}
+          SECOND: ${{ needs.agent-review-environment.outputs.second-verdict }}
+          SECOND_WHY: ${{ needs.agent-review-environment.outputs.second-description }}
+        run: |
+          echo "environment case: first review $FIRST ($FIRST_WHY); second review $SECOND ($SECOND_WHY)"
+          if [ "$HEAD_REPO" = "$REPO" ]; then
+            [ "$FIRST" = pass ] || { echo "::error::The environment case's first review gave $FIRST, not pass"; exit 1; }
+            [ "$SECOND" = pass ] || { echo "::error::The environment case's second review gave $SECOND, not pass"; exit 1; }
+            printf 'agent-review-self-test\t%s\n' "Agent review (dry run, environment) / Review" \
+              "Agent review (dry run, environment) / Second review" > expected.tsv
+          else
+            echo "A pull request from a fork: no job may run in an environment."
+            : > expected.tsv
+          fi
+          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | [.id, .name] | @tsv' > jobs.tsv
+          for sha in "$SHA" "$HEAD_SHA"; do
+            gh api --paginate "repos/$REPO/deployments?sha=$sha&per_page=100" --jq '.[] | [.id, .environment] | @tsv'
+          done | sort -u > deployments.tsv
+          : > ran-in.tsv
+          while IFS=$'\t' read -r id environment; do
+            gh api --paginate "repos/$REPO/deployments/$id/statuses?per_page=100" --jq '.[].log_url' \
+              | sed -n "s#^.*/actions/runs/$RUN_ID/job/\([0-9][0-9]*\)\$#\1#p" | sort -u > job-ids.txt
+            while read -r job; do
+              awk -F'\t' -v id="$job" -v environment="$environment" '$1 == id { print environment "\t" $2 }' jobs.tsv >> ran-in.tsv
+            done < job-ids.txt
+          done < deployments.tsv
+          sort -u ran-in.tsv -o ran-in.tsv
+          echo "This run's jobs that ran in an environment:"
+          cat ran-in.tsv
+          if ! diff -u expected.tsv ran-in.tsv; then
+            echo "::error::Only the environment case's Review and Second review may run in an environment, and only in agent-review-self-test"
+            exit 1
+          fi

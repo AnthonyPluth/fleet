@@ -47,6 +47,16 @@ name: Agent review
 # for twice); labeled and unlabeled don't run the first review at all (only the second review reacts to them), and the
 # concurrency group is the review job's, not the workflow's, so a label event can't cancel a running review.
 #
+# The secrets can live in a GitHub environment of the caller's instead of its repository secrets (#116): with the
+# `environment` input set, the `review` and `second-review` jobs, the only ones that read them, run in the caller's
+# environment of that name and get its secrets. The caller still passes them by name, as before (GitHub passes a
+# secret that exists only in the environment, and one it isn't passed is empty even there). They run in it only for a
+# pull request from this repository's branches, so a fork's gets its verdict without the environment ever starting;
+# no other job names one, and empty (the default) runs both in none, exactly as before. The caller's environment has no
+# required reviewer (one would hold every review) and deployment branches limited to the default branch, which is the
+# ref of a pull_request_target run; each review job records a deployment of it there. docs/adopting.md has the
+# settings, docs/agent-review.md what was tested and what comes from GitHub's documentation.
+#
 # The diff the reviewer reads leaves out the files the `generated` input names, lockfiles and images (agent_review.py,
 # the one list); files.txt and omitted.txt still list them. Fixtures, demo and sample data are never left out unless
 # `generated` names them (they are where a real record is likeliest to land), and the prompt has the reviewer read them
@@ -144,6 +154,10 @@ on:
         description: The most round trips to the model the second review may take.
         type: string
         default: "120"
+      environment:
+        description: The caller's GitHub environment that holds the secrets below. The review and second-review jobs run in it, for a pull request from this repository's branches only; the caller still passes the secrets by name. Empty (the default) runs them in none, as before.
+        type: string
+        default: ""
       merge-gate-workflow:
         description: The caller's merge gate workflow file to start once the status is set (setting a status starts none by itself). Empty starts none.
         type: string
@@ -209,6 +223,9 @@ jobs:
       !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action)
     runs-on: ubuntu-latest   # hosted: reads untrusted pull request content with secrets in reach
     timeout-minutes: 30
+    # The caller's environment for the secrets (the `environment` input), for a pull request from this repository's
+    # branches only; none when the input is empty. Its name comes from the caller alone (fleet self-check holds it).
+    environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}
     # A newer push replaces a review still running (github.ref is main's on pull_request_target).
     concurrency:
       group: agent-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}
@@ -657,6 +674,8 @@ jobs:
       !(github.event.action == 'unlabeled' && github.event.sender.login != github.repository_owner)
     runs-on: ubuntu-latest   # hosted: reads untrusted pull request content with secrets in reach
     timeout-minutes: 45
+    # The same environment as `review`'s, on the same terms.
+    environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}
     concurrency:
       group: second-review-${{ github.event.pull_request.number }}-${{ inputs.fake-review }}-${{ inputs.fake-event }}-${{ !contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) && 'push' || needs.second-pending.outputs.event-class || format('unknown-{0}', github.run_id) }}
       cancel-in-progress: true

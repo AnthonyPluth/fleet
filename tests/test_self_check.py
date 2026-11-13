@@ -293,6 +293,97 @@ class SelfTestCallsTest(unittest.TestCase):
         self.assertEqual(self_check.check(repo.root), [".github/workflows/self-test.yml: no jobs"])
 
 
+def review_text() -> str:
+    return (WORKFLOW_FIXTURES / "agent-review-environment-ok.yml").read_text(encoding="utf-8")
+
+
+REVIEW_ENVIRONMENT_LINE = ("    environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && "
+                           "inputs.environment || '' }}\n")
+SECOND_ENVIRONMENT_LINE = ("    environment: ${{github.event.pull_request.head.repo.full_name == github.repository && "
+                           "inputs.environment || ''}}\n")
+
+
+class ReviewEnvironmentTest(unittest.TestCase):
+    def errors_for(self, text: str, name: str = "agent-review.yml") -> list[str]:
+        repo = Repo(self)
+        (repo.workflows / name).write_text(text, encoding="utf-8")
+        return self_check.check(repo.root)
+
+    def test_the_review_jobs_in_the_caller_s_environment_pass(self) -> None:
+        self.assertIn(REVIEW_ENVIRONMENT_LINE, review_text())
+        self.assertIn(SECOND_ENVIRONMENT_LINE, review_text())
+        self.assertEqual(self.errors_for(review_text()), [])
+
+    def test_the_rule_is_the_agent_review_s_only(self) -> None:
+        text = review_text().replace(REVIEW_ENVIRONMENT_LINE, "    environment: production\n")
+        self.assertEqual(self.errors_for(text, "deploy.yml"), [])
+
+    def test_a_review_job_outside_the_environment_or_in_another_one_fails(self) -> None:
+        wanted = ("job {} needs `environment: ${{{{ github.event.pull_request.head.repo.full_name == github.repository && "
+                  "inputs.environment || '' }}}}`: the caller's environment, for a pull request from this repository's "
+                  "branches only, and none when the input is empty")
+        cases = (
+            ("no environment", "review", REVIEW_ENVIRONMENT_LINE, ""),
+            ("the input unguarded", "second-review", SECOND_ENVIRONMENT_LINE, "    environment: ${{ inputs.environment }}\n"),
+            ("a fixed name", "review", REVIEW_ENVIRONMENT_LINE, "    environment: agent-review\n"),
+            ("the guard reversed", "review", REVIEW_ENVIRONMENT_LINE,
+             REVIEW_ENVIRONMENT_LINE.replace("full_name == github.repository", "full_name != github.repository")),
+            ("the object form", "second-review", SECOND_ENVIRONMENT_LINE,
+             "    environment:\n      name: ${{ inputs.environment }}\n"),
+        )
+        for case, job, old, new in cases:
+            with self.subTest(case=case):
+                errors = self.errors_for(review_text().replace(old, new))
+                self.assertEqual(errors[0], f".github/workflows/agent-review.yml: {wanted.format(job)}")
+                if "inputs.environment" in new:
+                    self.assertEqual(len(errors), 2, errors)
+                    self.assertIn(": reads inputs.environment (", errors[1])
+                else:
+                    self.assertEqual(len(errors), 1, errors)
+
+    def test_another_job_naming_an_environment_fails(self) -> None:
+        text = review_text().replace("  report:\n    needs: review\n",
+                                     "  report:\n    needs: review\n    environment: agent-review\n")
+        self.assertEqual(self.errors_for(text), [
+            ".github/workflows/agent-review.yml: job report names an environment; only review and second-review, the "
+            "jobs that read the review secrets, run in one"])
+
+    def test_reading_the_input_anywhere_else_fails_and_naming_it_in_a_comment_passes(self) -> None:
+        text = review_text().replace("        run: echo \"report\"\n",
+                                     "        env:\n"
+                                     "          NAME: ${{ inputs['environment'] }}   # inputs.environment\n"
+                                     "        run: echo \"${{ inputs.environment }}\"\n")
+        lines = text.splitlines()
+        env_line = lines.index("          NAME: ${{ inputs['environment'] }}   # inputs.environment") + 1
+        run_line = lines.index("        run: echo \"${{ inputs.environment }}\"") + 1
+        tail = "; it reaches the `environment:` of review and second-review only, never a script or another key"
+        self.assertEqual(self.errors_for(text), [
+            f".github/workflows/agent-review.yml:{env_line}: reads inputs.environment (NAME: ${{{{ inputs['environment'] "
+            f"}}}}   # inputs.environment){tail}",
+            f".github/workflows/agent-review.yml:{run_line}: reads inputs.environment (run: echo \"${{{{ inputs.environment "
+            f"}}}}\"){tail}"])
+
+    def test_the_input_must_default_to_empty_and_the_review_jobs_must_exist(self) -> None:
+        wanted = (".github/workflows/agent-review.yml: needs the input `environment` as a string defaulting to \"\", so a "
+                  "caller that passes none keeps its review jobs out of any environment")
+        for case, text in (("a default", review_text().replace('        default: ""\n', "        default: agent-review\n")),
+                           ("a boolean", review_text().replace("        type: string\n", "        type: boolean\n")),
+                           ("missing", review_text().replace("      environment:\n        description: The caller's "
+                                                             "environment for the review secrets.\n        type: string\n"
+                                                             '        default: ""\n', "      other:\n        type: string\n"))):
+            with self.subTest(case=case):
+                self.assertEqual(self.errors_for(text), [wanted])
+        gone = review_text().split("  second-review:\n", 1)[0]
+        self.assertEqual(self.errors_for(gone), [
+            ".github/workflows/agent-review.yml: no job second-review, which runs in the caller's environment"])
+
+    def test_fleets_own_review_passes_and_its_input_reaches_nothing_else(self) -> None:
+        text = (cli.ROOT / ".github" / "workflows" / "agent-review.yml").read_text(encoding="utf-8")
+        self.assertEqual(self_check.check_review_environment(".github/workflows/agent-review.yml", text), [])
+        self.assertEqual(text.count("inputs.environment"), 2)
+        self.assertEqual(text.count(REVIEW_ENVIRONMENT_LINE), 2)
+
+
 class CommandTest(unittest.TestCase):
     def test_exit_codes_and_output(self) -> None:
         repo = Repo(self)
