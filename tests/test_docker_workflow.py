@@ -425,7 +425,7 @@ class Scripts(unittest.TestCase):
                          ["run", "--rm", "--cap-drop=ALL", "--security-opt", "no-new-privileges:true", "--entrypoint=/check",
                           "darkroom-browser:smoke"])
 
-    def test_the_compose_check_sets_only_its_variables_and_names_the_file(self) -> None:
+    def test_the_compose_check_adds_its_variables_and_names_the_file(self) -> None:
         text = script("build", "Check the Compose file")
         result = with_fake_docker(text, {"FILE": "docker-compose.yml", "VARIABLES": "FLEET_COMPOSE=two words\n\n"})
         self.assertEqual(result.returncode, 0, result.stderr)

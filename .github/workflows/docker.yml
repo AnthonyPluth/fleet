@@ -20,7 +20,8 @@ name: Docker image
 # run with every capability dropped and no new privileges, as a deployment runs it), pushed in the publish with the same
 # tags before the release, and its package cleaned up too, so one call publishes both images under one release. It has
 # a build cache of its own (scope: its name); the first image's stays where it was. With compose-file, the build also
-# checks the Compose file (`docker compose config`), with compose-env standing in for a deployment's .env.
+# checks the Compose file (`docker compose config`): it fails if the file doesn't parse or a required variable
+# (`${VAR:?}`) is unset, with compose-env's variables added to the job's environment.
 #
 # Versions: `fleet next-version` from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the
 # FLEET_REF convention), never from a ref the pull request names: the step from the highest version ever tagged by the
@@ -94,11 +95,11 @@ on:
         type: string
         default: ""
       compose-file:
-        description: A Compose file, relative to the repository, that the build checks with `docker compose config` (it parses, and every variable it needs is set); empty (the default) checks none.
+        description: A Compose file, relative to the repository, that the build checks with `docker compose config`, which fails if it doesn't parse or a required variable (`${VAR:?}`) is unset; a plain `${VAR}` that is unset only warns. Empty (the default) checks none.
         type: string
         default: ""
       compose-env:
-        description: With compose-file, the variables the check sets, one NAME=value per line ("PHOTOS_ROOT=/tmp/photos"), in place of a deployment's .env. Not for secrets.
+        description: With compose-file, variables the check adds to the job's environment (which it keeps, as Compose also reads a .env beside the file), one NAME=value per line ("PHOTOS_ROOT=/tmp/photos"). Not for secrets.
         type: string
         default: ""
       cleanup:
@@ -331,7 +332,8 @@ jobs:
           if [ -n "$SHM_SIZE" ]; then options+=("--shm-size=$SHM_SIZE"); fi
           docker run "${options[@]}" "--entrypoint=${command[0]}" "$SECOND_IMAGE:smoke" "${command[@]:1}"
 
-      # The Compose file parses and every variable it needs is set: compose-env's, in place of a deployment's .env.
+      # The Compose file parses and its required variables (${VAR:?}) are set, with compose-env's added to the job's
+      # environment; an unset plain ${VAR} only warns.
       - name: Check the Compose file
         if: steps.next.outputs.skip != 'true' && inputs.compose-file != ''
         env:
