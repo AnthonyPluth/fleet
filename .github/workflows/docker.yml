@@ -133,7 +133,7 @@ on:
         value: ${{ jobs.build.outputs.skip }}
 
 env:
-  FLEET_REF: v3.2.0   # stamped by the release
+  FLEET_REF: v3.3.0   # stamped by the release
 
 permissions: {}
 
