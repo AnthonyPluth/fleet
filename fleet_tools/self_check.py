@@ -8,7 +8,8 @@ from typing import TypeAlias
 from fleet_tools import release
 
 HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, fleet's checkouts at the "
-        "workflow's own commit behind their guard step, the self-test's calls, "
+        "workflow's own commit behind their guard step, the self-test's calls, the agent review's environment on its "
+        "two review jobs only, "
         "VERSION agreeing with CHANGELOG.md, plugin.json, pyproject.toml and the snippets in docs/, and no doc or "
         "workflow naming an event Actions doesn't have)")
 
@@ -24,6 +25,12 @@ GUARD_RUN = ('[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ 
              'Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"')
 OWN_COMMIT_JOB = "checks-own-commit"
 READS_FLEET_REF = re.compile(r"\benv\s*\.\s*FLEET_REF\b|\$\{?FLEET_REF\b")
+REVIEW_WORKFLOW = "agent-review.yml"
+REVIEW_ENVIRONMENT_INPUT = "environment"
+REVIEW_ENVIRONMENT_JOBS = ("review", "second-review")
+REVIEW_ENVIRONMENT = "${{github.event.pull_request.head.repo.full_name==github.repository&&inputs.environment||''}}"
+REVIEW_ENVIRONMENT_SHOWN = "${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}"
+READS_ENVIRONMENT_INPUT = re.compile(r"\binputs\s*(?:\.\s*environment\b|\[\s*['\"]environment['\"]\s*\])")
 VERSION_PATTERN = release.VERSION_PATTERN
 NOT_ACTIONS_EVENTS = ("pull_request_review_thread",)
 EVENT_NAME_FILES = ("README.md", "docs/*.md", ".github/workflows/*.y*ml", "plugins/**/*.md")
@@ -422,6 +429,8 @@ def check(root: Path) -> list[str]:
             errors.append(f"{name}: FLEET_REF is {ref!r}, but VERSION {version} needs {expected!r}")
         errors.extend(check_fleet_checkouts(name, workflow))
         errors.extend(check_fleet_ref_reads(name, source))
+        if path.name == REVIEW_WORKFLOW:
+            errors.extend(check_review_environment(name, source))
     self_test = directory / SELF_TEST
     if not self_test.is_file():
         errors.append(f"{(WORKFLOWS / SELF_TEST).as_posix()}: missing")
@@ -483,6 +492,43 @@ def check_fleet_ref_reads(name: str, source: str) -> list[str]:
             "`${{ inputs.fleet-ref || job.workflow_sha }}`"
             for number, line in enumerate(source.splitlines(), start=1)
             if READS_FLEET_REF.search(code := strip_comment(line))]
+
+
+def check_review_environment(name: str, source: str) -> list[str]:
+    where: Where = {}
+    workflow = parse(source, where)
+    errors: list[str] = []
+    trigger = workflow.get("on") if isinstance(workflow, dict) else None
+    call = trigger.get("workflow_call") if isinstance(trigger, dict) else None
+    inputs = call.get("inputs") if isinstance(call, dict) else None
+    declared = inputs.get(REVIEW_ENVIRONMENT_INPUT) if isinstance(inputs, dict) else None
+    if not isinstance(declared, dict) or declared.get("type") != "string" or declared.get("default") != "":
+        errors.append(f"{name}: needs the input `{REVIEW_ENVIRONMENT_INPUT}` as a string defaulting to \"\", so a caller "
+                      "that passes none keeps its review jobs out of any environment")
+    found = workflow.get("jobs") if isinstance(workflow, dict) else None
+    jobs = found if isinstance(found, dict) else {}
+    allowed: set[int] = set()
+    for job_name, job in jobs.items():
+        value = job.get("environment") if isinstance(job, dict) else None
+        if job_name in REVIEW_ENVIRONMENT_JOBS:
+            if not isinstance(value, str) or re.sub(r"\s+", "", value) != REVIEW_ENVIRONMENT:
+                errors.append(f"{name}: job {job_name} needs `environment: {REVIEW_ENVIRONMENT_SHOWN}`: the caller's "
+                              "environment, for a pull request from this repository's branches only, and none when the "
+                              "input is empty")
+            else:
+                allowed.add(where[("jobs", job_name, "environment")])
+        elif value is not None:
+            errors.append(f"{name}: job {job_name} names an environment; only {' and '.join(REVIEW_ENVIRONMENT_JOBS)}, "
+                          "the jobs that read the review secrets, run in one")
+    for job_name in REVIEW_ENVIRONMENT_JOBS:
+        if job_name not in jobs:
+            errors.append(f"{name}: no job {job_name}, which runs in the caller's environment")
+    for number, line in enumerate(source.splitlines()):
+        if number not in allowed and READS_ENVIRONMENT_INPUT.search(strip_comment(line)):
+            errors.append(f"{name}:{number + 1}: reads inputs.{REVIEW_ENVIRONMENT_INPUT} ({line.strip()[:80]}); it reaches "
+                          f"the `environment:` of {' and '.join(REVIEW_ENVIRONMENT_JOBS)} only, never a script or another "
+                          "key")
+    return errors
 
 
 def check_self_test(name: str, workflow: Node) -> list[str]:

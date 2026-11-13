@@ -1,0 +1,48 @@
+name: Agent review
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The caller's environment for the review secrets.
+        type: string
+        default: ""
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+env:
+  FLEET_REF: main   # stamped by the release
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # inputs.environment in a comment is fine
+    environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}
+    steps:
+      - name: Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: echo "review"
+
+  report:
+    needs: review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the review
+        run: echo "report"
+
+  second-review:
+    runs-on: ubuntu-latest
+    environment: ${{github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || ''}}
+    steps:
+      - name: Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: echo "second review"
