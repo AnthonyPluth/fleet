@@ -369,8 +369,12 @@ jobs:
 
   # The image pipeline's build on a fixture image (tests/fixtures/docker/), as a pull request runs it: `fleet next-version`
   # doesn't run (a pull request is never released), the image is built for this runner and its start check passes only
-  # because smoke-env reaches the container, and nothing is built for ARM, cached, pushed or tagged. The publish call
-  # isn't tested here: on a pull request it is skipped by its own condition, which tests/test_docker_workflow.py holds.
+  # because smoke-env reaches the container, and nothing is built for ARM, cached, pushed or tagged. The second image's
+  # check passes only when its command replaces the fixture's failing entrypoint, each line as one argument, in a
+  # container with no capabilities, no new privileges, the fixture's seccomp profile (which refuses mkdir) and the
+  # /dev/shm size given; the Compose check only because compose-env sets the variable the fixture's file requires. The
+  # publish call isn't tested here: on a pull request it is skipped by its own condition, which
+  # tests/test_docker_workflow.py holds.
   # The call grants what its publish and cleanup jobs ask for, as an app's does: GitHub checks every called job against
   # the caller's permissions before the run starts, even the skipped ones. The build job itself takes `contents: read`.
   docker:
@@ -386,6 +390,17 @@ jobs:
       dockerfile: tests/fixtures/docker/Dockerfile
       smoke-env: |
         FLEET_SMOKE=on
+      second-image: fleet-self-test-second
+      second-dockerfile: tests/fixtures/docker/Dockerfile.second
+      second-smoke-command: |
+        sh
+        /smoke.sh
+        two words
+      second-smoke-seccomp: tests/fixtures/docker/seccomp.json
+      second-smoke-shm-size: 128m
+      compose-file: tests/fixtures/docker/compose.yaml
+      compose-env: |
+        FLEET_COMPOSE=on
       build-timeout-minutes: 10
 
   # The build's outputs on a pull request: no version, nothing new, no skip, so a caller's publish call (`needs:` the

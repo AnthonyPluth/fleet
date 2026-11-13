@@ -1,0 +1,7 @@
+# The Self-test's Compose file for docker.yml's check: FLEET_COMPOSE has no default, so `docker compose config` passes
+# only when compose-env sets it.
+services:
+  app:
+    image: fleet-self-test:smoke
+    environment:
+      FLEET_SMOKE: ${FLEET_COMPOSE:?set FLEET_COMPOSE}

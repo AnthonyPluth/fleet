@@ -944,6 +944,45 @@ jobs:
 
 Waypoint passes `image: waypoint`, `smoke-env: WAYPOINT_ALLOW_NO_AUTH=1` and, on both calls, its runner as `"runs-on": ${{ vars.RUNS_ON != '' && ... || '"ubuntu-latest"' }}` (the expression its `fleet-checks` job passes, the key quoted for the same reason).
 
+A second image (`second-image`, with its own `second-dockerfile`, built from the same `context`) goes through the same jobs as the first, at the same version and under one release: the build builds it for this runner and for Intel/AMD and ARM into a build cache of its own (scope: its name; the first image's cache stays where it was), the publish pushes it with the same tags before the release is tagged, so a failed push never leaves a release with one of its images missing, and the cleanup deletes its package's untagged versions too. Pass `second-image` and `second-dockerfile` on both calls, like `image`. With `second-smoke-command`, the build checks it by running that command as its entrypoint (one argument per line, so no line reaches `docker run` as an option) in a container with every capability dropped and no new privileges, under `second-smoke-seccomp` and with `second-smoke-shm-size` if given; the command must exit 0. Without it, the second image is built but not started. With `compose-file`, the build also runs `docker compose config --quiet` on the Compose file, with `compose-env`'s variables set in place of a deployment's `.env`, so a file that doesn't parse or needs a variable nothing sets fails the build. Calling the workflow once per image doesn't do the same: each publish call tags the release after its own push only, so a release can exist before the other image is pushed (and the other call then fails to create it again), the second image's start check would ask it `/healthz`, and the two builds would overwrite each other's cache. Darkroom, which builds and checks pull requests too (its build call has no `if:`) and whose tests run in its `ci.yml`, calls it this way:
+
+```yaml
+jobs:
+  build:
+    permissions:
+      contents: write          # the ceiling every job of the called workflow is checked against; the build job takes contents: read
+      packages: write
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v3.2.0
+    with:
+      image: darkroom
+      smoke-port: 8000
+      second-image: darkroom-browser
+      second-dockerfile: Dockerfile.browser
+      second-smoke-command: |
+        bash
+        /app/smoke.sh
+      second-smoke-seccomp: deploy/browser/seccomp.json
+      second-smoke-shm-size: 1g
+      compose-file: docker-compose.yml
+      compose-env: PHOTOS_ROOT=/tmp/photos
+
+  publish:
+    needs: [build]
+    if: github.event_name != 'pull_request' && needs.build.outputs.skip != 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v3.2.0
+    with:
+      image: darkroom
+      second-image: darkroom-browser
+      second-dockerfile: Dockerfile.browser
+      publish: true
+      version: ${{ needs.build.outputs.version }}
+      new: ${{ needs.build.outputs.new }}
+      newest: ${{ needs.build.outputs.newest }}
+```
+
 | Input | Default | What |
 | --- | --- | --- |
 | `image` | required | The image's name in the owner's registry (`runway`, `waypoint`), lowercase; also the package the cleanup tidies |
@@ -953,14 +992,21 @@ Waypoint passes `image: waypoint`, `smoke-env: WAYPOINT_ALLOW_NO_AUTH=1` and, on
 | `dockerfile` | `Dockerfile` | The Dockerfile |
 | `smoke-port` | `8765` | The port the image listens on; the start check maps it to 8765 on the runner and asks it `/healthz` |
 | `smoke-env` | none | The start check's container environment, one `NAME=value` per line; not for secrets |
-| `cleanup` | `true` | After publishing, delete the package's untagged versions |
+| `second-image` | none | A second image's name (`darkroom-browser`), lowercase and not `image`'s; built, pushed and cleaned up with the first. On both calls |
+| `second-dockerfile` | none | With `second-image`, its Dockerfile (required with it). On both calls |
+| `second-smoke-command` | none | With `second-image`, the command that checks it, one argument per line, run as its entrypoint with every capability dropped and no new privileges; none builds it without starting it |
+| `second-smoke-seccomp` | none | With `second-smoke-command`, a seccomp profile in the repository (a `.json` path); none for Docker's default |
+| `second-smoke-shm-size` | none | With `second-smoke-command`, the container's `/dev/shm` size (`1g`); none for Docker's default |
+| `compose-file` | none | A Compose file the build checks with `docker compose config --quiet` |
+| `compose-env` | none | With `compose-file`, the variables it is checked with, one `NAME=value` per line; not for secrets |
+| `cleanup` | `true` | After publishing, delete the package's untagged versions (and the second image's) |
 | `build-timeout-minutes` | `45` | The build's limit (the publish has 30 minutes and the cleanup 10) |
 | `runs-on` | `"ubuntu-latest"` | The runner for every job, as JSON |
 | `fleet-ref` | the workflow's own commit | Where `fleet next-version` runs from (fleet's self-test only) |
 
 The build's outputs, `version`, `new`, `newest` and `skip`, are `fleet next-version`'s; all four are empty on a pull request.
 
-Moving to it, Runway and Waypoint delete from their `docker.yml` the `build`, `publish` and `cleanup` jobs (about 155 lines, among them the `setup-uv` step, which only the shim needed) and add the two calls above (about 30 lines); `changes`, `test`, `web`, `feature-map` and `fleet-checks`, the triggers, the concurrency group and the header stay. What changes for them: the check runs are named `build / Build`, `publish / Publish` and `publish / Cleanup` (the merge gate counts workflows, not job names, so nothing to change there); Runway's jobs gain the timeouts Waypoint's had (45, 30 and 10 minutes); `fleet next-version` runs from the pin rather than `.fleet/version` (the two are the same release once the content sync has merged). Darkroom, which builds and start-checks on pull requests too, publishes a second image (`Dockerfile.browser`) and validates its Compose file, adopts it later: the second image needs an input this release doesn't have.
+Moving to it, Runway and Waypoint delete from their `docker.yml` the `build`, `publish` and `cleanup` jobs (about 155 lines, among them the `setup-uv` step, which only the shim needed) and add the two calls above (about 30 lines); `changes`, `test`, `web`, `feature-map` and `fleet-checks`, the triggers, the concurrency group and the header stay. What changes for them: the check runs are named `build / Build`, `publish / Publish` and `publish / Cleanup` (the merge gate counts workflows, not job names, so nothing to change there); Runway's jobs gain the timeouts Waypoint's had (45, 30 and 10 minutes); `fleet next-version` runs from the pin rather than `.fleet/version` (the two are the same release once the content sync has merged). Darkroom deletes its `build` and `publish` jobs for the two calls above; its triggers, name and concurrency group stay. What changes for it, beyond the check run names and the pin: both images are built for Intel/AMD and ARM in the build (into the cache) rather than in the publish; each gets the `VERSION` build argument, which its Dockerfiles don't declare (BuildKit warns and builds as before); the browser image's check runs `bash /app/smoke.sh` in the same sandbox as before (every capability dropped, no new privileges, its seccomp profile, a 1g `/dev/shm`); and the untagged versions of both packages are deleted after each publish, which it didn't do before (`cleanup: false` keeps them).
 
 ## Tidy releases
 
