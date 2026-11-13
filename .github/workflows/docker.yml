@@ -15,6 +15,14 @@ name: Docker image
 # image. The image is pushed from the build cache the build filled, so it isn't built again. Untagged leftovers are
 # deleted by a third-party action in a job of its own, with only `packages: write`.
 #
+# A second image (second-image, empty by default: none) is built from the same context with its own Dockerfile, at the
+# same version, beside the first in each job: built and, with second-smoke-command, checked in the build (in a container
+# run with every capability dropped and no new privileges, as a deployment runs it), pushed in the publish with the same
+# tags before the release, and its package cleaned up too, so one call publishes both images under one release. It has
+# a build cache of its own (scope: its name); the first image's stays where it was. With compose-file, the build also
+# checks the Compose file (`docker compose config`): it fails if the file doesn't parse or a required variable
+# (`${VAR:?}`) is unset, with compose-env's variables added to the job's environment.
+#
 # Versions: `fleet next-version` from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the
 # FLEET_REF convention), never from a ref the pull request names: the step from the highest version ever tagged by the
 # commits since the last one in this history (feat: a minor, a ! or BREAKING CHANGE: a major, else a patch), and skip
@@ -66,8 +74,36 @@ on:
         description: Environment variables for the start check's container, one NAME=value per line ("RUNWAY_ALLOW_NO_AUTH=1"). Not for secrets.
         type: string
         default: ""
+      second-image:
+        description: A second image's name in the owner's registry ("darkroom-browser"), lowercase, built from the same context and published under the same release; empty (the default) for none. Pass it on both calls, like image.
+        type: string
+        default: ""
+      second-dockerfile:
+        description: With second-image, its Dockerfile, relative to the repository (required with it). Pass it on both calls.
+        type: string
+        default: ""
+      second-smoke-command:
+        description: With second-image, the command that checks it, one argument per line ("bash" then "/app/smoke.sh"), run as its entrypoint in a container with every capability dropped and no new privileges; it must exit 0. Empty (the default) builds the second image without starting it.
+        type: string
+        default: ""
+      second-smoke-seccomp:
+        description: With second-smoke-command, a seccomp profile in the repository (a .json path) the container runs under; empty for Docker's default profile.
+        type: string
+        default: ""
+      second-smoke-shm-size:
+        description: With second-smoke-command, the container's /dev/shm size ("1g"); empty for Docker's default.
+        type: string
+        default: ""
+      compose-file:
+        description: A Compose file, relative to the repository, that the build checks with `docker compose config`, which fails if it doesn't parse or a required variable (`${VAR:?}`) is unset; a plain `${VAR}` that is unset only warns. Empty (the default) checks none.
+        type: string
+        default: ""
+      compose-env:
+        description: With compose-file, variables the check adds to the job's environment (which it keeps, as Compose also reads a .env beside the file), one NAME=value per line ("PHOTOS_ROOT=/tmp/photos"). Not for secrets.
+        type: string
+        default: ""
       cleanup:
-        description: After publishing, delete the package's untagged versions (every tagged version stays pullable).
+        description: After publishing, delete the package's untagged versions, and the second image's (every tagged version stays pullable).
         type: boolean
         default: true
       build-timeout-minutes:
@@ -128,6 +164,13 @@ jobs:
           IMAGE: ${{ inputs.image }}
           SMOKE_PORT: ${{ inputs.smoke-port }}
           SMOKE_ENV: ${{ inputs.smoke-env }}
+          SECOND_IMAGE: ${{ inputs.second-image }}
+          SECOND_DOCKERFILE: ${{ inputs.second-dockerfile }}
+          SECOND_SMOKE_COMMAND: ${{ inputs.second-smoke-command }}
+          SECOND_SMOKE_SECCOMP: ${{ inputs.second-smoke-seccomp }}
+          SECOND_SMOKE_SHM_SIZE: ${{ inputs.second-smoke-shm-size }}
+          COMPOSE_FILE_INPUT: ${{ inputs.compose-file }}
+          COMPOSE_ENV_INPUT: ${{ inputs.compose-env }}
         run: |
           if ! [[ "$IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
             echo "::error::image must be a lowercase image name (letters, digits and . _ - between them)"; exit 1
@@ -135,14 +178,50 @@ jobs:
           if ! [[ "$SMOKE_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$SMOKE_PORT" -gt 65535 ]; then
             echo "::error::smoke-port must be a port number"; exit 1
           fi
-          number=0
-          while IFS= read -r line; do
-            number=$((number + 1))
-            [ -n "$line" ] || continue
-            if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-              echo "::error::smoke-env line $number isn't NAME=value"; exit 1
+          assignments() {
+            local number=0 line
+            while IFS= read -r line; do
+              number=$((number + 1))
+              [ -n "$line" ] || continue
+              if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                echo "::error::$1 line $number isn't NAME=value"; exit 1
+              fi
+            done <<< "$2"
+          }
+          assignments smoke-env "$SMOKE_ENV"
+          # A path in the repository: no leading /, and no part that starts with a dot (so no ..) or a dash.
+          path='^([A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*$'
+          if [ -n "$SECOND_IMAGE" ]; then
+            if ! [[ "$SECOND_IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || [ "$SECOND_IMAGE" = "$IMAGE" ]; then
+              echo "::error::second-image must be a lowercase image name other than image's"; exit 1
             fi
-          done <<< "$SMOKE_ENV"
+            if [ -z "$SECOND_DOCKERFILE" ]; then
+              echo "::error::second-image needs second-dockerfile"; exit 1
+            fi
+          elif [ -n "$SECOND_DOCKERFILE$SECOND_SMOKE_COMMAND$SECOND_SMOKE_SECCOMP$SECOND_SMOKE_SHM_SIZE" ]; then
+            echo "::error::the second-* inputs need second-image"; exit 1
+          fi
+          if [ -n "$SECOND_SMOKE_COMMAND" ]; then
+            if [ -z "${SECOND_SMOKE_COMMAND//$'\n'/}" ]; then
+              echo "::error::second-smoke-command has no argument"; exit 1
+            fi
+          elif [ -n "$SECOND_SMOKE_SECCOMP$SECOND_SMOKE_SHM_SIZE" ]; then
+            echo "::error::second-smoke-seccomp and second-smoke-shm-size need second-smoke-command"; exit 1
+          fi
+          if [ -n "$SECOND_SMOKE_SECCOMP" ] && ! [[ "$SECOND_SMOKE_SECCOMP" =~ $path && "$SECOND_SMOKE_SECCOMP" == *.json ]]; then
+            echo "::error::second-smoke-seccomp must be a .json file's path in the repository"; exit 1
+          fi
+          if [ -n "$SECOND_SMOKE_SHM_SIZE" ] && ! [[ "$SECOND_SMOKE_SHM_SIZE" =~ ^[1-9][0-9]{0,5}[bkmg]?$ ]]; then
+            echo "::error::second-smoke-shm-size must be a size (64m, 1g)"; exit 1
+          fi
+          if [ -n "$COMPOSE_FILE_INPUT" ]; then
+            if ! [[ "$COMPOSE_FILE_INPUT" =~ $path ]]; then
+              echo "::error::compose-file must be a path in the repository"; exit 1
+            fi
+          elif [ -n "$COMPOSE_ENV_INPUT" ]; then
+            echo "::error::compose-env needs compose-file"; exit 1
+          fi
+          assignments compose-env "$COMPOSE_ENV_INPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
@@ -222,6 +301,52 @@ jobs:
         if: always()
         run: docker rm -f smoke > /dev/null 2>&1 || true
 
+      # The second image, with a build cache of its own so the two don't overwrite each other's.
+      - name: Build the second image for this runner
+        if: steps.next.outputs.skip != 'true' && inputs.second-image != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.second-dockerfile }}
+          load: true
+          tags: ${{ inputs.second-image }}:smoke
+          build-args: ${{ steps.next.outputs.version != '' && format('VERSION={0}', steps.next.outputs.version) || '' }}
+          cache-from: type=gha,scope=${{ inputs.second-image }}
+      # Its command as the entrypoint, each line one argument (after the image, so none is read as an option of
+      # docker's), in a container run as a deployment runs it. --rm removes it however the command ends.
+      - name: Check the second image
+        if: steps.next.outputs.skip != 'true' && inputs.second-image != '' && inputs.second-smoke-command != ''
+        env:
+          SECOND_IMAGE: ${{ inputs.second-image }}
+          COMMAND: ${{ inputs.second-smoke-command }}
+          SECCOMP: ${{ inputs.second-smoke-seccomp }}
+          SHM_SIZE: ${{ inputs.second-smoke-shm-size }}
+        run: |
+          command=()
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            command+=("$line")
+          done <<< "$COMMAND"
+          options=(--rm --cap-drop=ALL --security-opt no-new-privileges:true)
+          if [ -n "$SECCOMP" ]; then options+=(--security-opt "seccomp=$SECCOMP"); fi
+          if [ -n "$SHM_SIZE" ]; then options+=("--shm-size=$SHM_SIZE"); fi
+          docker run "${options[@]}" "--entrypoint=${command[0]}" "$SECOND_IMAGE:smoke" "${command[@]:1}"
+
+      # The Compose file parses and its required variables (${VAR:?}) are set, with compose-env's added to the job's
+      # environment; an unset plain ${VAR} only warns.
+      - name: Check the Compose file
+        if: steps.next.outputs.skip != 'true' && inputs.compose-file != ''
+        env:
+          FILE: ${{ inputs.compose-file }}
+          VARIABLES: ${{ inputs.compose-env }}
+        run: |
+          assignments=()
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            assignments+=("$line")
+          done <<< "$VARIABLES"
+          env "${assignments[@]}" docker compose "--file=$FILE" config --quiet
+
       # The slow part (ARM is built under emulation), done now: into the build cache only, which publish reads back.
       # Only when there is a version to release.
       - name: Build for Intel/AMD and ARM (not pushed)
@@ -236,10 +361,22 @@ jobs:
             VERSION=${{ steps.next.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build the second image for Intel/AMD and ARM (not pushed)
+        if: steps.next.outputs.version != '' && steps.next.outputs.skip != 'true' && inputs.second-image != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.second-dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ steps.next.outputs.version }}
+          cache-from: type=gha,scope=${{ inputs.second-image }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.second-image }}
 
-  # Pushes the image (from the build's cache, so it isn't built again) and then tags the release. The tag and Release
-  # come last, so a failed or cancelled push never leaves a version with no image. Only on main, never for a pull
-  # request.
+  # Pushes the image, and the second image if there is one (from the build's cache, so neither is built again), and
+  # then tags the release. The tag and Release come last, so a failed or cancelled push never leaves a version with an
+  # image missing. Only on main, never for a pull request.
   publish:
     name: Publish
     if: inputs.publish && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
@@ -255,6 +392,8 @@ jobs:
           VERSION: ${{ inputs.version }}
           NEW: ${{ inputs.new }}
           NEWEST: ${{ inputs.newest }}
+          SECOND_IMAGE: ${{ inputs.second-image }}
+          SECOND_DOCKERFILE: ${{ inputs.second-dockerfile }}
         run: |
           if ! [[ "$IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
             echo "::error::image must be a lowercase image name (letters, digits and . _ - between them)"; exit 1
@@ -265,15 +404,28 @@ jobs:
           if ! [[ "$NEW" =~ ^(true|false)$ && "$NEWEST" =~ ^(true|false)$ ]]; then
             echo "::error::new and newest must be the build's outputs (true or false)"; exit 1
           fi
+          if [ -n "$SECOND_IMAGE" ]; then
+            if ! [[ "$SECOND_IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || [ "$SECOND_IMAGE" = "$IMAGE" ]; then
+              echo "::error::second-image must be a lowercase image name other than image's"; exit 1
+            fi
+            if [ -z "$SECOND_DOCKERFILE" ]; then
+              echo "::error::second-image needs second-dockerfile"; exit 1
+            fi
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Image name (registry names must be lowercase)
+      # SECOND_IMAGE is set empty without a second image, so nothing from the runner's environment stands in for it.
+      - name: Image names (registry names must be lowercase)
         env:
           NAME: ${{ inputs.image }}
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$NAME" >> "$GITHUB_ENV"
+          SECOND_NAME: ${{ inputs.second-image }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "IMAGE=ghcr.io/$owner/$NAME" >> "$GITHUB_ENV"
+          echo "SECOND_IMAGE=${SECOND_NAME:+ghcr.io/$owner/$SECOND_NAME}" >> "$GITHUB_ENV"
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1   # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
@@ -292,17 +444,19 @@ jobs:
         run: |
           v="${VERSION#v}"
           IFS=. read -r major minor _ <<< "$v"
-          {
-            echo "list<<EOF"
-            echo "$IMAGE:$v"
-            echo "$IMAGE:v$v"
+          tags() {
+            echo "$1<<EOF"
+            echo "$2:$v"
+            echo "$2:v$v"
             if [ "$NEWEST" = true ]; then
-              echo "$IMAGE:latest"
-              echo "$IMAGE:$major.$minor"
-              echo "$IMAGE:$major"
+              echo "$2:latest"
+              echo "$2:$major.$minor"
+              echo "$2:$major"
             fi
             echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          }
+          tags list "$IMAGE" >> "$GITHUB_OUTPUT"
+          if [ -n "$SECOND_IMAGE" ]; then tags second "$SECOND_IMAGE" >> "$GITHUB_OUTPUT"; fi
 
       - name: Push (from the build's cache)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
@@ -319,6 +473,22 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ inputs.version }}
           cache-from: type=gha
+      - name: Push the second image (from the build's cache)
+        if: inputs.second-image != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.second-dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.second }}
+          build-args: |
+            VERSION=${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+          cache-from: type=gha,scope=${{ inputs.second-image }}
 
       # --target makes GitHub create the tag v1.2.3 on this commit (through the API, so the checkout needs no
       # credentials); a tag that already exists is used as it is. The release is titled with the repository's name
@@ -347,4 +517,11 @@ jobs:
         with:
           package: ${{ inputs.image }}
           delete-untagged: true      # understands multi-architecture images, so tagged versions stay intact
+          token: ${{ github.token }}
+      - name: Delete the second image's untagged leftovers
+        if: inputs.second-image != ''
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f   # v1.2.2
+        with:
+          package: ${{ inputs.second-image }}
+          delete-untagged: true
           token: ${{ github.token }}
