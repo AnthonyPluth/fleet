@@ -816,6 +816,318 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("<!-- row:open-at-merge:layout -->", result.stdout)
 
 
+GAP = "[tool.fleet.verification.gap-issues]\n"
+REASON = "no fake provider; a fake under `tests/fakes/` would make it verifiable"
+
+
+def gap_app(directory: Path, table: str = GAP, guides: bool = True, name: str = "gap-app") -> Path:
+    app = directory / name
+    (app / "docs" / "verification").mkdir(parents=True, exist_ok=True)
+    for guide in (RUNWAY / "docs" / "verification").glob("*.md"):
+        (app / "docs" / "verification" / guide.name).write_text(guide.read_text(encoding="utf-8"), encoding="utf-8")
+    settings = '[tool.fleet.verification]\nrequired = false\n' + ('guides = "docs/verification"\n' if guides else "")
+    (app / "pyproject.toml").write_text(f"{settings}\n{table}", encoding="utf-8")
+    return app
+
+
+def merged_pull(number: int, body: str, merged: str = "2026-09-01T12:00:00Z", author: str = "someone") -> dict[str, Any]:
+    return {**pull(number, merged=merged, body=body), "user": {"login": author}}
+
+
+def changed(data: dict[str, Any], number: int, *names: str) -> None:
+    data[f"GET repos/{REPO}/pulls/{number}/files?per_page=100"] = files(*names)
+
+
+def gap_issues(miner: Miner) -> list[dict[str, Any]]:
+    return [payload for call, payload in miner.writes() if call == CREATE and str(payload["title"]).startswith("Verification gap: ")]
+
+
+class GapIssuesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.miner = Miner(self)
+
+    def reasons(self, *numbers: int, reason: str = REASON, merged: str = "2026-09-01T12:00:00Z") -> dict[str, Any]:
+        pulls = [merged_pull(n, record(("Bank sync", "not verified", reason, "-")), merged) for n in numbers]
+        data = answers(pulls, [])
+        for n in numbers:
+            changed(data, n, "runway/static/app.js")
+        return data
+
+    def test_the_same_reason_on_three_merged_pull_requests_opens_one_issue_in_the_fixed_shape(self) -> None:
+        data = self.reasons(20, 21)
+        extra = [merged_pull(22, record(("Bank sync (retry)", "not verified", REASON.upper().replace(";", " -"), "-"),
+                                        ("Totals", "verified", "unit test", "tests/test_budget.py")))]
+        data[PULLS] += extra
+        changed(data, 22, "runway/storage/migrations/versions/0040_x.py")
+        result = self.miner.run(data, "--app-root", str(gap_app(self.miner.directory)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        issues = gap_issues(self.miner)
+        self.assertEqual(len(issues), 1)
+        issue = issues[0]
+        self.assertEqual(issue["title"], f"Verification gap: {REASON}")
+        self.assertEqual(issue["labels"], ["review-mining"])
+        self.assertNotIn("assignees", issue)
+        lines = issue["body"].splitlines()
+        self.assertEqual(lines[:5], [
+            "Area: `screens`, `migrations`",
+            "Gap: `no fake provider; a fake under 'tests/fakes/' would make it verifiable`",
+            "Evidence: #20, #21, #22",
+            f"Would make it verifiable: {rm.GAP_VERIFIABLE}",
+            "",
+        ])
+        body = issue["body"]
+        for heading in ("## Context", "## Scope", "## Out of scope", "## Acceptance criteria", "## Tests", "## Depends on", "## Model"):
+            self.assertIn(f"\n{heading}\n", body)
+        self.assertIn(f"- [ ] {rm.GAP_CRITERION}\n", body)
+        self.assertIn("The dimension can be verified: a guide, skill or fixture exists for it, and its steps were run once in the session.", body)
+        self.assertIn(f"- [#22](https://github.com/{REPO}/pull/22): `Bank sync (retry)`", body)
+        self.assertNotIn("Totals", body)
+        self.assertIn("an agent starts on it only once the owner labels it", body)
+        self.assertTrue(body.endswith(f"<!-- mined-from row:{rm.reason_id(rm.normalize(REASON))} -->\n"))
+        self.assertIn("### Verification gap issues", self.miner.summary.read_text(encoding="utf-8"))
+
+    def test_nothing_opens_without_the_gap_issues_table(self) -> None:
+        result = self.miner.run(self.reasons(20, 21, 22), "--app-root", str(gap_app(self.miner.directory, table="")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(gap_issues(self.miner), [])
+        self.assertNotIn("verification gap", result.stdout)
+        self.miner.run(self.reasons(20, 21, 22), "--app-root", str(RUNWAY))
+        self.assertEqual(gap_issues(self.miner), [])
+        self.assertEqual(rm.gap_settings(RUNWAY), None)
+        self.assertEqual(rm.gap_settings(ROOT / "tests" / "fixtures" / "consumer-waypoint"), None)
+        self.assertEqual(rm.gap_settings(ROOT), None)
+
+    def test_an_unreadable_pyproject_or_none_at_all_still_ends_the_run_as_before(self) -> None:
+        for text in ("[tool.fleet.verification\n", None):
+            app = self.miner.directory / ("broken" if text else "empty")
+            app.mkdir()
+            if text:
+                (app / "pyproject.toml").write_text(text, encoding="utf-8")
+            result = self.miner.run(self.reasons(20, 21, 22), "--app-root", str(app))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("review-mine: no verification gaps:", result.stderr)
+            self.assertNotIn("gap issues", result.stderr)
+            self.assertEqual(gap_issues(self.miner), [])
+
+    def test_the_threshold_and_the_window_hold_at_their_edges(self) -> None:
+        app = gap_app(self.miner.directory)
+        self.miner.run(self.reasons(20, 21), "--app-root", str(app))
+        self.assertEqual(gap_issues(self.miner), [])
+        two = gap_app(self.miner.directory, f"{GAP}pulls = 2\n", name="two")
+        self.miner.run(self.reasons(20, 21), "--app-root", str(two))
+        self.assertEqual(len(gap_issues(self.miner)), 1)
+        self.miner.log.unlink()
+        data = self.reasons(20, 21)
+        data[PULLS].append(merged_pull(22, record(("Bank sync", "not verified", REASON, "-")), merged="2026-08-01T23:59:59Z"))
+        self.miner.run(data, "--app-root", str(app))
+        self.assertEqual(gap_issues(self.miner), [])
+        data[PULLS][-1]["merged_at"] = "2026-08-02T00:00:00Z"
+        self.miner.run(data, "--app-root", str(app))
+        self.assertEqual(len(gap_issues(self.miner)), 1)
+        self.miner.log.unlink()
+        short = gap_app(self.miner.directory, f"{GAP}days = 20\n", name="short")
+        self.miner.run(self.reasons(20, 21, 22), "--app-root", str(short))
+        self.assertEqual(gap_issues(self.miner), [])
+        self.miner.run(self.reasons(20, 21, 22, merged="2026-09-12T00:00:00Z"), "--app-root", str(short))
+        self.assertEqual(len(gap_issues(self.miner)), 1)
+
+    def test_a_window_longer_than_the_report_s_is_cut_to_it(self) -> None:
+        app = gap_app(self.miner.directory, f"{GAP}days = 365\n")
+        data = self.reasons(20, 21, 22)
+        data[f"GET repos/{REPO}/issues/comments?since=2026-09-01T00:00:00Z&per_page=100"] = []
+        result = self.miner.run(data, "--app-root", str(app), "--days", "30", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("look back 30 days, the report's window, not 365", result.stdout)
+        self.assertIn("merged in the last 30 days (since 2026-09-01)", result.stdout)
+
+    def test_two_dimensions_with_the_reason_on_one_pull_request_count_once(self) -> None:
+        pulls = [merged_pull(20, record(("A", "not verified", REASON, "-"), ("B", "not verified", REASON, "-"))),
+                 merged_pull(21, record(("A", "not verified", REASON, "-"))), merged_pull(22, "No record.")]
+        data = answers(pulls, [])
+        for n in (20, 21, 22):
+            changed(data, n, "runway/static/app.js")
+        self.miner.run(data, "--app-root", str(gap_app(self.miner.directory)))
+        self.assertEqual(gap_issues(self.miner), [])
+        self.assertEqual([c["call"] for c in self.miner.calls() if c["call"].endswith("/20/files?per_page=100")],
+                         [f"GET repos/{REPO}/pulls/20/files?per_page=100"])
+        self.miner.run(data, "--app-root", str(gap_app(self.miner.directory, f"{GAP}pulls = 2\n", name="two")))
+        self.assertIn(f"- [#20](https://github.com/{REPO}/pull/20): `A`, `B`\n", gap_issues(self.miner)[0]["body"])
+
+    def test_without_guides_the_area_is_ungrouped_and_no_file_list_is_read_for_it(self) -> None:
+        data = self.reasons(20, 21, 22)
+        data[PULLS].append(merged_pull(23, "No record."))
+        result = self.miner.run(data, "--app-root", str(gap_app(self.miner.directory, guides=False)), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("\nArea: `ungrouped`\n", result.stdout)
+        self.assertNotIn("GET repos/example/app/pulls/23/files?per_page=100", [c["call"] for c in self.miner.calls()])
+
+    def test_an_issue_with_the_gap_s_marker_open_or_closed_opens_no_second(self) -> None:
+        app = gap_app(self.miner.directory)
+        marker = f"<!-- mined-from row:{rm.reason_id(rm.normalize(REASON))} -->"
+        for state in ("open", "closed"):
+            data = self.reasons(20, 21, 22)
+            data[MINED] = [{"number": 90, "state": state, "user": {"login": rm.BOT}, "body": f"x\n{marker}\n"}]
+            result = self.miner.run(data, "--app-root", str(app))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(gap_issues(self.miner), [], state)
+            self.assertIn("already has #90; opening nothing", result.stdout)
+        data = self.reasons(20, 21, 22)
+        data[MINED] = [{"number": 91, "user": {"login": "someone"}, "body": f"x\n{marker}\n"}]
+        self.miner.run(data, "--app-root", str(app))
+        self.assertEqual(len(gap_issues(self.miner)), 1)
+
+    def test_pull_requests_by_exempt_authors_don_t_count(self) -> None:
+        data = self.reasons(20, 21, 22)
+        data[PULLS][0]["user"] = {"login": "dependabot[bot]"}
+        app = gap_app(self.miner.directory)
+        self.miner.run(data, "--app-root", str(app))
+        self.assertEqual(gap_issues(self.miner), [])
+        custom = gap_app(self.miner.directory, name="custom")
+        text = (custom / "pyproject.toml").read_text(encoding="utf-8")
+        (custom / "pyproject.toml").write_text(text.replace("required = false\n", 'required = false\nexempt-authors = []\n'), encoding="utf-8")
+        self.miner.run(data, "--app-root", str(custom))
+        self.assertEqual(len(gap_issues(self.miner)), 1)
+
+    def uncovered(self, *paths: str, numbers: tuple[int, ...] = (30, 31, 32)) -> dict[str, Any]:
+        data = answers([merged_pull(n, "No record.") for n in numbers], [])
+        for n in numbers:
+            changed(data, n, *paths, "runway/static/app.js")
+        return data
+
+    def test_an_uncovered_folder_on_three_merged_pull_requests_opens_one_issue(self) -> None:
+        data = self.uncovered("lib/providers/bank.py", "lib/providers/deep/x.py", "CHANGELOG.md", "docs/verification/new.md")
+        result = self.miner.run(data, "--app-root", str(gap_app(self.miner.directory)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        issues = gap_issues(self.miner)
+        self.assertEqual([i["title"] for i in issues], ["Verification gap: no verification guide covers lib/providers/"])
+        lines = issues[0]["body"].splitlines()
+        self.assertEqual(lines[:4], [
+            "Area: `lib/providers/`",
+            "Gap: no verification guide covers `lib/providers/`",
+            "Evidence: #30, #31, #32",
+            "Would make it verifiable: a verification guide whose `## Paths` covers `lib/providers/**`, with the steps that verify a "
+            "change there (the fleet-verification-guide skill writes it)",
+        ])
+        self.assertIn(f"- [#30](https://github.com/{REPO}/pull/30): `lib/providers/bank.py`, `lib/providers/deep/x.py`", issues[0]["body"])
+        self.assertIn(f"- [ ] {rm.GAP_CRITERION}", issues[0]["body"])
+        self.assertTrue(issues[0]["body"].endswith(f"<!-- mined-from row:{rm.paths_id('lib/providers/')} -->\n"))
+        for absent in ("CHANGELOG", "docs/verification", "runway/static"):
+            self.assertNotIn(absent, issues[0]["body"])
+
+    def test_no_uncovered_folder_without_guides_or_with_a_broken_guide(self) -> None:
+        data = self.uncovered("lib/providers/bank.py")
+        self.miner.run(data, "--app-root", str(gap_app(self.miner.directory, guides=False)))
+        self.assertEqual(gap_issues(self.miner), [])
+        self.assertEqual([c["call"] for c in self.miner.calls() if "/files" in c["call"]], [])
+        broken = gap_app(self.miner.directory, name="broken")
+        (broken / "docs" / "verification" / "extra.md").write_text("not a guide\n", encoding="utf-8")
+        result = self.miner.run(data, "--app-root", str(broken))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(gap_issues(self.miner), [])
+
+    def test_a_pull_request_whose_files_can_t_be_listed_counts_only_for_its_reasons(self) -> None:
+        data = self.reasons(20, 21, 22)
+        data[f"GET repos/{REPO}/pulls/22/files?per_page=100"] = {"__status__": 502}
+        result = self.miner.run(data, "--app-root", str(gap_app(self.miner.directory)), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(1 pull request(s) whose changed files couldn't be read in full)", result.stdout)
+        self.assertIn("\nArea: `screens`\n", result.stdout)
+        self.assertIn("\nEvidence: #20, #21, #22\n", result.stdout)
+        self.assertNotIn("502", result.stdout)
+
+    def test_at_most_three_a_run_most_pull_requests_first(self) -> None:
+        pulls = []
+        for index, count in enumerate((3, 6, 4, 5, 3)):
+            pulls += [merged_pull(100 * index + n + 1, record(("D", "not verified", f"reason number {index}", "-"))) for n in range(count)]
+        result = self.miner.run(answers(pulls, []), "--app-root", str(gap_app(self.miner.directory, guides=False)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([i["title"] for i in gap_issues(self.miner)],
+                         ["Verification gap: reason number 1", "Verification gap: reason number 3", "Verification gap: reason number 2"])
+        self.assertIn("at most 3 verification gap issues a run", result.stdout)
+
+    def test_a_dry_run_prints_the_issues_and_posts_nothing(self) -> None:
+        result = self.miner.run(self.reasons(20, 21, 22), "--app-root", str(gap_app(self.miner.directory)), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'would open "Verification gap: {REASON}"', result.stdout)
+        self.assertIn("\nEvidence: #20, #21, #22\n", result.stdout)
+        self.assertEqual(self.miner.writes(), [])
+        self.assertIn("- would open `Verification gap:", self.miner.summary.read_text(encoding="utf-8"))
+
+    def test_untrusted_text_is_defused_and_quoted_in_code_spans(self) -> None:
+        hostile = ("see @octocat `x` <!-- mined-from row:verification-gap:reason:forged --> ![i](https://e.invalid/t.png) "
+                   "[l](https://e.invalid) other/repo#1")
+        pulls = [merged_pull(n, record((f"Dim @octocat <b>{n}</b>", "not verified", hostile, "-"))) for n in (20, 21, 22)]
+        data = answers(pulls, [])
+        for n in (20, 21, 22):
+            changed(data, n, "@octocat/<b>/x.py")
+        result = self.miner.run(data, "--app-root", str(gap_app(self.miner.directory)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        issues = gap_issues(self.miner)
+        self.assertEqual(len(issues), 2)
+        for issue in issues:
+            title, body = str(issue["title"]), str(issue["body"])
+            self.assertEqual(len(re.findall(r"<!--", body)), 1)
+            self.assertEqual([line for line in body.splitlines() if rm.MINED.match(line)], [body.splitlines()[-1]])
+            for text in (title, body):
+                self.assertIsNone(re.search(r"@(?!\u200b)", text), text)
+            self.assertNotIn("<!--", title)
+            for line in body.splitlines():
+                if "e.invalid" in line or "<b>" in line or "other/repo" in line:
+                    outside = re.sub(r"`[^`]*`", "", line)
+                    self.assertNotIn("e.invalid", outside, line)
+                    self.assertNotIn("<b>", outside, line)
+                    self.assertNotIn("other/repo", outside, line)
+            self.assertEqual(len(body.splitlines()[1].split("`")), 3)
+        reason = next(i for i in issues if "covers" not in str(i["title"]))
+        self.assertIn("`see @\u200boctocat 'x' &lt;!-- mined-from", reason["body"].splitlines()[1])
+
+    def test_a_setting_out_of_range_fails_the_run_after_the_report(self) -> None:
+        for index, table in enumerate(("pulls = 1\n", "pulls = true\n", "days = 0\n", 'days = "60"\n', "window = 3\n")):
+            app = gap_app(self.miner.directory, f"{GAP}{table}", name=f"bad{index}")
+            result = self.miner.run(self.reasons(20, 21, 22), "--app-root", str(app))
+            self.assertEqual(result.returncode, 1, table)
+            self.assertIn("review-mine: no verification gap issues: [tool.fleet.verification.gap-issues]", result.stderr)
+            self.assertEqual(gap_issues(self.miner), [])
+            self.assertTrue(self.miner.writes(), "the report is still written")
+        bad = gap_app(self.miner.directory, "", name="scalar")
+        (bad / "pyproject.toml").write_text('[tool.fleet.verification]\nrequired = false\ngap-issues = 3\n', encoding="utf-8")
+        result = self.miner.run(self.reasons(20, 21, 22), "--app-root", str(bad))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("gap-issues] must be a table", result.stderr)
+
+    def test_a_failed_open_still_opens_the_others_and_fails_the_run(self) -> None:
+        pulls = [merged_pull(n, record(("D", "not verified", "first reason", "-"))) for n in (1, 2, 3)]
+        pulls += [merged_pull(n, record(("D", "not verified", "second reason", "-"))) for n in (4, 5, 6)]
+        pulls += [merged_pull(n, record(("D", "not verified", "third reason", "-"))) for n in (7, 8, 9)]
+        data = answers(pulls, [])
+        data[CREATE] = {"__series__": [{"number": 70}, {"__status__": 502}, {"number": 72}]}
+        result = self.miner.run(data, "--app-root", str(gap_app(self.miner.directory, guides=False)))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("failed (1)", result.stderr)
+        self.assertIn("the next run tries again", result.stderr)
+        self.assertEqual(len([c for c in self.miner.calls() if c["call"] == CREATE]), 3)
+        self.assertIn("opened #70 for verification-gap:reason:first-reason", result.stdout)
+        self.assertIn("opening the issue for verification-gap:reason:second-reason failed", result.stderr)
+        self.assertIn("opened #72 for verification-gap:reason:third-reason", result.stdout)
+
+    def test_ids_are_stable_and_folders_whose_slugs_meet_stay_apart(self) -> None:
+        self.assertEqual(rm.reason_id(rm.normalize("No fake, provider!")), rm.reason_id(rm.normalize("no FAKE provider")))
+        self.assertEqual(rm.reason_id(rm.normalize("no fake provider")), "verification-gap:reason:no-fake-provider")
+        self.assertNotEqual(rm.paths_id("a-b/"), rm.paths_id("a/b/"))
+        self.assertRegex(rm.paths_id("a/b/"), r"^verification-gap:paths:a-b-[0-9a-f]{12}$")
+        for text in ("x" * 300, "y" * 300):
+            self.assertTrue(rm.MINED.match(f"<!-- mined-from row:{rm.reason_id(text)} -->"))
+        self.assertNotEqual(rm.reason_id("x" * 300), rm.reason_id("x" * 299 + "y"))
+
+    def test_a_folder_is_at_most_two_levels_and_a_root_file_has_none(self) -> None:
+        self.assertEqual(rm.area_of("CHANGELOG.md"), None)
+        self.assertEqual(rm.area_of("/abs.py"), None)
+        self.assertEqual(rm.area_of("lib/x.py"), "lib/")
+        self.assertEqual(rm.area_of("lib/providers/x.py"), "lib/providers/")
+        self.assertEqual(rm.area_of("lib/providers/deep/x.py"), "lib/providers/")
+        self.assertEqual(rm.area_of(".github/workflows/ci.yml"), ".github/workflows/")
+
+
 def loop_stats(merged: int = 3, resolved: float | None = 0.4, when: str = NOW, days: int = 30) -> dict[str, Any]:
     findings = {"raised": 5, "by_severity": {"blocking": 1, "advisory": 3, "unknown": 1}, "resolved": 2, "dismissed": 1, "open": 2,
                 "resolved_share": resolved, "dismissed_share": 0.2, "at_merge": 0, "open_at_merge": 0, "open_at_merge_share": None,
@@ -1040,6 +1352,27 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotRegex(script, r"\$\{\{")
         self.assertIn("17 6 1 * *", self.text)
         self.assertIn("17 6 * * 1", self.text)
+
+    def test_gap_issues_take_no_new_input_permission_or_secret_and_follow_dry_run(self) -> None:
+        call = mapping(mapping(self.workflow["on"])["workflow_call"])
+        self.assertEqual(sorted(mapping(call["inputs"])), ["days", "dry-run", "fleet-ref", "loop-stats-days"])
+        self.assertIn("verification gap issues", str(mapping(mapping(call["inputs"])["dry-run"])["description"]))
+        mine = mapping(mapping(self.workflow["jobs"])["mine"])
+        self.assertEqual(mine["permissions"], {"contents": "read", "issues": "write", "pull-requests": "read"})
+        self.assertNotIn("secrets", self.text.split("jobs:", 1)[1])
+        script = self.text.split("run: |")[2]
+        self.assertIn('if [ "$DRY_RUN" = true ]; then flags+=(--dry-run); fi', script)
+        self.assertIn('--app-root "$GITHUB_WORKSPACE/app"', script)
+        self.assertIn('"${flags[@]}"', script)
+        self.assertNotRegex(script, r"\$\{\{")
+        self.assertIn("[tool.fleet.verification.gap-issues]", self.text)
+        self.assertIn("(opt-in; without it nothing changes)", self.text)
+        for doc in ("docs/review-mining.md", "docs/adopting.md"):
+            text = (ROOT / doc).read_text(encoding="utf-8")
+            self.assertIn("[tool.fleet.verification.gap-issues]", text, doc)
+        guide = (ROOT / "docs" / "review-mining.md").read_text(encoding="utf-8")
+        for line in ("Area: ", "Gap: ", "Evidence: ", "Would make it verifiable: ", rm.GAP_CRITERION):
+            self.assertIn(line, guide)
 
     def test_the_self_test_runs_it_in_dry_run_and_the_docs_name_both_schedules(self) -> None:
         workflow = mapping(self_check.parse((WORKFLOWS / "self-test.yml").read_text(encoding="utf-8")))

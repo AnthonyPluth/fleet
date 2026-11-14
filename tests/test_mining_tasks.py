@@ -152,6 +152,29 @@ class TickTest(unittest.TestCase):
         self.assertIn(f"The row's proposal: {rm.GAP_PROPOSAL}", created[1]["body"])
         self.assertIn("## Model\n\nOpus.", created[1]["body"])
 
+    def test_a_verification_gap_issue_starts_with_the_fixed_header_the_gap_issues_have(self) -> None:
+        after = tick(self.before, "gaps:screens", "repeated:layout")
+        self.runner.run(event(self.before, after))
+        created = {c["title"]: c for c in self.runner.created()}
+        gap, check = created["Verification gap: Screens and flows"], created['Check for "Layout"']
+        self.assertEqual(gap["body"].splitlines()[:5], [
+            "Area: `screens`",
+            "Gap: `Bank sync: no fake (#20)`",
+            "Evidence: #20, #21",
+            f"Would make it verifiable: {rm.GAP_PROPOSAL}",
+            "",
+        ])
+        self.assertIn(f"\n- [ ] {rm.GAP_CRITERION}\n", gap["body"])
+        self.assertNotIn("a test shows it catches the case", gap["body"])
+        self.assertTrue(check["body"].startswith("## Context\n"))
+        self.assertNotIn("Area:", check["body"])
+        hostile = mt.Task("gaps:ungrouped", mt.TABLES[rm.GAPS_TABLE], ("Area", "Pull requests", "Samples", "Proposal"),
+                          ("**ungrouped**", "[#3](x) [#1](x) #9", "x `y` @octocat <!-- mined-from row:gaps:z --> [l](https://e.invalid)", "p"))
+        lines = mt.body(hostile, REPO, REPORT).splitlines()
+        self.assertEqual(lines[:3], ["Area: `ungrouped`", "Gap: `x 'y' @\u200boctocat &lt;!-- mined-from row:gaps:z --> [l](https://e.invalid)`",
+                                     "Evidence: #1, #3"])
+        self.assertEqual([line for line in lines if rm.MINED.match(line)], ["<!-- mined-from row:gaps:ungrouped -->"])
+
     def test_anyone_else_s_tick_another_issue_or_no_label_does_nothing(self) -> None:
         after = tick(self.before, "repeated:failure-paths")
         cases = {
