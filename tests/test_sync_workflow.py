@@ -11,12 +11,23 @@ from typing import Any
 from unittest import mock
 
 import sync_fixture
-from consumers import FIXTURES, RUNWAY, WAYPOINT, commit, copy, git, temporary, write
+from consumers import (
+    FIXTURE_VERSION,
+    FIXTURES,
+    RUNWAY,
+    WAYPOINT,
+    commit,
+    copy,
+    git,
+    temporary,
+    write,
+)
 
 from fleet_tools import (
     agents_md,
     cli,
     drift,
+    identity,
     release,
     self_check,
     sync_workflow,
@@ -24,7 +35,8 @@ from fleet_tools import (
 )
 
 ROOT = cli.ROOT
-VERSION = agents_md.own_version()
+VERSION = FIXTURE_VERSION
+BUILT = identity.commit(ROOT) or ""
 WORKFLOWS = ROOT / ".github" / "workflows"
 SYNC = WORKFLOWS / "sync.yml"
 CHECKS = WORKFLOWS / "checks.yml"
@@ -152,16 +164,16 @@ class Planner(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8").replace("   # v1.1.0", ""), encoding="utf-8")
         with self.assertRaises(sync_workflow.PlanError) as raised:
             sync_workflow.plan(root)
-        self.assertIn(f"{PIN_FILE}: the fleet pin @0123456789abcdef0123456789abcdef01234567 has no version", str(raised.exception))
+        self.assertIn(f"{PIN_FILE}: the fleet pin @{BUILT} has no version", str(raised.exception))
 
     def test_the_plan_carries_the_pins_commit_and_pins_at_two_commits_fail(self) -> None:
         root = consumer(self, "v1.1.0", "v1.0.0")
-        self.assertEqual(sync_workflow.plan(root).commit, release.FIXTURE_COMMIT)
+        self.assertEqual(sync_workflow.plan(root).commit, BUILT)
         path = root / PIN_FILE
-        path.write_text(path.read_text(encoding="utf-8").replace(release.FIXTURE_COMMIT, "f" * 40), encoding="utf-8")
+        path.write_text(path.read_text(encoding="utf-8").replace(BUILT, "f" * 40), encoding="utf-8")
         with self.assertRaises(sync_workflow.PlanError) as raised:
             sync_workflow.plan(root)
-        self.assertEqual(str(raised.exception), f"the fleet pins at v1.1.0 name more than one commit: {release.FIXTURE_COMMIT} in "
+        self.assertEqual(str(raised.exception), f"the fleet pins at v1.1.0 name more than one commit: {BUILT} in "
                                                 f".github/workflows/sync.yml; {'f' * 40} in {PIN_FILE}; bump them together "
                                                 "(Dependabot's fleet group does)")
 
@@ -172,23 +184,23 @@ class Planner(unittest.TestCase):
                     root = consumer(self, "v1.1.0", content)
                     paths = sorted((root / ".github/workflows").glob("*.yml")) if every else [root / PIN_FILE]
                     for path in paths:
-                        path.write_text(path.read_text(encoding="utf-8").replace(f"@{release.FIXTURE_COMMIT}", "@main"),
+                        path.write_text(path.read_text(encoding="utf-8").replace(f"@{BUILT}", "@main"),
                                         encoding="utf-8")
                     with self.assertRaises(sync_workflow.PlanError) as raised:
                         sync_workflow.plan(root)
                     self.assertIn(f"{PIN_FILE}: the fleet pin at v1.1.0 is @main, a ref that can move; pin it by full "
                                   "commit SHA", str(raised.exception))
-        self.assertEqual(sync_workflow.plan(consumer(self, "v1.0.0", "v1.0.0")).commit, release.FIXTURE_COMMIT)
+        self.assertEqual(sync_workflow.plan(consumer(self, "v1.0.0", "v1.0.0")).commit, BUILT)
 
     def test_pins_moved_to_another_commit_at_the_same_version_sync(self) -> None:
         root = consumer(self, "v1.1.0", "v1.1.0")
         self.assertEqual(sync_workflow.plan(root).action, "none")
         other = "f" * 40
         for path in (root / ".github/workflows").glob("*.yml"):
-            path.write_text(path.read_text(encoding="utf-8").replace(release.FIXTURE_COMMIT, other), encoding="utf-8")
+            path.write_text(path.read_text(encoding="utf-8").replace(BUILT, other), encoding="utf-8")
         found = sync_workflow.plan(root)
         self.assertEqual((found.action, found.commit), ("sync", other))
-        self.assertIn(f"commit {other}; .fleet/version names {release.FIXTURE_COMMIT}", found.reason)
+        self.assertIn(f"commit {other}; .fleet/version names {BUILT}", found.reason)
         write(root, ".fleet/version", "v1.1.0\n")
         found = sync_workflow.plan(root)
         self.assertEqual(found.action, "sync")
@@ -251,7 +263,7 @@ class Planner(unittest.TestCase):
         lines = dict(line.split("=", 1) for line in out.splitlines())
         self.assertEqual(lines["action"], "sync")
         self.assertEqual(lines["pin"], "v1.1.0")
-        self.assertEqual(lines["commit"], release.FIXTURE_COMMIT)
+        self.assertEqual(lines["commit"], BUILT)
         self.assertEqual(lines["content"], "v1.0.0")
         self.assertEqual(lines["title"], "chore: fleet content v1.1.0")
         self.assertEqual(lines["branch"], "fleet/sync")
@@ -306,13 +318,13 @@ class Bodies(unittest.TestCase):
         found = sync_workflow.plan(consumer(self, "v2.0.0", "v1.0.0"))
         body = sync_workflow.body(found, "## [2.0.0] - 2026-06-01\n\n### Changed\n\n- Breaking.\n")
         for phrase in ("another major version", "doesn't cross a major",
-                       f'`uvx --from "git+https://github.com/AnthonyPluth/fleet@{release.FIXTURE_COMMIT}" fleet sync --to v2.0.0`',
+                       f'`uvx --from "git+https://github.com/AnthonyPluth/fleet@{BUILT}" fleet sync --to v2.0.0`',
                        "## CHANGELOG v1.0.0 → v2.0.0", "- Breaking."):
             self.assertIn(phrase, body)
 
     def test_the_pull_request_body_names_the_pins_commit(self) -> None:
         found = sync_workflow.plan(consumer(self, "v1.1.0", "v1.0.0"))
-        self.assertIn(f"the pins' commit `{release.FIXTURE_COMMIT}`, which `tools/fleet` runs fleet at", sync_workflow.body(found, CHANGELOG))
+        self.assertIn(f"the pins' commit `{BUILT}`, which `tools/fleet` runs fleet at", sync_workflow.body(found, CHANGELOG))
 
     def test_nothing_to_do_has_no_body(self) -> None:
         self.assertEqual(sync_workflow.body(sync_workflow.plan(consumer(self, "v1.0.0", "v1.0.0")), CHANGELOG), "")
@@ -331,10 +343,9 @@ class SyncWritesNoWorkflow(unittest.TestCase):
     def changed_by_a_sync(self, pins: str, content: str) -> tuple[Path, list[str]]:
         root = consumer(self, pins, content)
         before = {path.relative_to(root).as_posix(): path.read_bytes() for path in (root / ".github").rglob("*") if path.is_file()}
-        with mock.patch.object(agents_md, "own_version", return_value=pins):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(cli.main(["sync", "--to", pins, "--root", str(root)]), 0, out.getvalue())
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["sync", "--to", pins, "--root", str(root)]), 0, out.getvalue() + err.getvalue())
         git(root, "add", "-A")
         changed = sorted(git(root, "diff", "--cached", "--name-only").split())
         after = {path.relative_to(root).as_posix(): path.read_bytes() for path in (root / ".github").rglob("*") if path.is_file()}
@@ -356,7 +367,7 @@ class SyncWritesNoWorkflow(unittest.TestCase):
                 self.assertEqual(git(root, "status", "--porcelain", "--", ".github"), "")
 
     def test_nothing_a_sync_writes_lives_under_github(self) -> None:
-        shipped = vendor.shipped_at(VERSION)
+        shipped = vendor.shipped_at(VERSION, own=True)
         assert shipped
         for target in [*shipped, Path(agents_md.AGENTS), agents_md.VERSION_FILE]:
             self.assertNotEqual(target.parts[0], ".github", target)
@@ -374,11 +385,11 @@ class Fixture(unittest.TestCase):
         self.assertEqual(workflows, ["ci.yml", "merge-gate.yml", "sync.yml"])
         pinned, problems = drift.pins(root)
         self.assertEqual((problems, pinned), ([], {"v1.1.0": [".github/workflows/merge-gate.yml", ".github/workflows/sync.yml"]}))
-        self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), f"v1.0.0\n{release.FIXTURE_COMMIT}\n")
+        self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), f"v1.0.0\n{BUILT}\n")
         text = (root / "AGENTS.md").read_text(encoding="utf-8")
         self.assertEqual({block.version for block in agents_md.blocks(text)}, {"v1.0.0"})
         self.assertEqual(len(agents_md.blocks(text)), len(agents_md.ORDER))
-        for target, vendored in (vendor.shipped_at(VERSION) or {}).items():
+        for target, vendored in (vendor.shipped_at(VERSION, own=True) or {}).items():
             with self.subTest(target=target):
                 self.assertIn("vendored from fleet v1.0.0 ", (root / target).read_text(encoding="utf-8"))
                 self.assertEqual((root / target).stat().st_mode & 0o100 != 0, vendored.executable)
@@ -400,11 +411,11 @@ class Fixture(unittest.TestCase):
         self.assertFalse(any(path.startswith(".github/") for path in expected))
 
     def test_the_drifted_fixture_drifts_and_passes_the_checks(self) -> None:
-        problems, _ = drift.drift(DRIFTED)
+        problems, _ = drift.drift(DRIFTED, release.FIXTURE_COMMIT)
         self.assertEqual([problem for problem in problems if problem.startswith("AGENTS.md")],
                          [f"AGENTS.md: the mistakes block differs from fleet's at {VERSION}; edit it in fleet "
                           "(agents-md/sections/mistakes.md), not here, or run `fleet sync`"],
-                         "regenerate tests/fixtures/drifted at this VERSION: fleet's blocks with one line added inside mistakes")
+                         "regenerate tests/fixtures/drifted at the fixtures' version: fleet's blocks with one line added inside mistakes")
         self.assertEqual((DRIFTED / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{release.FIXTURE_COMMIT}\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -428,7 +439,7 @@ class SyncWorkflow(unittest.TestCase):
         self.assertEqual(list(secrets), ["FLEET_BOT_PRIVATE_KEY"])
         self.assertEqual(mapping(secrets["FLEET_BOT_PRIVATE_KEY"])["required"], "false")
         self.assertEqual(sorted(call["outputs"]), ["action", "body", "changed", "title"])
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(ROOT))})
         self.assertEqual(self.workflow["permissions"], "{}")
 
     def test_the_job_holds_the_least_permissions_and_runs_hosted(self) -> None:
@@ -565,7 +576,7 @@ def sparse_paths(chunk: str) -> list[str]:
 
 
 class FixtureMode(unittest.TestCase):
-    NEEDED = ("fleet_tools", "agents-md", "plugins", "shim", "VERSION", "CHANGELOG.md", "tests/consumers.py", "tests/sync_fixture.py",
+    NEEDED = ("fleet_tools", "agents-md", "plugins", "shim", "CHANGELOG.md", "tests/consumers.py", "tests/sync_fixture.py",
               "tests/fixtures/consumer-waypoint")
 
     def setUp(self) -> None:
@@ -580,7 +591,7 @@ class FixtureMode(unittest.TestCase):
         body = script_of(self.steps["Write the pull request's or the issue's body"])
         self.assertIn('--changelog "$GITHUB_WORKSPACE/.fleet-pin/CHANGELOG.md"', body)
 
-    def sparse_fleet(self, workspace: Path) -> Path:
+    def sparse_fleet(self, workspace: Path) -> str:
         fleet = workspace / ".fleet"
         for path in sparse_paths(self.fleet_checkout):
             source, target = ROOT / path, fleet / path
@@ -589,7 +600,12 @@ class FixtureMode(unittest.TestCase):
                 shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
             else:
                 shutil.copy2(source, target)
-        return fleet
+        git(fleet, "init", "-q", "-b", "main")
+        return commit(fleet, "chore: fleet at the workflow's own commit")
+
+    def test_the_sparse_checkout_holds_nothing_that_stamps_a_version(self) -> None:
+        self.assertNotIn("VERSION", sparse_paths(self.fleet_checkout))
+        self.assertNotIn("VERSION", self.steps["fleet at the pins' version"])
 
     def run_step(self, name: str, workspace: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         done = subprocess.run(["bash", "-eo", "pipefail", "-c", script_of(self.steps[name])], cwd=workspace, env=env,
@@ -605,7 +621,7 @@ class FixtureMode(unittest.TestCase):
                              ("pins=v1.0.0 content=v1.0.0", "none")):
             with self.subTest(spec=spec):
                 workspace = temporary(self)
-                self.sparse_fleet(workspace)
+                own = self.sparse_fleet(workspace)
                 (workspace / "temp").mkdir()
                 env = {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "HOME": str(workspace), "GITHUB_WORKSPACE": str(workspace),
                        "RUNNER_TEMP": str(workspace / "temp"), "GITHUB_OUTPUT": str(workspace / "temp" / "output"), "SPEC": spec, "FIXTURE": spec}
@@ -618,9 +634,10 @@ class FixtureMode(unittest.TestCase):
                     continue
                 env["PIN"] = found["pin"]
                 env["COMMIT"] = found["commit"]
-                self.assertEqual(found["commit"], release.FIXTURE_COMMIT)
-                self.run_step("fleet at the pins' version", workspace, env)
-                self.assertEqual((workspace / ".fleet-pin/VERSION").read_text(encoding="utf-8").strip(), found["pin"][1:])
+                self.assertEqual(found["commit"], own)
+                done = self.run_step("fleet at the pins' version", workspace, env)
+                self.assertIn(f"fleet {found['pin']} at {own} in .fleet-pin", done.stdout)
+                self.assertFalse((workspace / ".fleet-pin/VERSION").exists())
                 self.run_step("Write the pull request's or the issue's body", workspace, env)
                 body = (workspace / "temp/body.md").read_text(encoding="utf-8")
                 self.assertIn(f"## CHANGELOG v1.0.0 → {found['pin']}", body)
@@ -629,13 +646,12 @@ class FixtureMode(unittest.TestCase):
                     self.run_step("Sync the content", workspace, env)
                     changed = base64.b64decode(self.outputs(env)["changed"]).decode().split()
                     self.assertEqual(sorted(changed), sync_fixture.expected())
-                    self.assertEqual((workspace / "app/.fleet/version").read_text(encoding="utf-8"),
-                                     f"v1.1.0\n{release.FIXTURE_COMMIT}\n")
+                    self.assertEqual((workspace / "app/.fleet/version").read_text(encoding="utf-8"), f"v1.1.0\n{own}\n")
 
     def test_a_real_sync_refuses_a_tag_off_the_pins_commit(self) -> None:
         workspace = temporary(self)
         fleet = workspace / "upstream"
-        write(fleet, "VERSION", "1.1.0\n")
+        write(fleet, "README.md", "fleet at v1.1.0\n")
         git(fleet, "init", "-q", "-b", "main")
         commit(fleet, "chore: fleet at the tag")
         git(fleet, "tag", "v1.1.0")
@@ -649,7 +665,7 @@ class FixtureMode(unittest.TestCase):
         env["COMMIT"] = git(fleet, "rev-parse", "HEAD").strip()
         done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=workspace, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("fleet 1.1.0 in .fleet-pin", done.stdout)
+        self.assertIn(f"fleet v1.1.0 at {env['COMMIT']} in .fleet-pin", done.stdout)
 
 
 class ChecksWorkflow(unittest.TestCase):
@@ -661,15 +677,16 @@ class ChecksWorkflow(unittest.TestCase):
     def test_the_inputs_and_the_permissions(self) -> None:
         call = mapping(mapping(self.workflow["on"])["workflow_call"])
         inputs = mapping(call["inputs"])
-        self.assertEqual(sorted(inputs), ["expect-drift", "fleet-ref", "runs-on", "working-directory"])
+        self.assertEqual(sorted(inputs), ["expect-drift", "fixture-commit", "fleet-ref", "runs-on", "working-directory"])
         self.assertEqual(mapping(inputs["runs-on"])["default"], '"ubuntu-latest"')
         self.assertEqual(mapping(inputs["working-directory"])["default"], ".")
         self.assertEqual(mapping(inputs["expect-drift"])["default"], "false")
+        self.assertEqual(mapping(inputs["fixture-commit"])["default"], "")
         self.assertNotIn("secrets", call)
         job = mapping(mapping(self.workflow["jobs"])["checks"])
         self.assertEqual(job["permissions"], {"contents": "read"})
         self.assertEqual(job["runs-on"], "${{ fromJSON(inputs.runs-on) }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(ROOT))})
         self.assertEqual(self.workflow["permissions"], "{}")
 
     def test_the_consumer_is_checked_out_into_app_with_history_before_fleet_at_the_pinned_ref(self) -> None:
@@ -709,7 +726,8 @@ class ChecksWorkflow(unittest.TestCase):
         commit(app, "chore: the consumer")
         (root / ".fleet").symlink_to(ROOT, target_is_directory=True)
         env = {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "GITHUB_WORKSPACE": str(root), "DIR": working_directory,
-               "EVENT": "push", "BASE": "", "HEAD": "", "EXPECT_DRIFT": "false", "HOME": str(root)}
+               "EVENT": "push", "BASE": "", "HEAD": "", "EXPECT_DRIFT": "false", "HOME": str(root),
+               "FIXTURE_COMMIT": release.FIXTURE_COMMIT}
         return root, env
 
     def run_step(self, name: str, root: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -750,6 +768,17 @@ class ChecksWorkflow(unittest.TestCase):
         self.assertIn('fleet_tools.cli checks --root "$root" "${args[@]}"', script)
         self.assertNotIn("github.event.pull_request.body", checks)
 
+    def test_the_fixture_commit_reaches_drift_only_when_given(self) -> None:
+        drift_step = self.steps["fleet drift"]
+        self.assertIn("FIXTURE_COMMIT: ${{ inputs.fixture-commit }}", drift_step)
+        self.assertIn('args=(--own-commit "$FIXTURE_COMMIT")', drift_step)
+        self.assertNotIn("FIXTURE_COMMIT", self.steps["fleet checks"])
+        root, env = self.workspace(".")
+        env["FIXTURE_COMMIT"] = "not-a-commit"
+        done = self.run_step("fleet drift", root, env)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("--own-commit 'not-a-commit' isn't a commit", done.stderr)
+
     def test_expect_drift_inverts_the_drift_step_only(self) -> None:
         script = self.steps["fleet drift"].split("run: |\n", 1)[1]
         self.assertIn('if [ "$EXPECT_DRIFT" = true ]; then', script)
@@ -778,6 +807,8 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(mapping(drifted["with"])["expect-drift"], "true")
         for job in (clean, drifted):
             self.assertEqual(job["permissions"], {"contents": "read"})
+        for name in ("checks-clean", "checks-own-commit", "checks-drifted"):
+            self.assertEqual(mapping(mapping(self.jobs[name])["with"])["fixture-commit"], release.FIXTURE_COMMIT, name)
 
     def test_the_sync_cases_differ_by_fixture_and_a_verdict_job_checks_them(self) -> None:
         cases = {name: mapping(job) for name, job in self.jobs.items() if name.startswith("sync-") and name != "sync-verdicts"}

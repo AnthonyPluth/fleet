@@ -3,13 +3,15 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from fleet_tools import identity
+
+ROOT = identity.ROOT
 SECTIONS = Path("agents-md/sections")
 ORDER = ("starting-work", "working-in-a-container", "mistakes", "git-and-prs")
 AGENTS = "AGENTS.md"
 VERSION_FILE = Path(".fleet/version")
 VERSION = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
-COMMIT = re.compile(r"[0-9a-f]{40}")
+COMMIT = identity.COMMIT
 LAST_WITHOUT_COMMIT = "v1.0.0"
 BEGIN = re.compile(r"<!-- fleet:begin (?P<name>[a-z0-9-]+) (?P<version>v\d+\.\d+\.\d+) -->")
 END = re.compile(r"<!-- fleet:end (?P<name>[a-z0-9-]+) -->")
@@ -94,12 +96,6 @@ def parse_section(name: str, text: str) -> Section:
     return Section(name, heading, body)
 
 
-def own_version() -> str:
-    from fleet_tools.cli import version
-
-    return "v" + version()
-
-
 def sections(root: Path | None = None) -> dict[str, Section]:
     root = root or ROOT
     return {name: parse_section(name, (root / SECTIONS / f"{name}.md").read_text(encoding="utf-8")) for name in ORDER}
@@ -122,11 +118,9 @@ def tagged_sections(version: str, root: Path) -> dict[str, Section] | None:
     return found
 
 
-def sections_at(version: str, root: Path | None = None) -> dict[str, Section] | None:
+def sections_at(version: str, own: bool, root: Path | None = None) -> dict[str, Section] | None:
     root = root or ROOT
-    if version == own_version():
-        return sections(root)
-    return tagged_sections(version, root)
+    return sections(root) if own else tagged_sections(version, root)
 
 
 def render(section: Section, version: str) -> str:

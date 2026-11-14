@@ -2,27 +2,43 @@ import contextlib
 import io
 import os
 import random
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from consumers import RUNWAY, WAYPOINT, commit, copy, git, temporary, write
+from consumers import (
+    FIXTURE_VERSION,
+    RUNWAY,
+    WAYPOINT,
+    commit,
+    copy,
+    git,
+    tagged_fleet,
+    temporary,
+    write,
+)
 
-from fleet_tools import agents_md, cli, drift, marketplace, vendor
+from fleet_tools import agents_md, cli, drift, identity, marketplace, vendor
 from fleet_tools.release import FIXTURE_COMMIT
 
-VERSION = agents_md.own_version()
+VERSION = FIXTURE_VERSION
 PIN_FILE = ".github/workflows/merge-gate.yml"
 
 
-def run(root: Path, actions: bool = False) -> tuple[int, str, str]:
+def run(root: Path, actions: bool = False, own: str | None = FIXTURE_COMMIT) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     env = {"GITHUB_ACTIONS": "true"} if actions else {}
     with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         if not actions:
             os.environ.pop("GITHUB_ACTIONS", None)
-        code = cli.main(["drift", "--root", str(root)])
+        code = cli.main(["drift", "--root", str(root), *(["--own-commit", own] if own else [])])
     return code, out.getvalue(), err.getvalue()
+
+
+def problems_at_a_release(test: unittest.TestCase, root: Path) -> list[str]:
+    with mock.patch.object(agents_md, "ROOT", tagged_fleet(test)):
+        return drift.drift(root)[0]
 
 
 def older(version: str) -> str:
@@ -44,7 +60,7 @@ class Clean(unittest.TestCase):
             with self.subTest(fixture=fixture.name):
                 code, out, err = run(copy(self, fixture, repository=False))
                 self.assertEqual((code, err), (0, ""))
-                vendored = len(vendor.shipped_at(VERSION) or {})
+                vendored = len(vendor.shipped_at(VERSION, own=True) or {})
                 self.assertEqual(out, f"fleet drift: no drift: 4 AGENTS.md blocks, {vendored} vendored files and "
                                       f".fleet/version at {VERSION} (commit {FIXTURE_COMMIT}); "
                                       f"fleet workflow pins: {VERSION}.\n")
@@ -52,13 +68,14 @@ class Clean(unittest.TestCase):
     def test_content_from_before_the_commit_line_needs_none(self) -> None:
         root = copy(self, WAYPOINT, repository=False)
         write(root, ".fleet/version", f"{VERSION}\n")
-        problems, summary = drift.drift(root)
-        if agents_md.needs_commit(VERSION):
-            self.assertEqual(problems, [f".fleet/version names no commit for {VERSION} on its line 2, which tools/fleet runs "
-                                        f"fleet at; run `fleet sync --to {VERSION}` from fleet at {VERSION}, which writes it"])
-        else:
-            self.assertEqual(problems, [])
-            self.assertIn(f".fleet/version at {VERSION} (no commit: fleet {VERSION} wrote none)", summary)
+        problems = problems_at_a_release(self, root)
+        self.assertTrue(agents_md.needs_commit(VERSION))
+        self.assertEqual(problems, [f".fleet/version names no commit for {VERSION} on its line 2, which tools/fleet runs "
+                                    f"fleet at; run `fleet sync --to {VERSION}` from fleet at {VERSION}, which writes it"])
+        write(root, ".fleet/version", "v1.0.0\n")
+        with mock.patch.object(agents_md, "ROOT", tagged_fleet(self, "v1.0.0")):
+            problems, _ = drift.drift(root)
+        self.assertFalse(any("names no commit" in problem for problem in problems), problems)
         self.assertFalse(agents_md.needs_commit("v1.0.0"))
         self.assertTrue(agents_md.needs_commit("v1.0.1"))
         self.assertTrue(agents_md.needs_commit("v1.1.0"))
@@ -68,7 +85,7 @@ class Clean(unittest.TestCase):
         for content, needs in (("v1.0.0", False), ("v1.1.0", True), ("v2.0.0", True)):
             with self.subTest(content=content):
                 write(root, ".fleet/version", f"{content}\n")
-                problems, _ = drift.drift(root)
+                problems, _ = drift.drift(root, FIXTURE_COMMIT)
                 missing = f".fleet/version names no commit for {content} on its line 2"
                 self.assertEqual(any(problem.startswith(missing) for problem in problems), needs, problems)
 
@@ -103,7 +120,7 @@ class Clean(unittest.TestCase):
 
 class Drifted(unittest.TestCase):
     def problems(self, root: Path) -> list[str]:
-        return drift.drift(root)[0]
+        return drift.drift(root, FIXTURE_COMMIT)[0]
 
     def test_a_one_character_edit_inside_a_block_fails(self) -> None:
         rng = random.Random(7)
@@ -144,8 +161,8 @@ class Drifted(unittest.TestCase):
                         encoding="utf-8")
         problems = self.problems(root)
         self.assertTrue(any("more than one version" in problem and "mistakes v0.0.1" in problem for problem in problems))
-        self.assertIn(f"AGENTS.md: can't read fleet's mistakes block at v0.0.1 from fleet {VERSION}; run fleet drift "
-                      "from fleet at v0.0.1", problems)
+        self.assertIn(f"AGENTS.md: can't read fleet's mistakes block at v0.0.1 from {identity.describe()}; run fleet "
+                      "drift from fleet at v0.0.1", problems)
 
     def test_content_ahead_of_the_workflow_pins_fails(self) -> None:
         root = copy(self, WAYPOINT, repository=False)
@@ -170,7 +187,7 @@ class Drifted(unittest.TestCase):
     def test_a_commit_that_differs_from_the_pins_fails(self) -> None:
         root = copy(self, WAYPOINT, repository=False)
         write(root, ".fleet/version", f"{VERSION}\n{'f' * 40}\n")
-        self.assertEqual(self.problems(root), [
+        self.assertEqual(problems_at_a_release(self, root), [
             f".fleet/version says fleet {VERSION} is commit {'f' * 40}, but the workflow pins at {VERSION} in {PIN_FILE} name "
             f"{FIXTURE_COMMIT}; run `fleet sync --to {VERSION}`, which takes the pins' commit"])
 
@@ -179,7 +196,7 @@ class Drifted(unittest.TestCase):
         x, y, _ = agents_md.version_key(VERSION)
         pin(root, f"v{x}.{y + 1}.0")
         write(root, ".fleet/version", f"{VERSION}\n{'f' * 40}\n")
-        self.assertEqual(self.problems(root), [])
+        self.assertEqual(problems_at_a_release(self, root), [])
 
     def test_a_pin_at_the_contents_version_by_a_movable_ref_fails(self) -> None:
         for ref in ("main", VERSION):
@@ -208,7 +225,7 @@ class Drifted(unittest.TestCase):
                                                                         "and the commit it is at (line 2)")):
             with self.subTest(text=text):
                 write(root, ".fleet/version", text)
-                problems = self.problems(root)
+                problems = problems_at_a_release(self, root)
                 self.assertIn(f"{problem}; run `fleet sync`", problems)
                 self.assertEqual(len(problems), 1, problems)
 
@@ -226,7 +243,7 @@ class Drifted(unittest.TestCase):
                             ("a trailing form feed", f"{FIXTURE_COMMIT}\f"), ("a carriage return after a space", f"{FIXTURE_COMMIT} \r")):
             with self.subTest(label):
                 write(root, ".fleet/version", f"{VERSION}\n{line}\n")
-                problems = self.problems(root)
+                problems = problems_at_a_release(self, root)
                 self.assertEqual(len(problems), 1, problems)
                 self.assertTrue(problems[0].startswith(f".fleet/version line 2 holds {line!r}: "), problems)
                 self.assertTrue(problems[0].endswith("; run `fleet sync`"), problems)
@@ -238,8 +255,8 @@ class Drifted(unittest.TestCase):
         block = next(each for each in agents_md.blocks(text) if each.name == "git-and-prs")
         path.write_text(text[:block.start] + text[block.end:], encoding="utf-8")
         (root / ".fleet/version").unlink()
-        self.assertEqual(self.problems(root), [f"AGENTS.md: no git-and-prs block (fleet sync --to {VERSION} inserts it)",
-                                               ".fleet/version doesn't exist (fleet sync writes it)"])
+        self.assertEqual(problems_at_a_release(self, root), [f"AGENTS.md: no git-and-prs block (fleet sync --to {VERSION} inserts it)",
+                                                             ".fleet/version doesn't exist (fleet sync writes it)"])
         path.unlink()
         self.assertIn("AGENTS.md doesn't exist (fleet sync writes its blocks)", self.problems(root))
 
@@ -260,6 +277,14 @@ class Drifted(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "cwd", return_value=Path("/")):
             self.assertEqual(cli.main(["drift"]), 2)
 
+    def test_an_own_commit_that_isnt_a_commit_exits_2(self) -> None:
+        root = copy(self, WAYPOINT, repository=False)
+        for given in ("abc", FIXTURE_COMMIT.upper(), FIXTURE_COMMIT + "0"):
+            with self.subTest(given=given):
+                code, out, err = run(root, own=given)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"fleet drift: --own-commit {given[:40]!r} isn't a commit (40 hex digits)", err)
+
 
 class OtherVersions(unittest.TestCase):
     def fleet(self) -> Path:
@@ -272,22 +297,23 @@ class OtherVersions(unittest.TestCase):
         git(root, "tag", "v0.0.5")
         return root
 
-    def consumer(self, fleet: Path) -> Path:
+    def consumer(self, fleet: Path, sections: dict[str, agents_md.Section], at: str) -> Path:
         root = copy(self, WAYPOINT, repository=False)
-        with mock.patch.object(agents_md, "ROOT", fleet):
-            old = agents_md.sections_at("v0.0.5", fleet)
-        assert old is not None
         path = root / "AGENTS.md"
-        path.write_text(agents_md.sync(path.read_text(encoding="utf-8"), old, "v0.0.5")[0], encoding="utf-8")
-        write(root, ".fleet/version", f"v0.0.5\n{FIXTURE_COMMIT}\n")
+        path.write_text(agents_md.sync(path.read_text(encoding="utf-8"), sections, "v0.0.5")[0], encoding="utf-8")
+        write(root, ".fleet/version", f"v0.0.5\n{at}\n")
         pin(root, "v0.0.5")
+        workflow = root / PIN_FILE
+        workflow.write_text(workflow.read_text(encoding="utf-8").replace(FIXTURE_COMMIT, at), encoding="utf-8")
         marketplace.sync(root, "v0.0.5")
         return root
 
     def test_blocks_at_an_older_tag_are_read_from_fleets_history(self) -> None:
         fleet = self.fleet()
-        root = self.consumer(fleet)
-        with mock.patch.object(agents_md, "ROOT", fleet), mock.patch.object(agents_md, "own_version", return_value=VERSION):
+        old = agents_md.sections_at("v0.0.5", False, fleet)
+        assert old is not None
+        root = self.consumer(fleet, old, FIXTURE_COMMIT)
+        with mock.patch.object(agents_md, "ROOT", fleet):
             self.assertEqual(drift.drift(root)[0], [])
             path = root / "AGENTS.md"
             path.write_text(path.read_text(encoding="utf-8").replace("**Old layout**", "**Layout**"), encoding="utf-8")
@@ -295,34 +321,51 @@ class OtherVersions(unittest.TestCase):
                                                     "it in fleet (agents-md/sections/mistakes.md), not here, or run "
                                                     "`fleet sync`"])
 
-    def test_fleets_own_version_is_read_from_the_working_tree_and_another_from_its_tag(self) -> None:
+    def test_content_at_this_fleets_commit_is_read_from_its_files_and_at_another_from_the_tag(self) -> None:
         fleet = self.fleet()
+        head = git(fleet, "rev-parse", "HEAD").strip()
         path = fleet / "agents-md/sections/mistakes.md"
         path.write_text(path.read_text(encoding="utf-8").replace("Old layout", "Newer layout"), encoding="utf-8")
-        with mock.patch.object(agents_md, "own_version", return_value="v0.0.5"):
-            own = agents_md.sections_at("v0.0.5", fleet)
-        with mock.patch.object(agents_md, "own_version", return_value=VERSION):
-            released = agents_md.sections_at("v0.0.5", fleet)
-        assert own is not None and released is not None
-        self.assertIn("Newer layout", own["mistakes"].body)
-        self.assertNotIn("Old layout", own["mistakes"].body)
-        self.assertIn("Old layout", released["mistakes"].body)
-        self.assertNotIn("Newer layout", released["mistakes"].body)
-
-    def test_a_consumer_synced_between_releases_matches_the_working_tree_not_the_tag(self) -> None:
-        fleet = self.fleet()
-        path = fleet / "agents-md/sections/mistakes.md"
-        path.write_text(path.read_text(encoding="utf-8").replace("Old layout", "Newer layout"), encoding="utf-8")
-        root = copy(self, WAYPOINT, repository=False)
-        with mock.patch.object(agents_md, "ROOT", fleet), mock.patch.object(agents_md, "own_version", return_value="v0.0.5"):
-            agents = root / "AGENTS.md"
-            agents.write_text(agents_md.sync(agents.read_text(encoding="utf-8"), agents_md.sections(fleet), "v0.0.5")[0], encoding="utf-8")
-            write(root, ".fleet/version", f"v0.0.5\n{FIXTURE_COMMIT}\n")
-            pin(root, "v0.0.5")
-            marketplace.sync(root, "v0.0.5")
+        self.assertIn("Newer layout", (agents_md.sections_at("v0.0.5", True, fleet) or {})["mistakes"].body)
+        self.assertIn("Old layout", (agents_md.sections_at("v0.0.5", False, fleet) or {})["mistakes"].body)
+        root = self.consumer(fleet, agents_md.sections(fleet), head)
+        with mock.patch.object(agents_md, "ROOT", fleet):
+            self.assertEqual(identity.commit(fleet), head)
             self.assertEqual(drift.drift(root)[0], [])
+            other = "f" * 40
+            for relative in (".fleet/version", PIN_FILE):
+                target = root / relative
+                target.write_text(target.read_text(encoding="utf-8").replace(head, other), encoding="utf-8")
+            self.assertEqual(drift.drift(root)[0], ["AGENTS.md: the mistakes block differs from fleet's at v0.0.5; edit "
+                                                    "it in fleet (agents-md/sections/mistakes.md), not here, or run "
+                                                    "`fleet sync`"])
+            self.assertEqual(drift.drift(root, other)[0], [])
+
+    def test_the_version_alone_no_longer_makes_content_this_fleets(self) -> None:
+        fleet = self.fleet()
+        path = fleet / "agents-md/sections/mistakes.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("Old layout", "Newer layout"), encoding="utf-8")
+        root = self.consumer(fleet, agents_md.sections(fleet), FIXTURE_COMMIT)
+        with mock.patch.object(agents_md, "ROOT", fleet):
+            self.assertIn("AGENTS.md: the mistakes block differs from fleet's at v0.0.5; edit it in fleet "
+                          "(agents-md/sections/mistakes.md), not here, or run `fleet sync`", drift.drift(root)[0])
+            self.assertEqual(drift.drift(root, FIXTURE_COMMIT)[0], [])
+
+    def test_an_installed_fleet_reads_content_at_its_own_commit_from_its_files(self) -> None:
+        site = temporary(self) / "site-packages"
+        for directory in ("agents-md", "plugins", "shim"):
+            shutil.copytree(agents_md.ROOT / directory, site / directory, ignore=shutil.ignore_patterns("__pycache__"))
+        root = copy(self, WAYPOINT, repository=False)
+        with mock.patch.object(agents_md, "ROOT", site), mock.patch.object(identity, "installed_commit", return_value=FIXTURE_COMMIT):
+            self.assertEqual(drift.drift(root)[0], [])
+        with mock.patch.object(agents_md, "ROOT", site), mock.patch.object(identity, "installed_commit", return_value="f" * 40):
+            problems = drift.drift(root)[0]
+        self.assertIn(f"AGENTS.md: can't read fleet's mistakes block at {VERSION} from fleet at commit {'f' * 40}; run "
+                      f"fleet drift from fleet at {VERSION}", problems)
+        self.assertIn(f"can't read fleet's vendored files at {VERSION} from fleet at commit {'f' * 40}; run fleet drift "
+                      f"from fleet at {VERSION}", problems)
 
     def test_an_unknown_tag_cannot_be_compared(self) -> None:
         fleet = self.fleet()
-        self.assertIsNone(agents_md.sections_at("v9.9.9", fleet))
-        self.assertIsNone(agents_md.sections_at("v9.9.9", temporary(self)))
+        self.assertIsNone(agents_md.sections_at("v9.9.9", False, fleet))
+        self.assertIsNone(agents_md.sections_at("v9.9.9", False, temporary(self)))

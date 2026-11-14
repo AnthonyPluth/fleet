@@ -36,7 +36,7 @@ on:
         type: boolean
         default: false
       fixture:
-        description: Self-test only. Build a fixture consumer in place of the caller's checkout ("pins=v1.1.0 content=v1.0.0") and sync it from this fleet stamped at the pins' version; implies dry-run.
+        description: Self-test only. Build a fixture consumer in place of the caller's checkout ("pins=v1.1.0 content=v1.0.0", its pins at this fleet's commit) and sync it from this fleet; implies dry-run.
         type: string
         default: ""
       fleet-ref:
@@ -122,11 +122,11 @@ jobs:
             tests/sync_fixture.py
             tests/fixtures/consumer-waypoint
             CHANGELOG.md
-            VERSION
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # Self-test only: a consumer built from fleet's fixture with its pins and its content at the given versions.
+      # Self-test only: a consumer built from fleet's fixture with its pins and its content at the given versions, all
+      # at this fleet's own commit (the fixture builder reads it from the checkout), so `fleet sync` takes it for its own.
       - name: Build the fixture consumer (self-test)
         if: inputs.fixture != ''
         env:
@@ -141,12 +141,12 @@ jobs:
           cd .fleet || exit 1
           python3 -E -s -m fleet_tools.cli sync-plan --root "$GITHUB_WORKSPACE/app" | tee -a "$GITHUB_OUTPUT"
 
-      # fleet at the pins' version, in .fleet-pin/: `fleet sync --to <pin>` must run from the fleet that ships that
-      # version's content, and the CHANGELOG there lists what changed. A plain clone of the public repository at the
-      # commit the pins name (validated by the planner, read from the caller's own workflows on its default branch),
-      # no token; the clone must be the tag the pins' comment names, so a tag moved off that commit fails here. The
-      # one checkout of fleet by the action stays at this workflow's pinned ref. The self-test has no such tag, so it
-      # takes a copy of this fleet, with its VERSION stamped to the pin.
+      # fleet at the pins' version, in .fleet-pin/: `fleet sync --to <pin>` must run from the fleet at the commit the
+      # pins name (it refuses any other), and the CHANGELOG there lists what changed. A plain clone of the public
+      # repository at the commit the pins name (validated by the planner, read from the caller's own workflows on its
+      # default branch), no token; the clone must be the tag the pins' comment names, so a tag moved off that commit
+      # fails here. The one checkout of fleet by the action stays at this workflow's pinned ref. The self-test has no
+      # such tag; its fixture pins this fleet's own commit, so it takes a copy of this fleet's checkout.
       - name: fleet at the pins' version
         if: steps.plan.outputs.action != 'none'
         env:
@@ -164,7 +164,6 @@ jobs:
           fi
           if [ -n "$FIXTURE" ]; then
             cp -a .fleet .fleet-pin
-            echo "${PIN#v}" > .fleet-pin/VERSION
           else
             git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin
             head=$(git -C .fleet-pin rev-parse HEAD)
@@ -173,7 +172,7 @@ jobs:
               exit 1
             fi
           fi
-          echo "fleet $(cat .fleet-pin/VERSION) in .fleet-pin"
+          echo "fleet $PIN at $(git -C .fleet-pin rev-parse HEAD) in .fleet-pin"
 
       - name: Write the pull request's or the issue's body
         id: body

@@ -3,7 +3,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from fleet_tools import agents_md
+from fleet_tools import agents_md, identity
 
 SKILLS = Path("plugins/fleet/skills")
 FILES = {
@@ -91,9 +91,9 @@ def tagged(version: str, root: Path) -> dict[Path, str] | None:
         return None
 
 
-def shipped_at(version: str, root: Path | None = None) -> dict[Path, Vendored] | None:
+def shipped_at(version: str, own: bool, root: Path | None = None) -> dict[Path, Vendored] | None:
     root = root or agents_md.ROOT
-    sources = working_tree(root) if version == agents_md.own_version() else tagged(version, root)
+    sources = working_tree(root) if own else tagged(version, root)
     return None if sources is None else render(sources, version)
 
 
@@ -114,10 +114,7 @@ def is_vendored_skill(text: str) -> bool:
     return len(lines) > 2 and lines[0] == "---" and bool(SKILL_NOTE.fullmatch(lines[1]))
 
 
-def sync(root: Path, version: str, shipped: dict[Path, Vendored] | None = None) -> list[str]:
-    shipped = shipped if shipped is not None else shipped_at(version)
-    if shipped is None:
-        raise VendorError(f"can't read fleet's vendored files at {version}")
+def sync(root: Path, version: str, shipped: dict[Path, Vendored]) -> list[str]:
     changes = []
     for target, vendored in shipped.items():
         path = root / target
@@ -140,11 +137,11 @@ def sync(root: Path, version: str, shipped: dict[Path, Vendored] | None = None) 
     return changes
 
 
-def check(root: Path, version: str) -> tuple[int, list[str]]:
-    shipped = shipped_at(version)
+def check(root: Path, version: str, own: bool) -> tuple[int, list[str]]:
+    shipped = shipped_at(version, own)
     if shipped is None:
-        return 0, [f"can't read fleet's vendored files at {version} from fleet {agents_md.own_version()}; run fleet "
-                   f"drift from fleet at {version}"]
+        return 0, [f"can't read fleet's vendored files at {version} from {identity.describe(agents_md.ROOT)}; run "
+                   f"fleet drift from fleet at {version}"]
     if not shipped:
         return 0, []
     problems = []

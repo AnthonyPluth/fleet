@@ -1,12 +1,15 @@
 import contextlib
 import io
 import random
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from consumers import (
+    AT_FIXTURE_COMMIT,
     FIXTURE_COMMIT,
+    FIXTURE_VERSION,
     FIXTURES,
     OFFLINE_TAGS,
     RUNWAY,
@@ -18,11 +21,11 @@ from consumers import (
     write,
 )
 
-from fleet_tools import agents_md, cli
+from fleet_tools import agents_md, cli, identity
 from fleet_tools import sync as sync_command
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = agents_md.own_version()
+VERSION = FIXTURE_VERSION
 SHIPPED = agents_md.sections()
 RULE = (
     "**A mistake that repeats gets a check.** When review flags the same kind of mistake on a second pull request, the "
@@ -35,7 +38,7 @@ RULE = (
 SHARED_MISTAKES = ("Failure paths", "Access that outlives the person", "Undo and restore", "GitHub Actions", "Layout",
                    "Verification that doesn't cover the change")
 REAL_LS_REMOTE = sync_command.ls_remote
-REGENERATE = "regenerate it with `poetry run fleet sync --to v$(cat VERSION) --root {}`"
+REGENERATE = "regenerate it with `poetry run fleet sync --self` ({})"
 
 
 def sync(text: str) -> str:
@@ -51,9 +54,11 @@ def run(*args: str) -> tuple[int, str, str]:
 
 def setUpModule() -> None:
     OFFLINE_TAGS.start()
+    AT_FIXTURE_COMMIT.start()
 
 
 def tearDownModule() -> None:
+    AT_FIXTURE_COMMIT.stop()
     OFFLINE_TAGS.stop()
 
 
@@ -248,8 +253,19 @@ class Fixtures(unittest.TestCase):
 
     def test_fleets_own_agents_md_carries_the_current_blocks(self) -> None:
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertEqual(sync(text), text, REGENERATE.format("."))
+        self.assertEqual(agents_md.sync(text, SHIPPED, sync_command.marker_version(text))[0], text, REGENERATE.format("."))
         self.assertEqual(len(agents_md.blocks(text)), len(agents_md.ORDER))
+
+    def test_the_fixtures_carry_one_version_and_the_made_up_commit(self) -> None:
+        for fixture in (WAYPOINT, RUNWAY, FIXTURES / "drifted"):
+            with self.subTest(fixture=fixture.name):
+                self.assertEqual((fixture / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{FIXTURE_COMMIT}\n")
+                text = (fixture / "AGENTS.md").read_text(encoding="utf-8")
+                self.assertEqual({block.version for block in agents_md.blocks(text)}, {VERSION})
+                for path in sorted((fixture / ".github/workflows").glob("*.yml")):
+                    for line in path.read_text(encoding="utf-8").splitlines():
+                        if "uses: AnthonyPluth/fleet/" in line:
+                            self.assertTrue(line.endswith(f"@{FIXTURE_COMMIT}   # {VERSION}"), line)
 
 
     def test_fleets_own_agents_md_says_agents_mark_ready_by_hand_while_fleet_has_no_merge_gate(self) -> None:
@@ -284,12 +300,59 @@ class Command(unittest.TestCase):
         self.assertEqual(len(agents_md.blocks((root / "AGENTS.md").read_text(encoding="utf-8"))), len(agents_md.ORDER))
         self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{FIXTURE_COMMIT}\n")
 
-    def test_another_version_is_refused(self) -> None:
+    def test_a_tag_whose_commit_isnt_this_fleets_is_refused(self) -> None:
         root = temporary(self)
-        code, _, err = run("--to", "v99.0.0", "--root", str(root))
+        other = "f" * 40
+        with mock.patch.object(sync_command, "ls_remote", return_value=other):
+            code, out, err = run("--to", "v99.0.0", "--root", str(root))
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, f"fleet sync: this is fleet at commit {FIXTURE_COMMIT}, but v99.0.0 is {other} (the commit "
+                              f"the tag v99.0.0 points at); run `fleet sync --to v99.0.0` from fleet at {other}, whose "
+                              "content it ships\n")
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_the_pins_or_a_given_commit_must_be_this_fleets(self) -> None:
+        other = "f" * 40
+        root = copy(self, WAYPOINT, repository=False)
+        before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        with mock.patch.object(identity, "commit", return_value=other):
+            code, _, err = run("--to", VERSION, "--root", str(root))
         self.assertEqual(code, 2)
-        self.assertIn(f"this is fleet {VERSION}; run `fleet sync --to v99.0.0` from fleet at v99.0.0", err)
-        self.assertFalse((root / "AGENTS.md").exists())
+        self.assertIn(f"this is fleet at commit {other}, but {VERSION} is {FIXTURE_COMMIT} (the commit the workflow pins "
+                      f"at {VERSION} name)", err)
+        empty = temporary(self)
+        code, _, err = run("--to", VERSION, "--root", str(empty), "--commit", other)
+        self.assertEqual(code, 2)
+        self.assertIn(f"this is fleet at commit {FIXTURE_COMMIT}, but {VERSION} is {other} (--commit)", err)
+        self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+        self.assertEqual(list(empty.iterdir()), [])
+
+    def test_a_fleet_that_cant_name_its_commit_is_refused(self) -> None:
+        root = temporary(self)
+        with mock.patch.object(identity, "commit", return_value=None), mock.patch.object(identity, "describe", return_value="fleet at an unknown commit"):
+            code, _, err = run("--to", VERSION, "--root", str(root))
+        self.assertEqual(code, 2)
+        self.assertIn(f"this is fleet at an unknown commit, so it can't tell whether {VERSION}", err)
+        self.assertIn(f'`uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to {VERSION}`', err)
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_the_label_comes_from_to(self) -> None:
+        root = temporary(self)
+        self.assertEqual(run("--to", "v7.8.9", "--root", str(root))[0], 0)
+        self.assertEqual({block.version for block in agents_md.blocks((root / "AGENTS.md").read_text(encoding="utf-8"))}, {"v7.8.9"})
+        self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), f"v7.8.9\n{FIXTURE_COMMIT}\n")
+        self.assertIn("vendored from fleet v7.8.9 ", (root / "tools/fleet").read_text(encoding="utf-8"))
+
+    def test_a_missing_or_malformed_version_is_refused(self) -> None:
+        root = temporary(self)
+        for argv, needle in (([], "say which version (--to vX.Y.Z), or --self"),
+                             (["--to", "4.0.0"], "--to '4.0.0' isn't a version (vX.Y.Z)"),
+                             (["--to", "v1.0.0/../x"], "isn't a version (vX.Y.Z)")):
+            with self.subTest(argv=argv):
+                code, _, err = run(*argv, "--root", str(root))
+                self.assertEqual(code, 2)
+                self.assertIn(needle, err)
+        self.assertEqual(list(root.iterdir()), [])
 
     def test_a_marker_error_exits_2_and_writes_nothing(self) -> None:
         root = temporary(self)
@@ -300,10 +363,77 @@ class Command(unittest.TestCase):
         self.assertFalse((root / ".fleet").exists())
 
 
+class SyncSelf(unittest.TestCase):
+    def fleet(self) -> Path:
+        root = temporary(self) / "fleet"
+        for directory in ("agents-md", "plugins", "shim", "tests/fixtures/consumer-waypoint", "tests/fixtures/consumer-runway"):
+            shutil.copytree(ROOT / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy2(ROOT / "AGENTS.md", root / "AGENTS.md")
+        return root
+
+    def state(self, root: Path) -> dict[str, tuple[bytes, int]]:
+        return {path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mode)
+                for path in sorted(root.rglob("*")) if path.is_file()}
+
+    def test_it_puts_fleets_own_blocks_and_the_fixture_consumers_back_at_the_versions_they_carry(self) -> None:
+        root = self.fleet()
+        clean = self.state(root)
+        agents = root / "AGENTS.md"
+        agents.write_text(agents.read_text(encoding="utf-8").replace("<!-- fleet:end mistakes -->", "- **Mine**.\n<!-- fleet:end mistakes -->"),
+                          encoding="utf-8")
+        skill = root / "tests/fixtures/consumer-runway/.claude/skills/fleet-agent-task/SKILL.md"
+        skill.write_text(skill.read_text(encoding="utf-8") + "Edited.\n", encoding="utf-8")
+        (root / "tests/fixtures/consumer-waypoint/tools/fleet").unlink()
+        with mock.patch.object(sync_command, "ls_remote", side_effect=AssertionError("the fixtures' pins name the commit")):
+            code, out, err = run("--self", "--root", str(root))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("AGENTS.md: replaced mistakes\n", out)
+        self.assertIn("tests/fixtures/consumer-runway/.claude/skills/fleet-agent-task/SKILL.md: replaced "
+                      "(plugins/fleet/skills/agent-task/SKILL.md)\n", out)
+        self.assertIn("tests/fixtures/consumer-waypoint/tools/fleet: wrote (shim/fleet)\n", out)
+        self.assertEqual(self.state(root), clean)
+        code, out, _ = run("--self", "--root", str(root))
+        self.assertEqual((code, out), (0, "fleet sync: fleet's AGENTS.md and fixture consumers match its tree already; nothing "
+                                          "changed.\n"))
+
+    def test_it_keeps_the_markers_version_and_takes_no_other(self) -> None:
+        root = self.fleet()
+        agents = root / "AGENTS.md"
+        text = agents.read_text(encoding="utf-8")
+        agents.write_text(text.replace(f"fleet:begin mistakes {VERSION}", "fleet:begin mistakes v0.0.1"), encoding="utf-8")
+        before = self.state(root)
+        code, _, err = run("--self", "--root", str(root))
+        self.assertEqual(code, 2)
+        self.assertIn(f"AGENTS.md: its fleet markers carry v0.0.1, {VERSION}, not one version", err)
+        self.assertEqual(self.state(root), before)
+        for argv in (["--to", VERSION], ["--commit", FIXTURE_COMMIT]):
+            with self.subTest(argv=argv):
+                code, _, err = run("--self", *argv, "--root", str(root))
+                self.assertEqual(code, 2)
+                self.assertIn("--self takes neither --to nor --commit", err)
+        code, _, err = run("--self", "--root", str(temporary(self)))
+        self.assertEqual(code, 2)
+        self.assertIn("isn't fleet's checkout", err)
+
+    def test_a_failing_fixture_leaves_every_file_as_it_was(self) -> None:
+        root = self.fleet()
+        agents = root / "AGENTS.md"
+        agents.write_text(agents.read_text(encoding="utf-8").replace("<!-- fleet:end mistakes -->", "- **Mine**.\n<!-- fleet:end mistakes -->"),
+                          encoding="utf-8")
+        (root / "tests/fixtures/consumer-waypoint/tools/fleet").unlink()
+        broken = root / "tests/fixtures/consumer-runway/AGENTS.md"
+        broken.write_text(broken.read_text(encoding="utf-8").replace("<!-- fleet:end mistakes -->\n", "", 1), encoding="utf-8")
+        before = self.state(root)
+        code, _, err = run("--self", "--root", str(root))
+        self.assertEqual(code, 2)
+        self.assertIn("fleet sync: tests/fixtures/consumer-runway: AGENTS.md: `<!-- fleet:begin git-and-prs", err)
+        self.assertEqual(self.state(root), before)
+
+
 class Commit(unittest.TestCase):
     def tag(self, annotated: bool) -> tuple[Path, str]:
         fleet = temporary(self)
-        write(fleet, "VERSION", VERSION.removeprefix("v") + "\n")
+        write(fleet, "README.md", "fleet\n")
         git(fleet, "init", "-q", "-b", "main")
         sha = commit(fleet, "chore: release")
         git(fleet, "tag", *(["-a", "-m", "release"] if annotated else []), VERSION)
@@ -350,7 +480,8 @@ class Commit(unittest.TestCase):
                 self.assertEqual((code, err), (2, f"fleet sync: {error}\n"))
                 self.assertFalse((root / ".fleet/version").exists())
         root = temporary(self)
-        self.assertEqual(run("--to", VERSION, "--root", str(root), "--commit", other)[0], 0)
+        with mock.patch.object(identity, "commit", return_value=other):
+            self.assertEqual(run("--to", VERSION, "--root", str(root), "--commit", other)[0], 0)
         self.assertEqual((root / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{other}\n")
 
     def test_pins_at_the_version_naming_two_commits_are_refused(self) -> None:

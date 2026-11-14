@@ -4,6 +4,15 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Added
+
+- `fleet sync --self` (#112): fleet's own `AGENTS.md` blocks and its fixture consumers (`tests/fixtures/consumer-*`) re-synced from its tree, each at the version its markers and `.fleet/version` already carry (`fleet release prepare` still moves those), all or nothing. It replaces `fleet sync --to v$(cat VERSION)` in fleet's own checkout, which `sync --to` now refuses on any commit but the release's.
+- `fleet drift --own-commit <sha>` and a self-test-only input to `.github/workflows/checks.yml`, `fixture-commit` (string, default empty, which keeps the drift step as it was): the commit to take for the running fleet's own, for fleet's fixture consumers, whose content is fleet's tree under a made-up commit. The self-test's three checks calls and the release rehearsal pass it.
+
+### Changed
+
+- fleet's tools identify themselves by commit, not by `VERSION` (#112, step B): a new `fleet_tools/identity.py` takes the running fleet's commit from `git rev-parse HEAD` in a checkout, or from `vcs_info.commit_id` in `direct_url.json` (PEP 610) for an install from git such as `tools/fleet`'s `uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>"`. `fleet --version` prints that commit, and the tag when `git describe --exact-match` finds one (it printed `VERSION`, which mislabelled every commit between releases). `fleet sync --to vX.Y.Z` refuses unless the commit that version names (the workflow pins at it, `--commit`, or the tag's from `git ls-remote`) is the running one, rather than comparing `--to` with `VERSION`; `vX.Y.Z` is still the label it writes into the markers, the vendored notes, the marketplace `ref` and `.fleet/version`. `fleet drift`'s "this block is at fleet's own version" now means `.fleet/version`'s commit is the running commit (read from this fleet's files), anything else being read from the version's tag in fleet's history; its other rules don't change. The consumer side doesn't change: the apps' pins, `.fleet/version`, the markers, the vendored notes and `tools/fleet` stay as they are, and no caller has to change anything. `checks.yml`, `docker.yml`, `mining-tasks.yml`, `review-mining.yml` and `sync.yml` no longer check out `VERSION`, and `sync.yml`'s self-test path no longer stamps a copy's `VERSION`: its fixture builder pins the running commit. `VERSION`, `FLEET_REF`, `fleet release prepare` and `release.yml` are unchanged, and `VERSION` is read only by them and `fleet self-check`'s stamp checks until fleet releases on every merge (#112, step D).
+
 ## [4.0.0] - 2026-11-14
 
 ### Added
