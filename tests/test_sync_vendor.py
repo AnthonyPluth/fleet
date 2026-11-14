@@ -88,6 +88,18 @@ class Plugin(unittest.TestCase):
                 text = (PLUGIN / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
                 self.assertEqual(skills.check_skill(name, text, skills=str(PLUGIN / "skills")), [])
 
+    def test_every_skill_is_named_where_the_skills_are_listed(self) -> None:
+        marketplace = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+        adopting = (ROOT / "docs/adopting.md").read_text(encoding="utf-8").split("\n## Claude Code plugin\n", 1)[1]
+        drift_row = next(line for line in (ROOT / "docs/drift.md").read_text(encoding="utf-8").splitlines()
+                         if line.startswith("| Skills |"))
+        listings = {"the marketplace's description": marketplace["plugins"][0]["description"],
+                    "docs/adopting.md's Claude Code plugin": adopting.split("\n\n", 1)[0], "docs/drift.md's Skills row": drift_row}
+        for where, text in listings.items():
+            for name in skill_names():
+                with self.subTest(where=where, skill=name):
+                    self.assertRegex(text, rf"(?<![\w-]){re.escape(name)}(?![\w-])")
+
     def test_the_skills_hold_nothing_personal_or_app_specific(self) -> None:
         for path in (PLUGIN / "skills").rglob("*.md"):
             text = path.read_text(encoding="utf-8")
