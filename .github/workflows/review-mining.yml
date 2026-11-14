@@ -64,7 +64,7 @@ on:
         value: ${{ jobs.mine.outputs.loop-stats-url }}
 
 env:
-  FLEET_REF: v3.3.0   # stamped by the release
+  FLEET_REF: v4.0.0   # stamped by the release
 
 permissions: {}
 

@@ -116,7 +116,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v3.3.0
+    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v4.0.0
 ```
 
 Locally, from a checkout of fleet with `gh` signed in: `python3 -E -s -m fleet_tools.cli review-mine --repo owner/app --days 90 --agents-md /path/to/app/AGENTS.md --app-root /path/to/app --dry-run`.
@@ -159,7 +159,7 @@ jobs:
   tasks:
     permissions:
       issues: write
-    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v3.3.0
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v4.0.0
 ```
 
 Locally, with `gh` signed in and an event payload saved to a file: `python3 -E -s -m fleet_tools.cli mining-tasks --event event.json --repo owner/app --dry-run`.
