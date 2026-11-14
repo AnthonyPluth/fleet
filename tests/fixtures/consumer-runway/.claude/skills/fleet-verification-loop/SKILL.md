@@ -58,7 +58,7 @@ Each iteration is one change, one check and one log row.
    - a fixture: canned data or a made-up response, beside the app's other test fixtures;
    - a flow for the app's verify driver, or a test that exercises the behaviour;
    - a guide edit: a step under `## How to verify` for something that now runs, a glob under `## Paths` for a new fake or flow (once git tracks it: a glob that matches no tracked file fails the `verification-guides` check), or the gap's item moved out of `## Not verifiable yet` once its step has run;
-   - a line in the app's own verify skill saying how to run the new fake or flow.
+   - a line in the app's own verify skill's `SKILL.md` saying how to run the new fake or flow.
 
    One piece at a time: not a refactor, not a second gap, not a change made because it would be nice anyway.
 3. **Run it against the real app.** Run the test, flow or command on this checkout, the way the guide's step will say, and read the whole output. Where it is a test or flow you added, also break the behaviour it checks, in the working tree only, run it again, see it fail on that behaviour, and put the code back (`git diff` shows nothing of the break). A step that can't run in this session (it needs a credential, a device, a network the session lacks, or a service with no fake yet) isn't a step: it stays under `## Not verifiable yet`, with that reason and what would make it run.
@@ -87,10 +87,10 @@ A stop is reported, never hidden, and the finish condition stays as it was. The 
 Only the app's own verification tooling:
 
 - its verification guides (the `guides` directory);
-- its own verify skill (`.claude/skills/verify-<app>/`);
+- its own verify skill's `.claude/skills/verify-<app>/SKILL.md`, never its generated references or feature map (the app's generator writes them, and `fleet checks` holds them to it);
 - its fakes, fixtures and verify flows, and the tests that exercise the gap's behaviour.
 
-What is particular to the app (the service a fake stands in for, its flows, its fixtures) stays there, in the app's guides and verify skill. Never edit:
+What is particular to the app (the service a fake stands in for, its flows, its fixtures) stays there, in the app's guides and its verify skill's `SKILL.md`. Never edit:
 
 - fleet's vendored files (`.claude/skills/fleet-*`, `.claude/agents/fleet-*`, `.claude/hooks/fleet-*`, `tools/fleet`) or the text between the `fleet:begin` and `fleet:end` markers in `AGENTS.md`: `fleet drift` fails on any change to them, and a fix there is made in fleet;
 - the invariants: `.github/agent-review/invariants.md`, whatever `AGENTS.md` calls an invariant, and the checks and tests that hold them;

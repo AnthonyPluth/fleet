@@ -403,7 +403,7 @@ class LoopSkill(unittest.TestCase):
                        "one change, one check and one log row", "**Pivot after two.**", "**Stop after three.**",
                        "**Stop at ten in all**", "isn't a step: it stays under `## Not verifiable yet`",
                        "never `git clean`", "`.claude/skills/fleet-*`", "`fleet:begin`", "invariants.md",
-                       "`.claude/skills/verify-<app>/`", "made-up values only", "opened as a draft", "`fleet-verify-change`",
+                       "`.claude/skills/verify-<app>/SKILL.md`, never its generated references or feature map", "made-up values only", "opened as a draft", "`fleet-verify-change`",
                        "`fleet-verification-guide`", "## Decision log", "outside the checkout", "`Refs #N`"):
             self.assertIn(phrase, text)
         for word in ("Waypoint", "Runway", "Darkroom", "AnthonyPluth", "http"):
