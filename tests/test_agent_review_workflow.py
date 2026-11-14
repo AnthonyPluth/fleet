@@ -452,7 +452,7 @@ class FableIsAcceptedNotRequiredTest(unittest.TestCase):
         listed = subprocess.run(["git", "ls-files", "-z"], cwd=cli.ROOT, check=True, capture_output=True).stdout
         for name in filter(None, listed.decode().split("\0")):
             path = cli.ROOT / name
-            if name in whole_files or not path.is_file():
+            if name in whole_files or name.startswith("changelog.d/") or not path.is_file():
                 continue
             allowed_line = trailer_check_lines.get(name)
             for line in path.read_bytes().decode("utf-8", "replace").splitlines():

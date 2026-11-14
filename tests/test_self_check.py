@@ -13,7 +13,7 @@ WORKFLOW_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "workflows"
 
 def stamps(root: Path, version: str) -> None:
     released = "" if version.startswith("0.") else f"## [{version}] - 2026-11-02\n\n- A change.\n"
-    (root / "CHANGELOG.md").write_text(f"# Changelog\n\n## [Unreleased]\n\n{released}", encoding="utf-8")
+    (root / "CHANGELOG.md").write_text(f"# Changelog\n\n{released}", encoding="utf-8")
     (root / "pyproject.toml").write_text(f'[project]\nname = "fleet"\nversion = "{version}"\n', encoding="utf-8")
     plugin = root / "plugins" / "fleet" / ".claude-plugin"
     plugin.mkdir(parents=True)
