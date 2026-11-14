@@ -455,8 +455,10 @@ jobs:
       groups: '["self-test-cancel-{0}", "self-test-cancel-prefix-"]'
 
   # The consumer checks (FLEET-SYNC) on a fixture consumer, with the tools from this pull request's commit in place of
-  # the version .fleet/version names: `fleet checks --commits` over this pull request's range and `fleet drift` pass on
-  # the clean fixture, and `fleet drift` must fail on the drifted one (expect-drift inverts that step).
+  # the one .fleet/version names: `fleet checks --commits` over this pull request's range and `fleet drift` pass on
+  # the clean fixture, and `fleet drift` must fail on the drifted one (expect-drift inverts that step). The fixtures'
+  # content is this tree's under a made-up commit (fleet_tools/release.py's FIXTURE_COMMIT), which fixture-commit
+  # tells `fleet drift` to take for this fleet's own.
   checks-clean:
     name: Checks (clean fixture)
     permissions:
@@ -465,10 +467,13 @@ jobs:
     with:
       fleet-ref: ${{ github.sha }}
       working-directory: tests/fixtures/consumer-waypoint
+      fixture-commit: 0123456789abcdef0123456789abcdef01234567
 
   # The same clean-fixture checks without fleet-ref, the one call that has none (fleet self-check holds it), so the
   # default path runs on every pull request: the fleet checkout at job.workflow_sha (this pull request's commit, as a
   # local call's own commit is the caller's) behind its guard step, as an app's call runs it at the commit it pins.
+  # Like the others it passes fixture-commit, as the fixture's content names a made-up commit; the drift step without
+  # it, as an app runs it, is tests/test_sync_workflow.py's (ChecksWorkflow).
   checks-own-commit:
     name: Checks (clean fixture, at its own commit)
     permissions:
@@ -476,6 +481,7 @@ jobs:
     uses: ./.github/workflows/checks.yml   # zizmor: ignore[self-repository] fleet self-check requires this form
     with:
       working-directory: tests/fixtures/consumer-waypoint
+      fixture-commit: 0123456789abcdef0123456789abcdef01234567
 
   checks-drifted:
     name: Checks (drifted fixture)
@@ -486,6 +492,7 @@ jobs:
       fleet-ref: ${{ github.sha }}
       working-directory: tests/fixtures/drifted
       expect-drift: true
+      fixture-commit: 0123456789abcdef0123456789abcdef01234567
 
   # The content sync (FLEET-SYNC) in dry run on fixture consumers built from this commit (fixture implies dry-run: no
   # App, no push, no pull request, no issue), one case each from the acceptance criteria: pins a minor ahead of the
