@@ -2,7 +2,6 @@ import contextlib
 import io
 import os
 import re
-import subprocess
 import unittest
 from pathlib import Path
 from typing import Any
@@ -157,8 +156,12 @@ class PullRequestCheckTest(unittest.TestCase):
         commit(self.root, "chore: main")
         git(self.root, "checkout", "-q", "-b", "change")
 
-    def check(self, base: str = "main", root: Path | None = None) -> tuple[int, str, str]:
-        return run("release", "check", f"--base={base}", "--root", str(root or self.root))
+    def check(self, base: str = "main", root: Path | None = None, actions: bool = False) -> tuple[int, str, str]:
+        environment = {key: value for key, value in os.environ.items() if key != "GITHUB_ACTIONS"}
+        if actions:
+            environment["GITHUB_ACTIONS"] = "true"
+        with mock.patch.dict(os.environ, environment, clear=True):
+            return run("release", "check", f"--base={base}", "--root", str(root or self.root))
 
     def test_a_pull_request_that_adds_a_fragment_passes(self) -> None:
         write(self.root, "README.md", "fleet, changed\n")
@@ -240,6 +243,22 @@ class PullRequestCheckTest(unittest.TestCase):
         self.release_on_main()
         self.assertEqual(self.check(), (0, "fleet release check: ok, a release pull request, which folds the fragments\n", ""))
 
+    def test_a_release_pull_request_fails_when_a_fragment_lands_on_the_base_after_prepare(self) -> None:
+        self.release_on_main()
+        git(self.root, "checkout", "-q", "main")
+        git(self.root, "merge", "-q", "--no-ff", "-m", "Merge the release pull request into main", "release")
+        self.assertEqual(self.check("HEAD^1")[0], 0)
+        git(self.root, "reset", "-q", "--hard", "HEAD^1")
+        write(self.root, "changelog.d/late.md", fragment_text("breaking", "Merged while the release was open."))
+        commit(self.root, "feat!: merged while the release was open")
+        git(self.root, "merge", "-q", "--no-ff", "-m", "Merge the release pull request into main", "release")
+        code, _, err = self.check("HEAD^1")
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "fleet release check: changelog.d/late.md: still pending in the tree this release pull "
+                              "request merges into (merged to the base after `fleet release prepare` ran), so the release "
+                              "would ship without it in its notes; cut the release again from the base: `fleet release "
+                              "prepare X.Y.Z` on a fresh branch\n")
+
     def test_a_release_pull_request_that_adds_a_fragment_fails(self) -> None:
         self.release_on_main()
         write(self.root, "changelog.d/sneaked.md", fragment_text("added", "Sneaked in."))
@@ -298,8 +317,7 @@ class PullRequestCheckTest(unittest.TestCase):
         commit(self.root, "feat: on main")
         git(self.root, "merge", "-q", "--no-ff", "-m", "Merge the pull request into main", "change")
         shallow = temporary(self) / "shallow"
-        subprocess.run(["git", "clone", "-q", "--depth", "2", f"file://{self.root}", str(shallow)], check=True,
-                       capture_output=True)
+        git(shallow.parent, "clone", "-q", "--depth", "2", f"file://{self.root}", str(shallow))
         self.assertEqual(git(shallow, "rev-parse", "--is-shallow-repository").strip(), "true")
         code, _, err = self.check("HEAD^1", shallow)
         self.assertEqual(code, 1)
@@ -311,16 +329,21 @@ class PullRequestCheckTest(unittest.TestCase):
         git(self.root, "checkout", "-q", "main")
         git(self.root, "merge", "-q", "--no-ff", "-m", "Merge the pull request into main", "change")
         shallow = temporary(self) / "shallow"
-        subprocess.run(["git", "clone", "-q", "--depth", "2", f"file://{self.root}", str(shallow)], check=True,
-                       capture_output=True)
+        git(shallow.parent, "clone", "-q", "--depth", "2", f"file://{self.root}", str(shallow))
         self.assertEqual(self.check("HEAD^1", shallow), (0, "fleet release check: ok, it adds changelog.d/readme.md (fixed)\n", ""))
 
-    def test_errors_are_annotations_in_actions(self) -> None:
-        commit(self.root, "chore: nothing")
-        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
-            code, _, err = self.check()
+    def test_errors_are_annotations_in_actions_and_plain_text_elsewhere(self) -> None:
+        write(self.root, "changelog.d/Bad.md", fragment_text("added", "Misnamed."))
+        commit(self.root, "chore: a misnamed fragment")
+        code, _, plain = self.check()
         self.assertEqual(code, 1)
-        self.assertTrue(err.startswith("::error::fleet release check: this pull request adds no changelog fragment"), err)
+        lines = plain.splitlines()
+        self.assertEqual(len(lines), 2, plain)
+        self.assertTrue(all(line.startswith("fleet release check: ") for line in lines), plain)
+        code, out, annotated = self.check(actions=True)
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(annotated.splitlines(), [f"::error::{line}" for line in lines])
+        self.assertEqual(self.check(actions=True)[1:], ("", annotated))
 
     def test_a_base_that_isnt_a_ref_fails(self) -> None:
         for base, needle in (("--output=x", "--base '--output=x' isn't a ref"), ("no-such-branch", "`git merge-base no-such-branch HEAD` failed")):

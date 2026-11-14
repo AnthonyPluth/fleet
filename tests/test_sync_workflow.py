@@ -630,8 +630,8 @@ def sparse_paths(chunk: str) -> list[str]:
 
 
 class FixtureMode(unittest.TestCase):
-    NEEDED = ("fleet_tools", "agents-md", "plugins", "shim", "CHANGELOG.md", "tests/consumers.py", "tests/sync_fixture.py",
-              "tests/fixtures/consumer-waypoint")
+    NEEDED = ("fleet_tools", "agents-md", "plugins", "shim", "CHANGELOG.md", "changelog.d", "tests/consumers.py",
+              "tests/sync_fixture.py", "tests/fixtures/consumer-waypoint")
 
     def setUp(self) -> None:
         self.steps = step_sources(SYNC.read_text(encoding="utf-8"), "sync")

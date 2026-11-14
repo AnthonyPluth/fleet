@@ -625,6 +625,11 @@ def pull_request(root: Path, base: str) -> tuple[list[str], list[str]]:
                           f"change's entry is a fragment, {FRAGMENTS.as_posix()}/<name>.md (docs/release.md)")
     found, problems = fragments(root)
     errors += problems
+    late = [fragment.path.as_posix() for fragment in found if fragment.path.as_posix() not in added]
+    if releasing and late:
+        errors.append(f"{', '.join(late)}: still pending in the tree this release pull request merges into (merged to "
+                      "the base after `fleet release prepare` ran), so the release would ship without it in its notes; "
+                      "cut the release again from the base: `fleet release prepare X.Y.Z` on a fresh branch")
     kinds = {fragment.path.as_posix(): fragment.kind for fragment in found}
     return errors, [f"{path} ({kinds[path]})" for path in added if path in kinds]
 
