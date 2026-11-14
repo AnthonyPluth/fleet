@@ -779,6 +779,23 @@ class ChecksWorkflow(unittest.TestCase):
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
         self.assertIn("--own-commit 'not-a-commit' isn't a commit", done.stderr)
 
+    def test_without_a_fixture_commit_drift_takes_the_fleet_checkouts_commit_as_an_app_does(self) -> None:
+        self.assertIn('if [ -n "$FIXTURE_COMMIT" ]; then', self.steps["fleet drift"])
+        root, env = self.workspace(".")
+        shutil.rmtree(root / "app")
+        sync_fixture.build(root / "app", VERSION, VERSION)
+        self.assertEqual(drift.read_version_file(root / "app")[0], agents_md.Content(VERSION, BUILT))
+        for unset in (True, False):
+            with self.subTest(unset=unset):
+                if unset:
+                    env.pop("FIXTURE_COMMIT", None)
+                else:
+                    env["FIXTURE_COMMIT"] = ""
+                done = self.run_step("fleet drift", root, env)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("fleet drift: no drift: 4 AGENTS.md blocks", done.stdout)
+                self.assertIn(f".fleet/version at {VERSION} (commit {BUILT})", done.stdout)
+
     def test_expect_drift_inverts_the_drift_step_only(self) -> None:
         script = self.steps["fleet drift"].split("run: |\n", 1)[1]
         self.assertIn('if [ "$EXPECT_DRIFT" = true ]; then', script)

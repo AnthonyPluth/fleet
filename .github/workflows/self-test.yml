@@ -472,6 +472,8 @@ jobs:
   # The same clean-fixture checks without fleet-ref, the one call that has none (fleet self-check holds it), so the
   # default path runs on every pull request: the fleet checkout at job.workflow_sha (this pull request's commit, as a
   # local call's own commit is the caller's) behind its guard step, as an app's call runs it at the commit it pins.
+  # Like the others it passes fixture-commit, as the fixture's content names a made-up commit; the drift step without
+  # it, as an app runs it, is tests/test_sync_workflow.py's (ChecksWorkflow).
   checks-own-commit:
     name: Checks (clean fixture, at its own commit)
     permissions:

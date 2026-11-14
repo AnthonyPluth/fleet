@@ -21,7 +21,7 @@ from consumers import (
     write,
 )
 
-from fleet_tools import agents_md, cli, identity
+from fleet_tools import agents_md, cli, identity, release
 from fleet_tools import sync as sync_command
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -257,6 +257,7 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(len(agents_md.blocks(text)), len(agents_md.ORDER))
 
     def test_the_fixtures_carry_one_version_and_the_made_up_commit(self) -> None:
+        self.assertEqual(VERSION, "v" + release.read_version(ROOT), "fleet release prepare moves the fixtures with VERSION")
         for fixture in (WAYPOINT, RUNWAY, FIXTURES / "drifted"):
             with self.subTest(fixture=fixture.name):
                 self.assertEqual((fixture / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{FIXTURE_COMMIT}\n")

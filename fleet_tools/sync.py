@@ -14,7 +14,6 @@ HELP = ("sync fleet's content into the consumer at this fleet's commit: AGENTS.m
         "own; --to gives the version the markers, the notes and .fleet/version carry. --self syncs fleet's own "
         "checkout instead")
 REPOSITORY = "https://github.com/AnthonyPluth/fleet"
-FIXTURES = Path("tests/fixtures")
 INSTALL = 'uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet'
 
 
@@ -100,10 +99,6 @@ def marker_version(text: str) -> str:
     return versions[0]
 
 
-def fixture_consumers(root: Path) -> list[Path]:
-    return sorted(path for path in (root / FIXTURES).glob("consumer-*") if path.is_dir())
-
-
 def sync_self(root: Path) -> list[str]:
     from fleet_tools import release
 
@@ -113,7 +108,7 @@ def sync_self(root: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     synced, changes = agents_md.sync(text, agents_md.sections(root), marker_version(text))
     report = [f"{agents_md.AGENTS}: {change}" for change in changes]
-    consumers = fixture_consumers(root)
+    consumers = release.consumers(root)
     labels = {}
     for consumer in consumers:
         parsed, problem = drift.read_version_file(consumer)
