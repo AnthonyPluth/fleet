@@ -10,8 +10,9 @@ from fleet_tools import release
 HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, fleet's checkouts at the "
         "workflow's own commit behind their guard step, the self-test's calls, the agent review's environment on its "
         "two review jobs only, "
-        "VERSION agreeing with CHANGELOG.md, plugin.json, pyproject.toml and the snippets in docs/, and no doc or "
-        "workflow naming an event Actions doesn't have)")
+        f"VERSION agreeing with the newest release's notes (changelog.d/released/, or CHANGELOG.md, frozen at {release.FROZEN}), "
+        "plugin.json, pyproject.toml and the snippets in docs/, every changelog fragment (changelog.d/<name>.md) "
+        "parsing, and no doc or workflow naming an event Actions doesn't have)")
 
 WORKFLOWS = Path(".github/workflows")
 SELF_TEST = "self-test.yml"

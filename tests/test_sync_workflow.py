@@ -301,7 +301,61 @@ class Changelog(unittest.TestCase):
 
     def test_fleets_own_changelog_parses(self) -> None:
         text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIsInstance(sync_workflow.changelog_between(text, "v0.0.0", "v99.0.0"), str)
+        self.assertIsInstance(sync_workflow.changelog_between(text, "v0.0.0", "v99.0.0", sync_workflow.release_notes(ROOT)), str)
+
+
+class AcrossTheFreeze(unittest.TestCase):
+    LATER = ("## [1.3.0] - 2026-04-01\n\n### Added\n\n- A fourth thing.\n",
+             "## [1.4.0] - 2026-05-01\n\n### Changed\n\n- **Breaking:** A fifth thing.\n")
+
+    def test_the_releases_after_the_freeze_come_from_their_notes_newest_first(self) -> None:
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.1.0", "v1.4.0", self.LATER),
+                         "## [1.4.0] - 2026-05-01\n\n### Changed\n\n- **Breaking:** A fifth thing.\n\n"
+                         "## [1.3.0] - 2026-04-01\n\n### Added\n\n- A fourth thing.\n\n"
+                         "## [1.2.0] - 2026-03-01\n\n### Added\n\n- A third thing.\n")
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.0.0", "v1.3.0", self.LATER).split("\n", 1)[0],
+                         "## [1.3.0] - 2026-04-01")
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.3.0", "v1.4.0", self.LATER), self.LATER[1])
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.4.0", "v1.4.1", self.LATER),
+                         "The CHANGELOG at v1.4.1 has no entry between v1.4.0 and v1.4.1.\n")
+
+    def test_a_sync_from_3_1_0_to_a_fragment_era_release_lists_the_changelog_and_the_notes(self) -> None:
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        later = sync_workflow.release_notes(ROOT)
+        newest = max([release.FROZEN, *(notes.version for notes in release.released(ROOT)[0])], key=release.version_key)
+        major, minor, _ = release.version_key(newest)
+        upto = f"{major}.{minor + 1}.0"
+        pending = release.fragments(ROOT)[0] or [release.Fragment(Path("changelog.d/x.md"), "added", "A change.")]
+        found = sync_workflow.plan(consumer(self, f"v{upto}", "v3.1.0"))
+        self.assertEqual(found.action, "migration")
+        body = sync_workflow.body(found, changelog, [*later, release.render(upto, "2026-12-01", pending)])
+        headings = [f"## [{upto}] - 2026-12-01", f"## [{release.FROZEN}] - 2026-11-14", "## [3.3.0] - 2026-11-13",
+                    "## [3.2.0] - 2026-11-09"]
+        self.assertEqual([body.index(f"\n{heading}\n") for heading in headings],
+                         sorted(body.index(f"\n{heading}\n") for heading in headings))
+        self.assertNotIn("## [3.1.0]", body)
+        self.assertIn(f"## CHANGELOG v3.1.0 → v{upto}", body)
+        for fragment in pending:
+            self.assertIn(fragment.entry, body)
+        found = sync_workflow.plan(consumer(self, f"v{upto}", f"v{newest}"))
+        body = sync_workflow.body(found, changelog, [*later, release.render(upto, "2026-12-01", pending)])
+        self.assertIn(f"\n## [{upto}] - 2026-12-01\n", body)
+        self.assertNotIn(f"## [{newest}]", body)
+
+    def test_the_command_reads_the_release_notes_beside_the_changelog(self) -> None:
+        root = consumer(self, "v1.4.0", "v1.0.0")
+        fleet = temporary(self) / "fleet-pin"
+        changelog = write(fleet, "CHANGELOG.md", CHANGELOG)
+        for notes in self.LATER:
+            write(fleet, f"changelog.d/released/{notes[4:9]}.md", notes)
+        write(fleet, "changelog.d/pending.md", "---\nkind: added\n---\nNot released yet.\n")
+        out = root.parent / "body.md"
+        code, _, err = plan_cli(root, "--changelog", str(changelog), "--body", str(out))
+        self.assertEqual((code, err), (0, ""))
+        text = out.read_text(encoding="utf-8")
+        self.assertLess(text.index("- **Breaking:** A fifth thing."), text.index("- A fourth thing."))
+        self.assertLess(text.index("- A fourth thing."), text.index("- A second thing."))
+        self.assertNotIn("Not released yet.", text)
 
 
 class Bodies(unittest.TestCase):

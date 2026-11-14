@@ -24,7 +24,7 @@ When a second app would use it, and nothing app-specific is left in it that `[to
 
 ## How it moves
 
-1. A fleet pull request adds it as `plugins/fleet/skills/<name>/SKILL.md` (with a `CHANGELOG.md` line), and re-runs `fleet sync` on the fixture consumers.
+1. A fleet pull request adds it as `plugins/fleet/skills/<name>/SKILL.md` (with a changelog fragment, `changelog.d/<name>.md`), and re-runs `fleet sync` on the fixture consumers.
 2. A fleet release ships it.
 3. The app's sync pull request (`fleet sync --to vX.Y.Z`) vendors it as `.claude/skills/fleet-<name>/` and deletes the app's own copy in the same change, so there is never a second home, even for one commit.
 

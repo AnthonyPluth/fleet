@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,28 +91,40 @@ def plan(root: Path) -> Plan:
     return Plan(SYNC, content, pin, commit, tuple(files), f"the pins ({where}) are at {pin}; the content is at {content}")
 
 
-def changelog_between(text: str, after: str, upto: str) -> str:
-    low, high = agents_md.version_key(after), agents_md.version_key(upto)
-    sections = []
+def spans(text: str) -> list[tuple[int, int]]:
     try:
-        spans = [(section.start, section.end) for section in release.sections(text)]
+        return [(section.start, section.end) for section in release.sections(text)]
     except release.ReleaseError:
         starts = [found.start() for found in ANY_HEADING.finditer(text)]
-        spans = [(start, starts[index + 1] if index + 1 < len(starts) else len(text)) for index, start in enumerate(starts)]
-    for start, end in spans:
-        found = RELEASE_HEADING.match(text, start)
-        if found is None:
-            continue
-        version = agents_md.version_key("v" + found.group("version"))
-        if not low < version <= high:
-            continue
-        sections.append(text[start:end].rstrip() + "\n")
+        return [(start, starts[index + 1] if index + 1 < len(starts) else len(text)) for index, start in enumerate(starts)]
+
+
+def changelog_between(text: str, after: str, upto: str, later: Sequence[str] = ()) -> str:
+    low, high = agents_md.version_key(after), agents_md.version_key(upto)
+    sections = []
+    for source in (text, *later):
+        for start, end in spans(source):
+            found = RELEASE_HEADING.match(source, start)
+            if found is None:
+                continue
+            version = agents_md.version_key("v" + found.group("version"))
+            if not low < version <= high:
+                continue
+            sections.append((version, source[start:end].rstrip() + "\n"))
     if not sections:
         return f"The CHANGELOG at {upto} has no entry between {after} and {upto}.\n"
-    return "\n".join(sections)
+    return "\n".join(section for _, section in sorted(sections, key=lambda item: item[0], reverse=True))
 
 
-def pull_request_body(found: Plan, changelog: str) -> str:
+def release_notes(fleet: Path) -> list[str]:
+    directory = fleet / release.RELEASE_NOTES
+    if directory.is_symlink() or not directory.is_dir():
+        return []
+    return [path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.md"))
+            if path.is_file() and not path.is_symlink()]
+
+
+def pull_request_body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
     where = ", ".join(f"`{name}`" for name in found.files)
     return (f"Syncs fleet's content from {found.content} to {found.pin}, the version the workflow pins carry ({where}): "
             "the `AGENTS.md` blocks between the fleet markers, the vendored `.claude/` files and `tools/fleet`, and "
@@ -121,10 +134,10 @@ def pull_request_body(found: Plan, changelog: str) -> str:
             "Opened by fleet's sync workflow with the fleet-bot App, so the pull request's checks run; the branch "
             f"`{BRANCH}` is rewritten by each run until this merges. `fleet drift` lets the content trail the pins "
             "while it is open.\n\n"
-            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin)}")
+            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin, later)}")
 
 
-def issue_body(found: Plan, changelog: str) -> str:
+def issue_body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
     where = ", ".join(f"`{name}`" for name in found.files)
     return (f"The workflow pins ({where}) are at {found.pin} and the content (`.fleet/version`) at {found.content}: "
             "another major version. fleet's sync workflow doesn't cross a major, because a major release changes an "
@@ -134,14 +147,14 @@ def issue_body(found: Plan, changelog: str) -> str:
             f"--to {found.pin}` (the pins' commit, so `.fleet/version` gets it too), and commit `AGENTS.md`, "
             "`.fleet/version` and the vendored files together. "
             "`fleet drift` fails until they match; this issue is done when it passes.\n\n"
-            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin)}")
+            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin, later)}")
 
 
-def body(found: Plan, changelog: str) -> str:
+def body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
     if found.action == SYNC:
-        return pull_request_body(found, changelog)
+        return pull_request_body(found, changelog, later)
     if found.action == MIGRATION:
-        return issue_body(found, changelog)
+        return issue_body(found, changelog, later)
     return ""
 
 
@@ -153,7 +166,9 @@ def outputs(found: Plan) -> list[str]:
 
 def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", type=Path, help="the consumer's checkout (default: the nearest pyproject.toml up from here)")
-    parser.add_argument("--changelog", type=Path, metavar="CHANGELOG.md", help="fleet's CHANGELOG at the pins' version, for the body")
+    parser.add_argument("--changelog", type=Path, metavar="CHANGELOG.md", help="fleet's CHANGELOG.md at the pins' version, "
+                        "for the body; the release notes beside it, changelog.d/released/X.Y.Z.md (the releases after "
+                        f"{release.FROZEN}, when CHANGELOG.md froze), are read too")
     parser.add_argument("--body", type=Path, metavar="FILE", help="write the pull request's or the issue's body here (needs --changelog)")
 
 
@@ -169,7 +184,8 @@ def run(args: argparse.Namespace) -> int:
         if args.changelog is None:
             print("fleet sync-plan: --body needs --changelog", file=sys.stderr)
             return 2
-        args.body.write_text(body(found, args.changelog.read_text(encoding="utf-8")), encoding="utf-8")
+        args.body.write_text(body(found, args.changelog.read_text(encoding="utf-8"), release_notes(args.changelog.parent)),
+                             encoding="utf-8")
     for line in outputs(found):
         print(line)
     return 0

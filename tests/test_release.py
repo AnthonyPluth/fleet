@@ -20,7 +20,8 @@ RELEASE = WORKFLOWS / "release.yml"
 CURRENT = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 PRE_RELEASE = CURRENT.startswith("0.")
 MAJOR, MINOR, _ = (int(part) for part in CURRENT.split("."))
-NEXT = "1.0.0" if PRE_RELEASE else f"{MAJOR}.{MINOR + 1}.0"
+BREAKING_PENDING = any(fragment.kind == "breaking" for fragment in release.fragments(ROOT)[0])
+NEXT = "1.0.0" if PRE_RELEASE else f"{MAJOR + 1}.0.0" if BREAKING_PENDING else f"{MAJOR}.{MINOR + 1}.0"
 NEXT_MAJOR, NEXT_MINOR, _ = (int(part) for part in NEXT.split("."))
 PATCH = f"{NEXT_MAJOR}.{NEXT_MINOR}.1"
 LATER = f"{NEXT_MAJOR}.{NEXT_MINOR + 1}.0"
@@ -47,6 +48,28 @@ def edit(path: Path, old: str, new: str) -> None:
     text = path.read_text(encoding="utf-8")
     assert old in text, (path, old)
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def fragment(root: Path, name: str, kind: str, entry: str) -> Path:
+    path = root / release.FRAGMENTS / f"{name}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nkind: {kind}\n---\n{entry}\n", encoding="utf-8")
+    return path
+
+
+def only_fragments(root: Path, *found: tuple[str, str, str]) -> None:
+    for pending in release.fragments(root)[0]:
+        (root / pending.path).unlink()
+    for name, kind, entry in found:
+        fragment(root, name, kind, entry)
+
+
+def ensure_a_fragment(root: Path) -> None:
+    if not release.fragments(root)[0]:
+        fragment(root, "a-change", "added", "A change.")
+
+
+FROZEN_HEADING = f"## [{release.FROZEN}] - 2026-11-14\n"
 
 
 class FleetItselfTest(unittest.TestCase):
@@ -161,7 +184,7 @@ class DisagreementTest(unittest.TestCase):
         self.assertEqual(self_check.check(root), [])
 
     def test_an_impossible_release_date_fails(self) -> None:
-        self.assertEqual(release.changelog_errors("## [Unreleased]\n\n## [1.0.0] - 2026-02-31\n\n- x\n", "1.0.0"),
+        self.assertEqual(release.changelog_errors("# C\n\n## [1.0.0] - 2026-02-31\n\n- x\n"),
                          ["CHANGELOG.md: the section for 1.0.0 has the impossible date 2026-02-31"])
 
     def test_versions_are_canonical_ascii(self) -> None:
@@ -180,17 +203,41 @@ class DisagreementTest(unittest.TestCase):
         edit(self.root / release.ADOPTING, "# Adopting fleet\n", "# Adopting fleet\n\nSince v0.0.9 (`fleet sync --to v0.0.9`).\n")
         self.assertEqual(self_check.check(self.root), [])
 
-    def test_a_released_section_that_disagrees_fails(self) -> None:
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n## [0.0.9] - 2026-01-01\n\n- Old.\n")
-        self.assert_one_error("CHANGELOG.md", "0.0.9")
+    def test_notes_newer_than_version_fail(self) -> None:
+        later = self.root / release.RELEASE_NOTES / f"{LATER}.md"
+        later.parent.mkdir(parents=True, exist_ok=True)
+        later.write_text(f"## [{LATER}] - 2026-12-01\n\n### Fixed\n\n- Later.\n", encoding="utf-8")
+        self.assert_one_error(f"changelog.d/released/{LATER}.md: the newest release's notes are for {LATER}, but VERSION "
+                              f"is {CURRENT}")
 
-    def test_an_unreleased_section_that_isnt_first_fails(self) -> None:
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## Notes\n\n## [Unreleased]\n")
-        self.assert_one_error("CHANGELOG.md", "first section")
+    def test_a_version_without_notes_fails(self) -> None:
+        notes = self.root / release.RELEASE_NOTES / f"{CURRENT}.md"
+        if notes.is_file():
+            notes.unlink()
+        else:
+            edit(self.root / "CHANGELOG.md", FROZEN_HEADING, "## [0.0.9] - 2026-11-14\n")
+        hint = (f" (`fleet release prepare {CURRENT}` writes changelog.d/released/{CURRENT}.md)"
+                if release.parse_version(CURRENT) > release.parse_version(release.FROZEN) else "")
+        errors = self_check.check(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertTrue(errors[0].endswith(f"but VERSION is {CURRENT}{hint}"), errors)
+
+    def test_an_unreleased_section_fails_as_the_changelog_is_frozen(self) -> None:
+        edit(self.root / "CHANGELOG.md", FROZEN_HEADING, "## [Unreleased]\n\n### Added\n\n- A change.\n\n" + FROZEN_HEADING)
+        self.assert_one_error(f"CHANGELOG.md: it has an `## [Unreleased]` section, but it is frozen at {release.FROZEN}: a "
+                              "change's entry is a fragment, changelog.d/<name>.md")
+
+    def test_a_section_newer_than_the_freeze_fails(self) -> None:
+        edit(self.root / "CHANGELOG.md", FROZEN_HEADING, "## [99.0.0] - 2026-12-01\n\n- New.\n\n" + FROZEN_HEADING)
+        self.assert_one_error(f"CHANGELOG.md: it is frozen at {release.FROZEN}, but its newest section is 99.0.0")
 
     def test_a_malformed_released_heading_fails(self) -> None:
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n## [0.1.0]\n\n- Old.\n")
+        edit(self.root / "CHANGELOG.md", FROZEN_HEADING, "## [0.1.0]\n\n- Old.\n\n" + FROZEN_HEADING)
         self.assert_one_error("CHANGELOG.md", "isn't `## [X.Y.Z] - YYYY-MM-DD`")
+
+    def test_a_fragment_that_doesnt_parse_fails(self) -> None:
+        fragment(self.root, "broken", "feature", "A change.")
+        self.assert_one_error("changelog.d/broken.md: kind 'feature' isn't one of breaking, added, changed, fixed")
 
     def test_a_missing_stamped_file_fails(self) -> None:
         (self.root / release.PLUGIN).unlink()
@@ -201,37 +248,46 @@ class DisagreementTest(unittest.TestCase):
         errors = release.adopting_errors("```yaml\nuses: AnthonyPluth/fleet/x.yml@abc   # vX.Y.Z\n```\n", "1.0.0")
         self.assertEqual(errors, ["docs/adopting.md:2: a snippet says vX.Y.Z, but VERSION is 1.0.0"])
 
-    def test_1_x_needs_a_released_section(self) -> None:
-        self.assertEqual(release.changelog_errors("# C\n\n## [Unreleased]\n\n- x\n", "1.0.0"),
-                         ["CHANGELOG.md: no `## [1.0.0] - YYYY-MM-DD` section for VERSION 1.0.0"])
-        self.assertEqual(release.changelog_errors("# C\n\n## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n\n- x\n", "1.0.0"), [])
+    def test_1_x_needs_release_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CHANGELOG.md").write_text("# C\n", encoding="utf-8")
+            self.assertEqual(release.history_errors(root, "0.1.0"), [])
+            self.assertEqual(release.history_errors(root, "1.0.0"),
+                             ["no release notes for VERSION 1.0.0: neither a `## [1.0.0] - YYYY-MM-DD` section in "
+                              "CHANGELOG.md nor changelog.d/released/1.0.0.md"])
+            (root / "CHANGELOG.md").write_text("# C\n\n## [1.0.0] - 2026-11-02\n\n- x\n", encoding="utf-8")
+            self.assertEqual(release.history_errors(root, "1.0.0"), [])
 
 
 class PrepareTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = copy(self)
-        changelog = self.root / "CHANGELOG.md"
-        unreleased = changelog.read_text(encoding="utf-8").split("## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
-        if not re.search(r"^- ", unreleased, re.MULTILINE):
-            edit(changelog, "## [Unreleased]\n", "## [Unreleased]\n\n### Added\n\n- A change.\n")
+        ensure_a_fragment(self.root)
 
     def prepare(self, version: str = NEXT) -> tuple[int, str, str]:
         return run("release", "prepare", version, "--date", "2026-11-02", "--root", str(self.root))
 
     def test_prepare_stamps_everything_and_self_check_passes(self) -> None:
         before = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
-        unreleased = before.split("## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
+        pending = release.fragments(self.root)[0]
         code, out, err = self.prepare()
         self.assertEqual(code, 0, err)
         self.assertIn("stamped VERSION\n", out)
+        self.assertIn(f"stamped changelog.d/released/{NEXT}.md\n", out)
         self.assertEqual(self_check.check(self.root), [])
         self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), f"{NEXT}\n")
         self.assertEqual(json.loads((self.root / release.PLUGIN).read_text(encoding="utf-8"))["version"], NEXT)
         self.assertEqual(tomllib.loads((self.root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"], NEXT)
-        changelog = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertEqual(changelog, before.replace("## [Unreleased]\n", f"## [Unreleased]\n\n## [{NEXT}] - 2026-11-02\n", 1))
-        self.assertTrue(unreleased.strip())
-        self.assertEqual(release.notes(changelog, NEXT), unreleased.strip("\n") + "\n")
+        self.assertEqual((self.root / "CHANGELOG.md").read_text(encoding="utf-8"), before)
+        rendered = release.render(NEXT, "2026-11-02", pending)
+        self.assertEqual((self.root / release.RELEASE_NOTES / f"{NEXT}.md").read_text(encoding="utf-8"), rendered)
+        self.assertEqual(release.fragments(self.root), ([], []))
+        for folded in pending:
+            self.assertIn(f"folded {folded.path.as_posix()} into changelog.d/released/{NEXT}.md\n", out)
+            self.assertIn(folded.entry, rendered)
+        self.assertEqual(release.notes(before, NEXT, release.released(self.root)[0]),
+                         rendered.split("\n", 1)[1].strip("\n") + "\n")
         for workflow in release.reusable_workflows(self.root):
             text = workflow.read_text(encoding="utf-8")
             self.assertEqual(re.findall(r"^  FLEET_REF: (\S+)", text, re.MULTILINE), [f"v{NEXT}"], workflow.name)
@@ -277,29 +333,43 @@ class PrepareTest(unittest.TestCase):
         good = agents.read_text(encoding="utf-8")
         agents.write_text(good.replace("<!-- fleet:end mistakes -->", "", 1), encoding="utf-8")
         before = state()
+        notes_folder = (self.root / release.RELEASE_NOTES).is_dir()
         code, out, err = self.prepare()
         self.assertEqual(code, 1, out)
         self.assertIn("fleet release:", err)
         self.assertEqual(state(), before)
+        self.assertEqual((self.root / release.RELEASE_NOTES).is_dir(), notes_folder)
         agents.write_text(good, encoding="utf-8")
         code, _, err = self.prepare()
         self.assertEqual(code, 0, err)
         self.assertEqual(self_check.check(self.root), [])
         self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), f"{NEXT}\n")
 
-    def test_an_unreleased_entry_with_a_fenced_heading_prepares(self) -> None:
-        example = "- An entry with an example:\n\n  ```md\n## Example\n  ```\n"
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", f"## [Unreleased]\n\n{example}")
-        self.assertEqual(self_check.check(self.root), [])
-        code, _, err = self.prepare()
+    def test_the_notes_group_the_fragments_by_kind(self) -> None:
+        only_fragments(self.root, ("z-fix", "fixed", "Fixed z."), ("b-break", "breaking", "Broke b."),
+                       ("d-add", "added", "Added d."), ("c-change", "changed", "Changed c."), ("a-add", "added", "Added a."))
+        major = f"{MAJOR + 1}.0.0"
+        code, _, err = self.prepare(major)
         self.assertEqual(code, 0, err)
-        notes = release.notes((self.root / "CHANGELOG.md").read_text(encoding="utf-8"), NEXT)
-        self.assertTrue(notes.startswith(example), notes[:200])
-        self.assertIn("\n## Example\n", notes)
-        self.assertGreater(len(notes), len(example))
+        self.assertEqual((self.root / release.RELEASE_NOTES / f"{major}.md").read_text(encoding="utf-8"),
+                         f"## [{major}] - 2026-11-02\n\n### Added\n\n- Added a.\n- Added d.\n\n### Changed\n\n"
+                         "- **Breaking:** Broke b.\n- Changed c.\n\n### Fixed\n\n- Fixed z.\n")
+        self.assertEqual(self_check.check(self.root), [])
+
+    def test_prepare_refuses_a_minor_or_a_patch_when_a_fragment_is_breaking(self) -> None:
+        only_fragments(self.root, ("a-break", "breaking", "Broke a."), ("b-fix", "fixed", "Fixed b."))
+        for version in (f"{MAJOR}.{MINOR + 1}.0", f"{MAJOR}.{MINOR}.{int(CURRENT.split('.')[2]) + 1}"):
+            with self.subTest(version=version):
+                code, out, err = self.prepare(version)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn(f"changelog.d/a-break.md: `kind: breaking`, which makes the release a major, {MAJOR + 1}.0.0, "
+                              f"not {version}", err)
+                self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), f"{CURRENT}\n")
+                self.assertTrue((self.root / "changelog.d/a-break.md").is_file())
 
     def test_an_unterminated_fence_fails_self_check_and_prepare(self) -> None:
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n- Broken:\n\n```sh\n")
+        with (self.root / "CHANGELOG.md").open("a", encoding="utf-8") as changelog:
+            changelog.write("\n- Broken:\n\n```sh\n")
         errors = self_check.check(self.root)
         self.assertEqual(len(errors), 1, errors)
         self.assertRegex(errors[0], r"^CHANGELOG\.md:\d+: a code fence that is never closed$")
@@ -309,13 +379,14 @@ class PrepareTest(unittest.TestCase):
 
     def test_the_release_after_that_moves_every_stamp_again(self) -> None:
         self.assertEqual(self.prepare()[0], 0)
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- A fix.\n")
+        fragment(self.root, "a-fix", "fixed", "A fix.")
         code, _, err = self.prepare(PATCH)
         self.assertEqual(code, 0, err)
         self.assertEqual(self_check.check(self.root), [])
         changelog = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertEqual(release.notes(changelog, PATCH), "### Fixed\n\n- A fix.\n")
-        self.assertIn(f"## [{NEXT}] - 2026-11-02", changelog)
+        later = release.released(self.root)[0]
+        self.assertEqual(release.notes(changelog, PATCH, later), "### Fixed\n\n- A fix.\n")
+        self.assertIn(NEXT, [notes.version for notes in later])
         adopting = (self.root / release.ADOPTING).read_text(encoding="utf-8")
         self.assertEqual({tag for _, tag in release.snippet_versions(adopting)}, {f"v{PATCH}"})
 
@@ -331,16 +402,16 @@ class PrepareTest(unittest.TestCase):
 
     def test_prepare_refuses_a_version_that_isnt_newer(self) -> None:
         self.assertEqual(self.prepare()[0], 0)
-        edit(self.root / "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n- More.\n")
+        fragment(self.root, "more", "changed", "More.")
         code, _, err = self.prepare(NEXT)
         self.assertEqual(code, 1)
         self.assertIn(f"isn't newer than VERSION {NEXT}", err)
 
-    def test_prepare_refuses_an_empty_unreleased_section(self) -> None:
+    def test_prepare_refuses_a_release_without_fragments(self) -> None:
         self.assertEqual(self.prepare()[0], 0)
         code, _, err = self.prepare(LATER)
         self.assertEqual(code, 1)
-        self.assertIn("no entries to release", err)
+        self.assertIn("changelog.d/ has no fragments to release", err)
         self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), f"{NEXT}\n")
 
     def test_prepare_refuses_stamps_that_already_disagree(self) -> None:
@@ -382,10 +453,7 @@ class ReleaseRehearsalTest(unittest.TestCase):
         env = {**os.environ, "FLEET_RELEASE_E2E": "1", "GIT_AUTHOR_NAME": "fleet", "GIT_AUTHOR_EMAIL": "fleet@example.com",
                "GIT_COMMITTER_NAME": "fleet", "GIT_COMMITTER_EMAIL": "fleet@example.com"}
         env.pop("GITHUB_ACTIONS", None)
-        changelog = root / "CHANGELOG.md"
-        unreleased = changelog.read_text(encoding="utf-8").split("## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
-        if not re.search(r"^- ", unreleased, re.MULTILINE):
-            edit(changelog, "## [Unreleased]\n", "## [Unreleased]\n\n### Added\n\n- A change.\n")
+        ensure_a_fragment(root)
 
         def step(*argv: str) -> str:
             done = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True, check=False)
@@ -412,25 +480,27 @@ class NotesTest(unittest.TestCase):
         self.assertEqual(release.notes(self.CHANGELOG, "1.0.0"), "- First.\n")
 
     def test_a_fenced_heading_is_part_of_the_section(self) -> None:
-        changelog = ("# C\n\n## [Unreleased]\n\n## [1.1.0] - 2026-12-01\n\n- An example:\n\n```md\n## Example\n```\n\n"
+        changelog = ("# C\n\n## [1.1.0] - 2026-12-01\n\n- An example:\n\n```md\n## Example\n```\n\n"
                      "~~~~sh\n## [9.9.9] - 2026-01-01\n~~~\n~~~~\n\n- After.\n\n## [1.0.0] - 2026-11-02\n\n- First.\n")
         self.assertEqual(release.notes(changelog, "1.1.0"),
                          "- An example:\n\n```md\n## Example\n```\n\n~~~~sh\n## [9.9.9] - 2026-01-01\n~~~\n~~~~\n\n- After.\n")
-        self.assertEqual(release.changelog_errors(changelog, "1.1.0"), [])
+        self.assertEqual(release.changelog_errors(changelog), [])
+        self.assertEqual(release.entries(changelog), 3)
         self.assertEqual([section.heading for section in release.sections(changelog)],
-                         ["## [Unreleased]", "## [1.1.0] - 2026-12-01", "## [1.0.0] - 2026-11-02"])
+                         ["## [1.1.0] - 2026-12-01", "## [1.0.0] - 2026-11-02"])
         between = sync_workflow.changelog_between(changelog, "v1.0.0", "v1.1.0")
         self.assertTrue(between.startswith("## [1.1.0] - 2026-12-01\n"))
         self.assertTrue(between.endswith("~~~\n~~~~\n\n- After.\n"))
 
     def test_an_unterminated_fence_is_an_error(self) -> None:
         changelog = "# C\n\n## [Unreleased]\n\n- An example:\n\n```md\n## Example\n"
-        self.assertEqual(release.changelog_errors(changelog, "0.1.0"), ["CHANGELOG.md:7: a code fence that is never closed"])
+        self.assertEqual(release.changelog_errors(changelog), ["CHANGELOG.md:7: a code fence that is never closed"])
         with self.assertRaisesRegex(release.ReleaseError, "CHANGELOG.md:7: a code fence that is never closed"):
             release.notes(changelog, "0.1.0")
 
     def test_notes_for_a_missing_or_empty_section_fail(self) -> None:
-        with self.assertRaisesRegex(release.ReleaseError, "no `## \\[2.0.0\\]"):
+        with self.assertRaisesRegex(release.ReleaseError, "no notes for 2.0.0: neither a `## \\[2.0.0\\] - YYYY-MM-DD` "
+                                    "section in CHANGELOG.md nor changelog.d/released/2.0.0.md"):
             release.notes(self.CHANGELOG, "2.0.0")
         with self.assertRaisesRegex(release.ReleaseError, "empty"):
             release.notes("## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n\n", "1.0.0")
@@ -441,7 +511,17 @@ class NotesTest(unittest.TestCase):
             self.assertEqual(run("release", "notes", "1.0.0", "--root", directory), (0, "- First.\n", ""))
             code, out, err = run("release", "notes", "3.0.0", "--root", directory)
             self.assertEqual((code, out), (1, ""))
-            self.assertIn("fleet release: CHANGELOG.md: no", err)
+            self.assertIn("fleet release: no notes for 3.0.0", err)
+
+    def test_a_later_release_is_read_from_its_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CHANGELOG.md").write_text(self.CHANGELOG, encoding="utf-8")
+            notes = root / release.RELEASE_NOTES / "5.0.0.md"
+            notes.parent.mkdir(parents=True)
+            notes.write_text("## [5.0.0] - 2026-12-02\n\n### Changed\n\n- **Breaking:** Moved.\n", encoding="utf-8")
+            self.assertEqual(run("release", "notes", "5.0.0", "--root", directory), (0, "### Changed\n\n- **Breaking:** Moved.\n", ""))
+            self.assertEqual(run("release", "notes", "1.1.0", "--root", directory), (0, "### Added\n\n- New.\n", ""))
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
@@ -594,6 +674,20 @@ class ReleaseScriptsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output.read_text(encoding="utf-8"), "tag=v1.0.0\n")
         self.assertEqual((self.directory / "notes.md").read_text(encoding="utf-8"), "- First.\n")
+
+    def test_the_version_step_reads_a_later_releases_notes_from_its_file(self) -> None:
+        work = self.directory / "work"
+        (work / release.RELEASE_NOTES).mkdir(parents=True)
+        (work / "fleet_tools").symlink_to(ROOT / "fleet_tools")
+        (work / "CHANGELOG.md").write_text(f"# Changelog\n\n## [{release.FROZEN}] - 2026-11-14\n\n- Frozen.\n", encoding="utf-8")
+        (work / release.RELEASE_NOTES / "4.1.0.md").write_text("## [4.1.0] - 2026-11-20\n\n### Fixed\n\n- Folded.\n",
+                                                                encoding="utf-8")
+        (work / "VERSION").write_text("4.1.0\n", encoding="utf-8")
+        output = self.directory / "output"
+        result = self.run_step("Read the version and the notes", cwd=work, GITHUB_OUTPUT=str(output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output.read_text(encoding="utf-8"), "tag=v4.1.0\n")
+        self.assertEqual((self.directory / "notes.md").read_text(encoding="utf-8"), "### Fixed\n\n- Folded.\n")
 
 
 class AdoptingTest(unittest.TestCase):

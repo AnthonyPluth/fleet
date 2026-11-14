@@ -1,21 +1,34 @@
 import argparse
 import datetime
 import json
+import os
 import re
+import subprocess
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fleet_tools import agents_md, sync, vendor
 
-HELP = ("fleet's release stamps: `prepare X.Y.Z` rewrites VERSION, CHANGELOG.md, every FLEET_REF, plugin.json, "
-        "pyproject.toml, the snippets in docs/ (docs/adopting.md's and the others) and AGENTS.md's markers, and re-syncs "
-        "the fixture consumers and the drifted fixture; `notes X.Y.Z` prints that CHANGELOG section")
+HELP = ("fleet's release stamps and changelog: `prepare X.Y.Z` rewrites VERSION, every FLEET_REF, plugin.json, "
+        "pyproject.toml, the snippets in docs/ (docs/adopting.md's and the others) and AGENTS.md's markers, folds the "
+        "changelog fragments (changelog.d/<name>.md) into the release's notes (changelog.d/released/X.Y.Z.md), and "
+        "re-syncs the fixture consumers and the drifted fixture; `notes X.Y.Z` prints a release's notes; `check --base "
+        "REF` checks that a pull request adds a changelog fragment that parses")
 
 VERSION_FILE = Path("VERSION")
 CHANGELOG = Path("CHANGELOG.md")
+FRAGMENTS = Path("changelog.d")
+RELEASE_NOTES = FRAGMENTS / "released"
+FROZEN = "4.0.0"
+KINDS = ("breaking", "added", "changed", "fixed")
+GROUPS = (("Added", ("added",)), ("Changed", ("breaking", "changed")), ("Fixed", ("fixed",)))
+BREAKING = "**Breaking:** "
+FRAGMENT_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\.md")
+FRAGMENT_FORMAT = f"`---`, `kind: <{'|'.join(KINDS)}>`, `---`, then the entry on one line"
+MARKUP_START = re.compile(r"(?:[-*+]|[0-9]+[.)]|#{1,6})(?:\s|$)")
 PLUGIN = Path("plugins/fleet/.claude-plugin/plugin.json")
 PYPROJECT = Path("pyproject.toml")
 ADOPTING = Path("docs/adopting.md")
@@ -53,6 +66,21 @@ class Section:
     end: int
 
 
+@dataclass(frozen=True)
+class Fragment:
+    path: Path
+    kind: str
+    entry: str
+
+
+@dataclass(frozen=True)
+class Notes:
+    version: str
+    date: str
+    body: str
+    source: str
+
+
 def read_version(root: Path) -> str:
     path = root / VERSION_FILE
     if not path.is_file():
@@ -86,7 +114,12 @@ def parse_version(text: str) -> tuple[int, int, int]:
     return major, minor, patch
 
 
-def sections(text: str) -> list[Section]:
+def version_key(text: str) -> tuple[int, int, int]:
+    major, minor, patch = (int(part) for part in text.split("."))
+    return major, minor, patch
+
+
+def sections(text: str, name: str = CHANGELOG.as_posix()) -> list[Section]:
     headings: list[tuple[str, int, int]] = []
     fence = ""
     fence_line = 0
@@ -103,7 +136,7 @@ def sections(text: str) -> list[Section]:
             headings.append((content.rstrip(), offset, offset + len(content)))
         offset += len(line)
     if fence:
-        raise ReleaseError(f"{CHANGELOG.as_posix()}:{fence_line}: a code fence that is never closed")
+        raise ReleaseError(f"{name}:{fence_line}: a code fence that is never closed")
     return [Section(heading, start, body_start, headings[index + 1][1] if index + 1 < len(headings) else len(text))
             for index, (heading, start, body_start) in enumerate(headings)]
 
@@ -112,28 +145,169 @@ def released_heading(section: Section) -> re.Match[str] | None:
     return RELEASED.fullmatch(section.heading)
 
 
-def changelog_errors(text: str, version: str) -> list[str]:
+def frozen(text: str) -> tuple[str | None, list[str]]:
     name = CHANGELOG.as_posix()
     try:
         found = sections(text)
     except ReleaseError as error:
-        return [str(error)]
-    if not found or found[0].heading != UNRELEASED:
-        return [f"{name}: the first section must be `{UNRELEASED}`"]
-    if sum(1 for section in found if section.heading == UNRELEASED) > 1:
-        return [f"{name}: more than one `{UNRELEASED}` section"]
-    if len(found) == 1:
-        if parse_version(version)[0] >= 1:
-            return [f"{name}: no `## [{version}] - YYYY-MM-DD` section for VERSION {version}"]
-        return []
-    top = released_heading(found[1])
+        return None, [str(error)]
+    if any(section.heading == UNRELEASED for section in found):
+        return None, [f"{name}: it has an `{UNRELEASED}` section, but it is frozen at {FROZEN}: a change's entry is a "
+                      f"fragment, {FRAGMENTS.as_posix()}/<name>.md (docs/release.md)"]
+    if not found:
+        return None, []
+    top = released_heading(found[0])
     if top is None:
-        return [f"{name}: the section after Unreleased, {found[1].heading!r}, isn't `## [X.Y.Z] - YYYY-MM-DD`"]
-    if top.group("version") != version:
-        return [f"{name}: the newest released section is {top.group('version')}, but VERSION is {version}"]
+        return None, [f"{name}: its first section, {found[0].heading!r}, isn't `## [X.Y.Z] - YYYY-MM-DD`"]
+    newest = top.group("version")
+    if version_key(newest) > version_key(FROZEN):
+        return None, [f"{name}: it is frozen at {FROZEN}, but its newest section is {newest}: a later release's notes are "
+                      f"{RELEASE_NOTES.as_posix()}/X.Y.Z.md, which `fleet release prepare` writes"]
     if not is_date(top.group("date")):
-        return [f"{name}: the section for {version} has the impossible date {top.group('date')}"]
-    return []
+        return None, [f"{name}: the section for {newest} has the impossible date {top.group('date')}"]
+    return newest, []
+
+
+def changelog_errors(text: str) -> list[str]:
+    return frozen(text)[1]
+
+
+def parse_fragment(path: Path, text: str) -> Fragment:
+    name = path.as_posix()
+    if "\r" in text:
+        raise ReleaseError(f"{name}: has a carriage return; save it with Unix line endings")
+    lines = text.split("\n")
+    if lines[0] != "---":
+        raise ReleaseError(f"{name}: a fragment is {FRAGMENT_FORMAT}")
+    if "---" not in lines[1:]:
+        raise ReleaseError(f"{name}: its front matter never closes (a second `---`)")
+    close = lines.index("---", 1)
+    fields = lines[1:close]
+    if len(fields) != 1 or not fields[0].startswith("kind: "):
+        raise ReleaseError(f"{name}: its front matter is one line, `kind: <{'|'.join(KINDS)}>`")
+    kind = fields[0].removeprefix("kind: ").strip()
+    if kind not in KINDS:
+        raise ReleaseError(f"{name}: kind {kind[:40]!r} isn't one of {', '.join(KINDS)}")
+    body = [line.rstrip() for line in lines[close + 1:] if line.strip()]
+    if not body:
+        raise ReleaseError(f"{name}: has no entry after its front matter")
+    if len(body) > 1:
+        raise ReleaseError(f"{name}: its entry is one line, as CHANGELOG.md's are (don't wrap it)")
+    entry = body[0]
+    if entry[0].isspace():
+        raise ReleaseError(f"{name}: its entry starts with a space")
+    if MARKUP_START.match(entry):
+        raise ReleaseError(f"{name}: its entry is the text alone, with no list marker or heading (folding adds the `- `)")
+    if entry.startswith("**Breaking"):
+        raise ReleaseError(f"{name}: its entry starts with **Breaking; `kind: breaking` adds `{BREAKING.strip()}` when "
+                           "it's folded")
+    return Fragment(path, kind, entry)
+
+
+def fragments(root: Path) -> tuple[list[Fragment], list[str]]:
+    directory = root / FRAGMENTS
+    found: list[Fragment] = []
+    errors: list[str] = []
+    if not directory.exists() and not directory.is_symlink():
+        return found, errors
+    if directory.is_symlink() or not directory.is_dir():
+        return found, [f"{FRAGMENTS.as_posix()}: isn't a directory"]
+    for path in sorted(directory.iterdir()):
+        relative = path.relative_to(root)
+        name = relative.as_posix()
+        if path.name.startswith(".") or (relative == RELEASE_NOTES and path.is_dir() and not path.is_symlink()):
+            continue
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"{name}: isn't a fragment; {FRAGMENTS.as_posix()}/ holds fragments (<name>.md) and released/")
+        elif not FRAGMENT_NAME.fullmatch(path.name):
+            errors.append(f"{name}: a fragment's name is lowercase letters, digits and hyphens, then `.md`")
+        else:
+            try:
+                found.append(parse_fragment(relative, path.read_bytes().decode("utf-8")))
+            except UnicodeDecodeError:
+                errors.append(f"{name}: isn't UTF-8")
+            except ReleaseError as error:
+                errors.append(str(error))
+    return found, errors
+
+
+def render(version: str, date: str, found: Sequence[Fragment]) -> str:
+    lines = [f"## [{version}] - {date}"]
+    ordered = sorted(found, key=lambda fragment: fragment.path.name)
+    for heading, kinds in GROUPS:
+        entries = [("- " + BREAKING if kind == "breaking" else "- ") + fragment.entry
+                   for kind in kinds for fragment in ordered if fragment.kind == kind]
+        if entries:
+            lines += ["", f"### {heading}", "", *entries]
+    return "\n".join(lines) + "\n"
+
+
+def parse_notes(text: str, version: str, name: str) -> Notes:
+    parts = sections(text, name)
+    heading = released_heading(parts[0]) if len(parts) == 1 else None
+    if heading is None or heading.group("version") != version or text[:parts[0].start].strip():
+        raise ReleaseError(f"{name}: a release's notes are one section, `## [{version}] - YYYY-MM-DD`, with nothing "
+                           "before it")
+    if not is_date(heading.group("date")):
+        raise ReleaseError(f"{name}: the section for {version} has the impossible date {heading.group('date')}")
+    body = text[parts[0].body_start:parts[0].end].strip("\n")
+    if not re.search(r"^- ", body, re.MULTILINE):
+        raise ReleaseError(f"{name}: the section for {version} has no entries")
+    return Notes(version, heading.group("date"), body + "\n", name)
+
+
+def released(root: Path) -> tuple[list[Notes], list[str]]:
+    directory = root / RELEASE_NOTES
+    found: list[Notes] = []
+    errors: list[str] = []
+    if not directory.exists() and not directory.is_symlink():
+        return found, errors
+    if directory.is_symlink() or not directory.is_dir():
+        return found, [f"{RELEASE_NOTES.as_posix()}: isn't a directory"]
+    for path in sorted(directory.iterdir()):
+        if path.name.startswith("."):
+            continue
+        name = path.relative_to(root).as_posix()
+        version = path.name.removesuffix(".md")
+        if path.is_symlink() or not path.is_file() or not path.name.endswith(".md") or not VERSION_PATTERN.fullmatch(version):
+            errors.append(f"{name}: isn't a release's notes ({RELEASE_NOTES.as_posix()}/X.Y.Z.md, which `fleet release "
+                          "prepare` writes)")
+        elif version_key(version) <= version_key(FROZEN):
+            errors.append(f"{name}: {version}'s notes are in CHANGELOG.md, which is frozen at {FROZEN}; this folder "
+                          "holds later releases'")
+        else:
+            try:
+                found.append(parse_notes(path.read_bytes().decode("utf-8"), version, name))
+            except UnicodeDecodeError:
+                errors.append(f"{name}: isn't UTF-8")
+            except ReleaseError as error:
+                errors.append(str(error))
+    return found, errors
+
+
+def history_errors(root: Path, version: str) -> list[str]:
+    changelog = read(root, CHANGELOG)
+    if changelog is None:
+        return [f"{CHANGELOG.as_posix()}: missing"]
+    newest, errors = frozen(changelog)
+    notes_found, problems = released(root)
+    errors += problems
+    if errors:
+        return errors
+    candidates = [(version_key(found.version), found.version, found.source) for found in notes_found]
+    if newest is not None:
+        candidates.append((version_key(newest), newest, CHANGELOG.as_posix()))
+    if not candidates:
+        if parse_version(version)[0] >= 1:
+            return [f"no release notes for VERSION {version}: neither a `## [{version}] - YYYY-MM-DD` section in "
+                    f"{CHANGELOG.as_posix()} nor {RELEASE_NOTES.as_posix()}/{version}.md"]
+        return []
+    key, top, source = max(candidates)
+    if key == parse_version(version):
+        return []
+    hint = (f" (`fleet release prepare {version}` writes {RELEASE_NOTES.as_posix()}/{version}.md)"
+            if key < parse_version(version) and parse_version(version) > version_key(FROZEN) else "")
+    return [f"{source}: the newest release's notes are for {top}, but VERSION is {version}{hint}"]
 
 
 def fenced_lines(text: str) -> list[tuple[int, str]]:
@@ -172,12 +346,8 @@ def read(root: Path, path: Path) -> str | None:
 
 
 def check(root: Path, version: str) -> list[str]:
-    errors: list[str] = []
-    changelog = read(root, CHANGELOG)
-    if changelog is None:
-        errors.append(f"{CHANGELOG.as_posix()}: missing")
-    else:
-        errors.extend(changelog_errors(changelog, version))
+    errors = history_errors(root, version)
+    errors.extend(fragments(root)[1])
     plugin = read(root, PLUGIN)
     if plugin is None:
         errors.append(f"{PLUGIN.as_posix()}: missing")
@@ -229,7 +399,10 @@ def docs(root: Path) -> list[Path]:
     return sorted(path.relative_to(root) for path in (root / ADOPTING.parent).glob("*.md") if path.is_file())
 
 
-def notes(text: str, version: str) -> str:
+def notes(text: str, version: str, later: Sequence[Notes] = ()) -> str:
+    for found in later:
+        if found.version == version:
+            return found.body
     for section in sections(text):
         heading = released_heading(section)
         if heading and heading.group("version") == version:
@@ -237,19 +410,13 @@ def notes(text: str, version: str) -> str:
             if not body.strip():
                 raise ReleaseError(f"{CHANGELOG.as_posix()}: the section for {version} is empty")
             return body + "\n"
-    raise ReleaseError(f"{CHANGELOG.as_posix()}: no `## [{version}] - YYYY-MM-DD` section")
+    raise ReleaseError(f"no notes for {version}: neither a `## [{version}] - YYYY-MM-DD` section in {CHANGELOG.as_posix()} "
+                       f"nor {RELEASE_NOTES.as_posix()}/{version}.md")
 
 
-def stamp_changelog(text: str, version: str, date: str) -> str:
-    found = sections(text)
-    if not found or found[0].heading != UNRELEASED:
-        raise ReleaseError(f"{CHANGELOG.as_posix()}: the first section must be `{UNRELEASED}`")
-    unreleased = found[0]
-    if not re.search(r"^- ", text[unreleased.body_start:unreleased.end], re.MULTILINE):
-        raise ReleaseError(f"{CHANGELOG.as_posix()}: the Unreleased section has no entries to release")
-    if any((heading := released_heading(section)) and heading.group("version") == version for section in found):
-        raise ReleaseError(f"{CHANGELOG.as_posix()}: there is already a section for {version}")
-    return text[:unreleased.body_start] + f"\n\n## [{version}] - {date}" + text[unreleased.body_start:]
+def entries(text: str) -> int:
+    fenced = {number for number, _ in fenced_lines(text)}
+    return sum(1 for number, line in enumerate(text.splitlines(), start=1) if number not in fenced and line.startswith("- "))
 
 
 def stamp_one(pattern: re.Pattern[str], text: str, value: str, name: str) -> str:
@@ -315,10 +482,18 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
     before = self_check.check(root)
     if before:
         raise ReleaseError("the stamps disagree before preparing; fix these first:\n" + "\n".join(before))
+    pending = fragments(root)[0]
+    if not pending:
+        raise ReleaseError(f"{FRAGMENTS.as_posix()}/ has no fragments to release")
+    breaking = [fragment.path.as_posix() for fragment in pending if fragment.kind == "breaking"]
+    major = parse_version(current)[0]
+    if breaking and new[0] == major:
+        raise ReleaseError(f"{', '.join(breaking)}: `kind: breaking`, which makes the release a major, {major + 1}.0.0, "
+                           f"not {version} (docs/release.md)")
     tag = f"v{version}"
-    writes: dict[Path, str] = {VERSION_FILE: version + "\n"}
+    release_notes = RELEASE_NOTES / f"{version}.md"
+    writes: dict[Path, str] = {VERSION_FILE: version + "\n", release_notes: render(version, date, pending)}
     stamps: list[tuple[Path, Callable[[str], str]]] = [
-        (CHANGELOG, lambda text: stamp_changelog(text, version, date)),
         (PLUGIN, lambda text: stamp_one(PLUGIN_VERSION, text, version, PLUGIN.as_posix())),
         (PYPROJECT, lambda text: stamp_one(PYPROJECT_VERSION, text, version, PYPROJECT.as_posix())),
     ]
@@ -339,15 +514,19 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
         raise ReleaseError(f"{AGENTS.as_posix()}: missing")
     writes[AGENTS], _ = agents_md.sync(agents, agents_md.sections(root), tag)
     writes.update(stamp_fixtures(root, tag))
-    snapshot = Snapshot(root, [*writes, *(path.relative_to(root) for consumer in consumers(root)
-                                           for path in consumer.rglob("*"))])
+    folded = [fragment.path for fragment in pending]
+    snapshot = Snapshot(root, [*writes, *folded, RELEASE_NOTES, *(path.relative_to(root) for consumer in consumers(root)
+                                                                  for path in consumer.rglob("*"))])
     try:
         changed = []
         for path, text in writes.items():
             target = root / path
-            if target.read_text(encoding="utf-8") != text:
+            if not target.is_file() or target.read_text(encoding="utf-8") != text:
+                target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(text, encoding="utf-8")
                 changed.append(path.as_posix())
+        for path in folded:
+            (root / path).unlink()
         for consumer in consumers(root):
             changed.extend(f"{consumer.relative_to(root).as_posix()}/{change.split(':', 1)[0]}"
                            for change in sync.sync(consumer, tag, root))
@@ -357,7 +536,8 @@ def prepare(root: Path, version: str, date: str) -> list[str]:
     except BaseException:
         snapshot.restore()
         raise
-    return sorted(changed)
+    return ([f"stamped {path}" for path in sorted(changed)]
+            + [f"folded {path.as_posix()} into {release_notes.as_posix()}" for path in folded])
 
 
 class Snapshot:
@@ -365,12 +545,15 @@ class Snapshot:
         self.root = root
         self.files: dict[Path, tuple[bytes, int]] = {}
         self.directories: set[Path] = set()
+        self.absent: set[Path] = set()
         for path in paths:
             target = root / path
             if target.is_file() and not target.is_symlink():
                 self.files[path] = (target.read_bytes(), target.stat().st_mode)
             elif target.is_dir():
                 self.directories.add(path)
+            elif not target.is_symlink():
+                self.absent.add(path)
         self.consumers = [consumer.relative_to(root) for consumer in consumers(root)]
 
     def restore(self) -> None:
@@ -381,6 +564,12 @@ class Snapshot:
                     target.unlink()
                 elif target.is_dir() and relative not in self.directories and not any(target.iterdir()):
                     target.rmdir()
+        for path in sorted(self.absent, key=lambda each: len(each.parts), reverse=True):
+            target = self.root / path
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir() and not any(target.iterdir()):
+                target.rmdir()
         for path, (data, mode) in self.files.items():
             target = self.root / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -390,34 +579,107 @@ class Snapshot:
                 target.chmod(mode)
 
 
+def git(root: Path, *args: str) -> str:
+    try:
+        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True, timeout=60).stdout
+    except subprocess.CalledProcessError as error:
+        raise ReleaseError(f"`git {' '.join(args)}` failed: {(error.stderr or '').strip()[:300]}") from error
+    except (subprocess.TimeoutExpired, OSError) as error:
+        raise ReleaseError(f"`git {' '.join(args)}` failed: {error}") from error
+
+
+def changes(root: Path, base: str) -> tuple[str, list[tuple[str, str]]]:
+    if not base or base.startswith("-"):
+        raise ReleaseError(f"--base {base[:40]!r} isn't a ref")
+    start = git(root, "merge-base", base, "HEAD").strip()
+    listing = git(root, "diff", "--name-status", "--no-renames", "-z", start, "HEAD", "--").split("\0")
+    return start, list(zip(listing[0::2], listing[1::2], strict=False))
+
+
+def pull_request(root: Path, base: str) -> tuple[list[str], list[str]]:
+    start, changed = changes(root, base)
+    releasing = any(path == VERSION_FILE.as_posix() for _, path in changed)
+    added = [path for status, path in changed if status == "A" and PurePosixPath(path).parent == PurePosixPath(FRAGMENTS)
+             and FRAGMENT_NAME.fullmatch(PurePosixPath(path).name)]
+    errors: list[str] = []
+    if releasing and added:
+        errors.append(f"{', '.join(added)}: a release pull request (it changes VERSION) folds the fragments and adds "
+                      "none; a new one goes in a pull request of its own, for the next release")
+    elif not releasing and not added:
+        errors.append(f"this pull request adds no changelog fragment: add {FRAGMENTS.as_posix()}/<name>.md, "
+                      f"{FRAGMENT_FORMAT} (docs/release.md)")
+    notes_changed = [(status, path) for status, path in changed if path.startswith(RELEASE_NOTES.as_posix() + "/")]
+    added_notes = [path for status, path in notes_changed if status == "A"]
+    own = added_notes[0] if releasing and len(added_notes) == 1 else None
+    errors += [f"{path}: a released version's notes, which a pull request doesn't change (`fleet release prepare` "
+               "writes the new release's, in its release pull request)"
+               for status, path in notes_changed if not (status == "A" and path == own)]
+    status = {path: status for status, path in changed}.get(CHANGELOG.as_posix())
+    if status == "D":
+        errors.append(f"{CHANGELOG.as_posix()}: frozen at {FROZEN}, and this pull request deletes it; it keeps the "
+                      "releases before the fragments")
+    elif status is not None:
+        before = "" if status == "A" else git(root, "show", f"{start}:{CHANGELOG.as_posix()}")
+        if entries(git(root, "show", f"HEAD:{CHANGELOG.as_posix()}")) > entries(before):
+            errors.append(f"{CHANGELOG.as_posix()}: frozen at {FROZEN}, but this pull request adds an entry to it: a "
+                          f"change's entry is a fragment, {FRAGMENTS.as_posix()}/<name>.md (docs/release.md)")
+    found, problems = fragments(root)
+    errors += problems
+    kinds = {fragment.path.as_posix(): fragment.kind for fragment in found}
+    return errors, [f"{path} ({kinds[path]})" for path in added if path in kinds]
+
+
+def run_check(root: Path, base: str) -> int:
+    errors, added = pull_request(root, base)
+    for error in errors:
+        message = f"fleet release check: {error}"
+        print(f"::error::{message}" if "GITHUB_ACTIONS" in os.environ else message, file=sys.stderr)
+    if errors:
+        return 1
+    print("fleet release check: ok, " + (f"it adds {', '.join(added)}" if added else "a release pull request, which "
+          "folds the fragments"))
+    return 0
+
+
 def configure(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", metavar="<action>", required=True)
-    prepare_parser = actions.add_parser("prepare", help="stamp every version for the release X.Y.Z")
+    prepare_parser = actions.add_parser("prepare", help="stamp every version for the release X.Y.Z and fold the "
+                                        "changelog fragments into its notes")
     prepare_parser.add_argument("version", metavar="X.Y.Z")
     prepare_parser.add_argument("--date", default=datetime.datetime.now(datetime.UTC).date().isoformat(),
-                                help="the release date for CHANGELOG.md (default: today, UTC)")
+                                help="the release date for its notes (default: today, UTC)")
     prepare_parser.add_argument("--root", type=Path, default=Path.cwd(), help="fleet's checkout (default: here)")
-    notes_parser = actions.add_parser("notes", help="print CHANGELOG.md's section for X.Y.Z (the release notes)")
+    notes_parser = actions.add_parser("notes", help="print the release notes of X.Y.Z (changelog.d/released/X.Y.Z.md, "
+                                      f"or CHANGELOG.md's section up to {FROZEN})")
     notes_parser.add_argument("version", metavar="X.Y.Z")
     notes_parser.add_argument("--root", type=Path, default=Path.cwd(), help="fleet's checkout (default: here)")
+    check_parser = actions.add_parser("check", help="check that the commits since --base add a changelog fragment "
+                                      "(changelog.d/<name>.md), that every fragment parses, and that they add no entry "
+                                      "to CHANGELOG.md and change no release's notes; a release pull request (VERSION "
+                                      "changes) adds no fragment")
+    check_parser.add_argument("--base", required=True, metavar="REF", help="the pull request's base (fleet CI passes "
+                              "HEAD^1, the base side of the merge commit it checks out)")
+    check_parser.add_argument("--root", type=Path, default=Path.cwd(), help="fleet's checkout (default: here)")
 
 
 def run(args: argparse.Namespace) -> int:
     root: Path = args.root
     try:
+        if args.action == "check":
+            return run_check(root, args.base)
         parse_version(args.version)
         if args.action == "notes":
             text = read(root, CHANGELOG)
             if text is None:
                 raise ReleaseError(f"{CHANGELOG.as_posix()}: missing")
-            sys.stdout.write(notes(text, args.version))
+            sys.stdout.write(notes(text, args.version, released(root)[0]))
             return 0
-        changed = prepare(root, args.version, args.date)
+        report = prepare(root, args.version, args.date)
     except (ReleaseError, agents_md.MarkerError, vendor.VendorError) as error:
         print(f"fleet release: {error}", file=sys.stderr)
         return 1
-    for path in changed:
-        print(f"stamped {path}")
+    for line in report:
+        print(line)
     print(f"fleet release: stamped v{args.version}. Next: `make check`, then open the release pull request "
           "(docs/release.md).")
     return 0

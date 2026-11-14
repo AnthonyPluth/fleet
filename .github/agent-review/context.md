@@ -12,4 +12,4 @@ None: fleet has no generated files, and `omitted.txt` lists only lockfiles (`poe
 
 ## Where things are
 
-`fleet_tools/` is the command, with `checks/` one module per check; `.github/workflows/` the reusable workflows beside fleet's own CI and self-test; `.github/scripts/` and `.github/agent-review/` what those workflows run; `tests/` the `unittest` suite. A change to a reusable workflow's inputs, a status name or an `AGENTS.md` block is a breaking change unless the old behaviour stays the default, and every change adds a line to `CHANGELOG.md`'s Unreleased section.
+`fleet_tools/` is the command, with `checks/` one module per check; `.github/workflows/` the reusable workflows beside fleet's own CI and self-test; `.github/scripts/` and `.github/agent-review/` what those workflows run; `tests/` the `unittest` suite. A change to a reusable workflow's inputs, a status name or an `AGENTS.md` block is a breaking change unless the old behaviour stays the default, and every change adds a changelog fragment, `changelog.d/<name>.md` (`CHANGELOG.md` is frozen at 4.0.0; `fleet release prepare` folds the fragments into `changelog.d/released/X.Y.Z.md`).
