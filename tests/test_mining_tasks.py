@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from fleet_tools import cli, self_check
+from fleet_tools import cli, release, self_check
 from fleet_tools import mining_tasks as mt
 from fleet_tools import review_mine as rm
 
@@ -426,7 +426,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("secrets", call)
         self.assertNotIn("secrets.", self.text)
         self.assertEqual(self.workflow["permissions"], "{}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(cli.ROOT))})
         jobs = mapping(self.workflow["jobs"])
         self.assertEqual(list(jobs), ["tasks"])
         job = mapping(jobs["tasks"])

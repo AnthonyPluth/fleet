@@ -400,7 +400,7 @@ class ReleaseRehearsalTest(unittest.TestCase):
         step("git", "commit", "-q", "-m", f"chore: release v{NEXT}")
         self.assertIn("fleet self-check: ok", step(sys.executable, "-m", "fleet_tools", "self-check"))
         for consumer in sorted((root / "tests/fixtures").glob("consumer-*")):
-            step(sys.executable, "-m", "fleet_tools", "drift", "--root", str(consumer))
+            step(sys.executable, "-m", "fleet_tools", "drift", "--root", str(consumer), "--own-commit", release.FIXTURE_COMMIT)
         self.assertRegex(step(sys.executable, "-m", "unittest", "discover", "tests"), r"\nOK")
 
 

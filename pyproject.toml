@@ -1,6 +1,6 @@
 [project]
 name = "fleet"
-version = "4.0.0"   # the same as VERSION (tests/test_cli.py checks it)
+version = "4.0.0"   # the same as VERSION (fleet self-check checks it); nothing reads it for fleet's identity
 description = "Shared agent build safeguards: reusable workflows, checks and the Claude Code plugin"
 readme = "README.md"
 license = "AGPL-3.0-only"

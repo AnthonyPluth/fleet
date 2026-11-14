@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from fleet_tools import agent_review as ar
-from fleet_tools import cli, loop_health, mining_tasks, review_outcomes, self_check
+from fleet_tools import (
+    cli,
+    loop_health,
+    mining_tasks,
+    release,
+    review_outcomes,
+    self_check,
+)
 from fleet_tools import review_mine as rm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1319,7 +1326,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("secrets", call)
         self.assertNotIn("secrets.", self.text)
         self.assertEqual(workflow["permissions"], "{}")
-        self.assertEqual(workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
+        self.assertEqual(workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(cli.ROOT))})
         jobs = mapping(workflow["jobs"])
         self.assertEqual(list(jobs), ["mine"])
         mine = mapping(jobs["mine"])

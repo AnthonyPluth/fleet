@@ -6,11 +6,26 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from consumers import WAYPOINT, copy, temporary, write
+from consumers import (
+    AT_FIXTURE_COMMIT,
+    FIXTURE_VERSION,
+    WAYPOINT,
+    copy,
+    temporary,
+    write,
+)
 
-from fleet_tools import agents_md, cli, drift, marketplace
+from fleet_tools import cli, drift, marketplace
 
-VERSION = agents_md.own_version()
+VERSION = FIXTURE_VERSION
+
+
+def setUpModule() -> None:
+    AT_FIXTURE_COMMIT.start()
+
+
+def tearDownModule() -> None:
+    AT_FIXTURE_COMMIT.stop()
 SETTINGS = ".claude/settings.json"
 OTHER_FIRST = """{
   "extraKnownMarketplaces": {

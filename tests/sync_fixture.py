@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from consumers import WAYPOINT, commit, git
 
-from fleet_tools import agents_md, drift, marketplace, release, vendor
+from fleet_tools import agents_md, drift, identity, marketplace, release, vendor
 
 ROOT = Path(__file__).resolve().parent.parent
 KEY = re.compile(r"^(pins|content)=(v\d+\.\d+\.\d+)$")
@@ -49,19 +49,29 @@ def parse_spec(spec: str) -> dict[str, str]:
     return found
 
 
+def label(source: Path = WAYPOINT) -> str:
+    return agents_md.parse_version_file((source / agents_md.VERSION_FILE).read_text(encoding="utf-8")).version
+
+
 def expected() -> list[str]:
-    shipped = vendor.shipped_at(agents_md.own_version()) or {}
+    shipped = vendor.render(vendor.working_tree(ROOT), label())
     return sorted([agents_md.AGENTS, agents_md.VERSION_FILE.as_posix(), marketplace.SETTINGS.as_posix(),
                    *(target.as_posix() for target in shipped)])
 
 
 def build(out: Path, pins: str, content: str, source: Path = WAYPOINT) -> Path:
-    own = agents_md.own_version()
+    own = identity.commit(ROOT)
+    if own is None:
+        raise SystemExit(f"sync_fixture: {identity.describe(ROOT)}; the fixture pins this fleet's own commit, so build it "
+                         "from a checkout")
+    old = label(source)
     shutil.copytree(source, out)
     workflows = out / drift.WORKFLOWS
     for path in sorted(workflows.glob("*.y*ml")):
-        path.write_text(path.read_text(encoding="utf-8").replace(f"# {own}", f"# {pins}"), encoding="utf-8")
-    (workflows / "sync.yml").write_text(SYNC_CALLER.replace("# PINS", f"# {pins}"), encoding="utf-8")
+        text = path.read_text(encoding="utf-8").replace(f"# {old}", f"# {pins}").replace(release.FIXTURE_COMMIT, own)
+        path.write_text(text, encoding="utf-8")
+    (workflows / "sync.yml").write_text(SYNC_CALLER.replace("# PINS", f"# {pins}").replace(release.FIXTURE_COMMIT, own),
+                                        encoding="utf-8")
     agents = out / agents_md.AGENTS
     agents.write_text(agents_md.sync(agents.read_text(encoding="utf-8"), agents_md.sections(), content)[0], encoding="utf-8")
     for target, vendored in vendor.render(vendor.working_tree(ROOT), content).items():
@@ -70,7 +80,7 @@ def build(out: Path, pins: str, content: str, source: Path = WAYPOINT) -> Path:
         path.write_text(vendored.text, encoding="utf-8")
         if vendored.executable:
             path.chmod(path.stat().st_mode | 0o755)
-    (out / agents_md.VERSION_FILE).write_text(agents_md.render_version_file(content, release.FIXTURE_COMMIT), encoding="utf-8")
+    (out / agents_md.VERSION_FILE).write_text(agents_md.render_version_file(content, own), encoding="utf-8")
     marketplace.sync(out, content)
     git(out, "init", "-q", "-b", "main")
     commit(out, "chore: the fixture consumer")

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from fleet_tools import cli, self_check
+from fleet_tools import cli, release, self_check
 from fleet_tools.checks import workflows as wf
 
 DOCKER = cli.ROOT / ".github" / "workflows" / "docker.yml"
@@ -114,7 +114,7 @@ class Shape(unittest.TestCase):
 
     def test_the_fleet_ref_convention_and_bash(self) -> None:
         workflow = parsed(DOCKER)
-        self.assertEqual(workflow["env"]["FLEET_REF"], self_check.expected_ref(cli.version()))
+        self.assertEqual(workflow["env"]["FLEET_REF"], self_check.expected_ref(release.read_version(cli.ROOT)))
         self.assertEqual(workflow["defaults"], {"run": {"shell": "bash"}})
         self.assertEqual(self_check.check_fleet_checkouts("docker.yml", workflow), [])
 
@@ -283,7 +283,7 @@ class Version(unittest.TestCase):
         self.assertEqual(fleet["with"]["ref"], FLEET_CHECKOUT_REF)
         self.assertEqual(fleet["with"]["path"], ".fleet")
         sparse = job_text("build").split("sparse-checkout: |\n", 1)[1].split("sparse-checkout-cone-mode", 1)[0].split()
-        self.assertEqual(sparse, ["fleet_tools", "VERSION"])
+        self.assertEqual(sparse, ["fleet_tools"])
         step = build[position("build", "next-version")]
         self.assertEqual(step["run"], 'python3 -E -s -m fleet_tools.cli next-version --root "$GITHUB_WORKSPACE"')
         self.assertEqual(step["working-directory"], ".fleet")

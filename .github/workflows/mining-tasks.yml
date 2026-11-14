@@ -76,7 +76,6 @@ jobs:
           path: .fleet
           sparse-checkout: |
             fleet_tools
-            VERSION
             tests/fixtures/events
           sparse-checkout-cone-mode: false
           persist-credentials: false

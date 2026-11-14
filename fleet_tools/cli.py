@@ -1,5 +1,4 @@
 import argparse
-import importlib.metadata
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from fleet_tools import (
     agent_review,
     coverage_floor,
     drift,
+    identity,
     loop_stats,
     mining_tasks,
     next_version,
@@ -26,6 +26,8 @@ from fleet_tools import (
 from fleet_tools.checks import runner
 
 ROOT = Path(__file__).resolve().parent.parent
+VERSION_HELP = ("print which fleet this is: its commit (git rev-parse HEAD in a checkout, direct_url.json in an install "
+                "from git), and its tag when git describe --exact-match finds one")
 
 
 @dataclass(frozen=True)
@@ -63,16 +65,20 @@ register("verification", Command(verification.HELP, verification.configure, veri
 register("release", Command(release.HELP, release.configure, release.run))
 
 
-def version() -> str:
-    version_file = ROOT / "VERSION"
-    if version_file.is_file():
-        return version_file.read_text(encoding="utf-8").strip()
-    return importlib.metadata.version("fleet")
+class Version(argparse.Action):
+    def __init__(self, option_strings: Sequence[str], dest: str = argparse.SUPPRESS, default: str = argparse.SUPPRESS,
+                 help: str | None = VERSION_HELP) -> None:
+        super().__init__(option_strings=option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: object,
+                 option_string: str | None = None) -> None:
+        sys.stdout.write(identity.describe(ROOT) + "\n")
+        parser.exit()
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fleet", description="fleet's shared checks and tools")
-    parser.add_argument("--version", action="version", version=version())
+    parser.add_argument("--version", action=Version)
     commands = parser.add_subparsers(dest="command", metavar="<command>")
     for name, command in COMMANDS.items():
         sub = commands.add_parser(name, help=command.help, description=command.help)

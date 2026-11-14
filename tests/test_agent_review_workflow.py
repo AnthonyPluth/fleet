@@ -5,7 +5,7 @@ import unittest
 from typing import Any
 
 from fleet_tools import agent_review as ar
-from fleet_tools import cli, self_check
+from fleet_tools import cli, release, self_check
 
 WORKFLOWS = cli.ROOT / ".github" / "workflows"
 REVIEW = WORKFLOWS / "agent-review.yml"
@@ -83,7 +83,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(mapping(outputs["verdict"])["value"], "${{ jobs.review.outputs.verdict }}")
         self.assertEqual(mapping(outputs["record"])["value"], "${{ jobs.review.outputs.record }}")
         self.assertEqual(mapping(mapping(mapping(self.workflow["jobs"])["review"])["outputs"])["record"], "${{ steps.plan.outputs.record }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(cli.version())})
+        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(cli.ROOT))})
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
 

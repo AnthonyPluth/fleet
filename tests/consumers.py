@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fleet_tools import config, release, sync
+from fleet_tools import agents_md, config, identity, release, sync
 from fleet_tools.checks import runner
 from fleet_tools.checks.context import Context
 
@@ -15,7 +15,9 @@ WAYPOINT = FIXTURES / "consumer-waypoint"
 RUNWAY = FIXTURES / "consumer-runway"
 AGENT = "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_x\n"
 FIXTURE_COMMIT = release.FIXTURE_COMMIT
+FIXTURE_VERSION = agents_md.parse_version_file((WAYPOINT / agents_md.VERSION_FILE).read_text(encoding="utf-8")).version
 OFFLINE_TAGS = mock.patch.object(sync, "ls_remote", side_effect=lambda version: FIXTURE_COMMIT)
+AT_FIXTURE_COMMIT = mock.patch.multiple(identity, commit=mock.Mock(return_value=FIXTURE_COMMIT), tag=mock.Mock(return_value=None))
 GIT_ENV = {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test",
            "GIT_COMMITTER_EMAIL": "test@example.com", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -51,6 +53,16 @@ def write(root: Path, path: str, text: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return target
+
+
+def tagged_fleet(test: unittest.TestCase, version: str = FIXTURE_VERSION) -> Path:
+    root = temporary(test) / "fleet"
+    for directory in ("agents-md", "plugins", "shim"):
+        shutil.copytree(agents_md.ROOT / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "chore: fleet at a release")
+    git(root, "tag", version)
+    return root
 
 
 def checks(root: Path, commits: str | None = None) -> list[str]:

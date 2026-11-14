@@ -10,7 +10,9 @@ from pathlib import Path
 from unittest import mock
 
 from consumers import (
+    AT_FIXTURE_COMMIT,
     FIXTURE_COMMIT,
+    FIXTURE_VERSION,
     OFFLINE_TAGS,
     RUNWAY,
     WAYPOINT,
@@ -21,26 +23,28 @@ from consumers import (
     write,
 )
 
-from fleet_tools import agents_md, cli, drift, vendor
+from fleet_tools import agents_md, cli, drift, identity, vendor
 from fleet_tools.checks import skills
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = agents_md.own_version()
+VERSION = FIXTURE_VERSION
 PLUGIN = ROOT / "plugins/fleet"
 BASE_SKILLS = {"fix-with-checks", "design-signoff", "agent-task", "review-guidance"}
-REGENERATE = "regenerate it with `poetry run fleet sync --to v$(cat VERSION) --root {}`"
+REGENERATE = "regenerate it with `poetry run fleet sync --self` ({})"
 
 
 def setUpModule() -> None:
     OFFLINE_TAGS.start()
+    AT_FIXTURE_COMMIT.start()
 
 
 def tearDownModule() -> None:
+    AT_FIXTURE_COMMIT.stop()
     OFFLINE_TAGS.stop()
 
 
 def shipped() -> dict[Path, vendor.Vendored]:
-    found = vendor.shipped_at(VERSION)
+    found = vendor.shipped_at(VERSION, own=True)
     assert found is not None
     return found
 
@@ -345,7 +349,8 @@ class OtherVersions(unittest.TestCase):
         fleet = self.fleet(with_plugin=True)
         path = fleet / "plugins/fleet/skills/agent-task/SKILL.md"
         path.write_text(path.read_text(encoding="utf-8") + "Newer.\n", encoding="utf-8")
-        found = vendor.shipped_at("v0.0.5", fleet)
+        self.assertIn("Newer.", (vendor.shipped_at("v0.0.5", True, fleet) or {})[Path(".claude/skills/fleet-agent-task/SKILL.md")].text)
+        found = vendor.shipped_at("v0.0.5", False, fleet)
         assert found is not None
         text = found[Path(".claude/skills/fleet-agent-task/SKILL.md")].text
         self.assertIn("vendored from fleet v0.0.5 ", text)
@@ -353,17 +358,18 @@ class OtherVersions(unittest.TestCase):
 
     def test_a_version_from_before_vendoring_checks_no_vendored_file(self) -> None:
         fleet = self.fleet(with_plugin=False)
-        self.assertEqual(vendor.shipped_at("v0.0.5", fleet), {})
+        self.assertEqual(vendor.shipped_at("v0.0.5", False, fleet), {})
         root = copy(self, WAYPOINT, repository=False)
         with mock.patch.object(agents_md, "ROOT", fleet):
-            self.assertEqual(vendor.check(root, "v0.0.5"), (0, []))
+            self.assertEqual(vendor.check(root, "v0.0.5", False), (0, []))
 
     def test_an_unknown_tag_cannot_be_compared(self) -> None:
         fleet = self.fleet(with_plugin=True)
         root = copy(self, WAYPOINT, repository=False)
         with mock.patch.object(agents_md, "ROOT", fleet):
-            self.assertEqual(vendor.check(root, "v9.9.9")[1], [
-                f"can't read fleet's vendored files at v9.9.9 from fleet {VERSION}; run fleet drift from fleet at v9.9.9"])
+            self.assertEqual(vendor.check(root, "v9.9.9", False)[1], [
+                f"can't read fleet's vendored files at v9.9.9 from {identity.describe(fleet)}; run fleet drift from fleet "
+                "at v9.9.9"])
 
 
 class Shim(unittest.TestCase):

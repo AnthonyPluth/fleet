@@ -124,7 +124,6 @@ jobs:
           path: .fleet
           sparse-checkout: |
             fleet_tools
-            VERSION
           sparse-checkout-cone-mode: false
           persist-credentials: false
 

@@ -7,10 +7,11 @@ name: Checks
 #
 # The tools run from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the FLEET_REF
 # convention), never from a ref the pull request names: a pull request could otherwise pick which fleet checks it. The
-# consumer's .fleet/version is data to `fleet drift`, which reads the blocks and the vendored files of that version from
-# fleet's history (the checkout brings the tags), so the content may trail the workflow pins within one major while a
-# sync pull request (sync.yml) is open. The consumer is checked out into app/, beside fleet's .fleet/, so a consumer's
-# own .fleet/version at its root is never touched by the fleet checkout.
+# consumer's .fleet/version is data to `fleet drift`: content at the commit fleet's checkout is at is read from that
+# checkout, and content at another version from that version's tag in fleet's history (the checkout brings the tags),
+# so the content may trail the workflow pins within one major while a sync pull request (sync.yml) is open. The
+# consumer is checked out into app/, beside fleet's .fleet/, so a consumer's own .fleet/version at its root is never
+# touched by the fleet checkout.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers (pull requests and pushes to main) and the
 # concurrency group, and passes its runner as `runs-on`.
@@ -29,6 +30,10 @@ on:
         description: Self-test only. The drift step passes only when `fleet drift` fails.
         type: boolean
         default: false
+      fixture-commit:
+        description: Self-test only. The made-up commit fleet's fixture consumers name for the content they were synced with from fleet's own tree; `fleet drift` takes it as this fleet's own commit (--own-commit).
+        type: string
+        default: ""
       fleet-ref:
         description: The fleet ref to run the tools from (the self-test passes its own commit).
         type: string
@@ -80,7 +85,6 @@ jobs:
             agents-md
             plugins
             shim
-            VERSION
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -110,15 +114,20 @@ jobs:
         env:
           DIR: ${{ inputs.working-directory }}
           EXPECT_DRIFT: ${{ inputs.expect-drift }}
+          FIXTURE_COMMIT: ${{ inputs.fixture-commit }}
         run: |
           root=$(cd "app/$DIR" && pwd)
+          args=()
+          if [ -n "$FIXTURE_COMMIT" ]; then
+            args=(--own-commit "$FIXTURE_COMMIT")
+          fi
           cd .fleet || exit 1
           if [ "$EXPECT_DRIFT" = true ]; then
-            if python3 -E -s -m fleet_tools.cli drift --root "$root"; then
+            if python3 -E -s -m fleet_tools.cli drift --root "$root" "${args[@]}"; then
               echo "::error::fleet drift passed on the drifted fixture"
               exit 1
             fi
             echo "fleet drift failed on the drifted fixture, as it should."
             exit 0
           fi
-          python3 -E -s -m fleet_tools.cli drift --root "$root"
+          python3 -E -s -m fleet_tools.cli drift --root "$root" "${args[@]}"
