@@ -30,6 +30,15 @@ name: Review mining
 # the default branch's commits and files the loop stats read.
 # Titles, kinds, checks, dismissal reasons and verification cells are defused and cut short before posting (no
 # @mentions, no HTML comments, no tags), as the reviews' comments are.
+# Recurring verification gaps become issues, only where the default branch sets [tool.fleet.verification.gap-issues]
+# (opt-in; without it nothing changes): after the rewrite, the same `not verified` reason on `pulls` (default 3) pull
+# requests merged in the last `days` (default 60, at most this workflow's `days`), or a folder no verification guide
+# covers changed on as many, opens one issue, "Verification gap: <what>" (label `review-mining`, a hidden
+# `<!-- mined-from row:verification-gap:… -->` marker, at most 3 a run), never a second while any review-mining issue by
+# github-actions[bot] carries the marker, open or closed. Its first four lines are `Area:`, `Gap:`, `Evidence:` and
+# `Would make it verifiable:`; text from pull requests is quoted in code spans after the same defusing. The bot's issue
+# isn't a task until the owner labels it. The same `issues: write`; no new permission, input or secret. Live runs
+# share the job's concurrency group, `review-mining-live`, so they queue; each dry run has one of its own.
 on:
   workflow_call:
     inputs:
@@ -42,7 +51,7 @@ on:
         type: string
         default: "30"
       dry-run:
-        description: Print the issue that would be opened or rewritten instead of posting it (the job summary and the loop-stats artifact are still produced).
+        description: Print the issue that would be opened or rewritten, and any verification gap issues that would be opened, instead of posting them (the job summary and the loop-stats artifact are still produced).
         type: boolean
         default: false
       fleet-ref:
@@ -69,6 +78,14 @@ jobs:
     name: Review mining
     runs-on: ubuntu-latest   # hosted: holds the write token for the issue; a few API reads and one write
     timeout-minutes: 15
+    # Live runs queue in one group, so a run by hand during the scheduled one waits rather than overlapping (two at once
+    # could each open the same verification gap issue); none is cancelled while it runs, and a third that arrives while
+    # one waits replaces the waiting one, which loses nothing: each run reads everything afresh. A dry run (fleet's
+    # Self-test calls this on every pull request) gets a group of its own, keyed by its run, so it never waits or is
+    # cancelled. mining-tasks.yml writes the same report in no shared group (an owner's edit must not drop this run).
+    concurrency:
+      group: review-mining-${{ inputs.dry-run && format('dry-run-{0}', github.run_id) || 'live' }}
+      cancel-in-progress: false
     outputs:
       loop-stats-url: ${{ steps.upload.outputs.artifact-url }}
     permissions:
@@ -140,7 +157,8 @@ jobs:
       # missing or unreadable stats file (it warns and keeps last run's numbers), so a failed measurement or upload never
       # stops the report, and that failure still fails the job. Without the app's checkout, AGENTS.md's states and the
       # verification settings would be missing and the rewrite would drop the gaps and the unlinked ticks, so a failed
-      # checkout leaves the last report as it is.
+      # checkout leaves the last report as it is. After the rewrite, the same step opens the verification gap issues the
+      # app's [tool.fleet.verification.gap-issues] asks for (none without it); a failed one fails the step, after the report.
       - name: Rewrite the report
         if: ${{ !cancelled() && steps.app.outcome == 'success' && steps.fleet.outcome == 'success' }}
         env:

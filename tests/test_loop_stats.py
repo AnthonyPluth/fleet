@@ -203,7 +203,7 @@ class FixtureTest(unittest.TestCase):
 
     def test_the_report_counts_rows_ticks_and_the_issues_opened_from_them(self) -> None:
         self.assertEqual(self.value["report"], {"issue": 60, "rows": 3, "ticked": 1, "tasks_opened": 3, "tasks_opened_in_window": 1,
-                                                "tasks_closed_in_window": 1})
+                                                "tasks_closed_in_window": 1, "gap_issues_opened": 0})
 
     def test_harness_changes_on_the_default_branch(self) -> None:
         self.assertEqual(self.value["harness"], {
@@ -505,6 +505,16 @@ class EdgeTest(unittest.TestCase):
         report = self.stats.stats()["report"]
         self.assertEqual(report["tasks_opened"], 4)
         self.assertEqual(report["tasks_opened_in_window"], 1)
+
+    def test_a_verification_gap_issue_isn_t_counted_as_a_row_s_task(self) -> None:
+        data = fixture()
+        data[MINED].append({"number": 87, "user": {"login": rm.BOT}, "body": "x\n<!-- mined-from row:verification-gap:reason:no-fake -->\n",
+                            "state": "closed", "created_at": "2026-09-20T00:00:00Z", "closed_at": "2026-09-21T00:00:00Z"})
+        self.stats.run(data, "--app-root", str(RUNWAY))
+        report = self.stats.stats()["report"]
+        self.assertEqual((report["tasks_opened"], report["tasks_opened_in_window"], report["tasks_closed_in_window"]), (3, 1, 1))
+        self.assertEqual(report["gap_issues_opened"], 1)
+        self.assertIn("| Verification gap issues opened, from no row (all time) | 1 |", self.stats.markdown.read_text(encoding="utf-8"))
 
     def test_the_baseline_commit_is_taken_strictly_before_the_window(self) -> None:
         self.stats.run(fixture(), "--app-root", str(RUNWAY))

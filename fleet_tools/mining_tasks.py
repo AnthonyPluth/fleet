@@ -18,6 +18,7 @@ Json = dict[str, Any]
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_IN_ROW = re.compile(r"^\s*\*\*(?P<label>.*)\*\*\s*$")
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
+PULL_NUMBER = re.compile(r"\[#(\d{1,9})\]")
 MAX_TASKS = 20
 MAX_CELL = 600
 MAX_TITLE = 200
@@ -117,11 +118,22 @@ def title(task: Task) -> str:
     return task.table.title.format(plain(task.label(), MAX_TITLE - 40))
 
 
+def gap_header(task: Task) -> list[str]:
+    cells = dict(zip(task.header, task.cells, strict=True))
+    numbers = sorted({int(number) for number in PULL_NUMBER.findall(cells.get("Pull requests", ""))})
+    area = rm.literal(task.id.split(":", 1)[1], 200)
+    gap = rm.literal(plain(cells.get("Samples", ""), MAX_CELL), MAX_CELL)
+    return [*rm.gap_header(area, gap, numbers, safe(task.cells[-1])), ""]
+
+
 def body(task: Task, repo: str, report: int) -> str:
     link = f"https://github.com/{repo}/issues/{report}"
     proposal = task.table.proposal or safe(task.cells[-1])
     facts = [f"- **{safe(name, 80)}**: {safe(value)}" for name, value in zip(task.header, task.cells, strict=True)]
+    gap = task.table is TABLES[rm.GAPS_TABLE]
+    criterion = rm.GAP_CRITERION if gap else "The check, guidance or fake named in Scope exists and a test shows it catches the case."
     lines = [
+        *(gap_header(task) if gap else []),
         "## Context",
         "",
         f"A row of the \"{task.table.heading}\" table of the \"{rm.TITLE}\" report, [#{report}]({link}), that the owner ticked:",
@@ -138,7 +150,7 @@ def body(task: Task, repo: str, report: int) -> str:
         "",
         "## Acceptance criteria",
         "",
-        "- [ ] The check, guidance or fake named in Scope exists and a test shows it catches the case.",
+        f"- [ ] {criterion}",
         "- [ ] `make check` passes.",
         "",
         "## Tests",
