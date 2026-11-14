@@ -244,8 +244,8 @@ done
 # A draft from this repository is marked ready for review once the gate passes on its head (AUTO_READY), so a green
 # draft doesn't wait for someone to notice. Dependabot's pull requests are never drafts (and merge below), and a fork's
 # is its author's to mark. The pull request is read again now, not taken from the listing above: it must still be a
-# draft, still at the commit just decided (a push since is decided by its own run), without the keep-draft label (any
-# case), and never converted to draft by anyone. That last rule flips a pull request at most once and never against a
+# draft, still at the commit just decided (a push since is decided by its own run), without the keep-draft label (an
+# agent's "waiting on the owner", any case), and never converted to draft by anyone. That last rule flips a pull request at most once and never against a
 # person: once ready, it is a draft again only if someone converts it, and from then on it's theirs to mark ready. If
 # the flip makes Codex review again, the gate decides again, and that run finds it no longer a draft.
 #

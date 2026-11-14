@@ -107,6 +107,29 @@ class Plugin(unittest.TestCase):
                 self.assertNotIn(word, text, path.name)
             self.assertIsNone(re.search(r"[\w.-]+@[\w-]+\.\w+", text), path.name)
 
+    def test_no_skill_or_block_tells_an_agent_to_mark_a_pull_request_ready_by_hand(self) -> None:
+        by_hand = re.compile(r"\bmark(?:ing)? (?:it |the pull request |a pull request |the draft )?ready\b", re.IGNORECASE)
+        files = [*sorted((PLUGIN / "skills").glob("*/SKILL.md")), *sorted((PLUGIN / "agents").glob("*.md")),
+                 *sorted((ROOT / "agents-md" / "sections").glob("*.md"))]
+        self.assertGreater(len(files), 5)
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for sentence in re.split(r"(?<=\.)\s+", text):
+                if by_hand.search(sentence):
+                    with self.subTest(file=path.relative_to(ROOT).as_posix(), sentence=sentence[:120]):
+                        self.assertRegex(sentence, r"merge gate|the gate|`auto-ready`")
+            self.assertNotIn("leave the pull request as a draft", text)
+
+    def test_the_skills_hold_a_draft_with_keep_draft(self) -> None:
+        signoff = (PLUGIN / "skills" / "design-signoff" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("add the `keep-draft` label until the owner answers", signoff)
+        self.assertIn("Whoever answers removes the label", signoff)
+        guidance = (PLUGIN / "skills" / "review-guidance" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Removing the `keep-draft` label starts it too (the agent review does)", guidance)
+        verify = (PLUGIN / "skills" / "verify-change" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("the merge gate marks a draft ready by itself", verify)
+        self.assertNotIn("## Before marking ready", verify)
+
     def test_the_skills_carry_the_owner_rules(self) -> None:
         text = {name: (PLUGIN / "skills" / name / "SKILL.md").read_text(encoding="utf-8") for name in BASE_SKILLS}
         for phrase in ("Never silence a rule", ".semgrep/examples/", "# ruleid:", "# ok:", "parenthesis"):

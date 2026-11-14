@@ -99,6 +99,16 @@ class Sections(unittest.TestCase):
         for status in ('"Merge gate"', '"Agent review"', '"Second review"', "Co-Authored-By", "`make check`"):
             self.assertIn(status, body)
 
+    def test_git_and_prs_leaves_marking_ready_to_the_merge_gate_and_holds_a_draft_with_keep_draft(self) -> None:
+        body = SHIPPED["git-and-prs"].body
+        for phrase in ("Don't mark it ready for review yourself: the merge gate marks a draft ready by itself",
+                       "Where the app turns the gate's `auto-ready` off, mark it ready yourself", "add the `keep-draft` label",
+                       "-f 'labels[]=keep-draft'", "which creates the label where the repository has none",
+                       "say in the pull request what it is waiting on", "Whoever answers removes the label",
+                       "the agent review then starts the merge gate again", "Never convert a pull request back to draft"):
+            self.assertIn(phrase, body)
+        self.assertNotIn("Mark it ready for review only when", body)
+
     def test_nothing_app_specific_in_the_blocks(self) -> None:
         for section in SHIPPED.values():
             for word in ("Codex", "SQLAlchemy", "Postgres", "oidc.", "Waypoint's", "Runway's", "http://", "https://"):
