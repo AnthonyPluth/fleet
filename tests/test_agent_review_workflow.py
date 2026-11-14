@@ -87,9 +87,29 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
 
+    def test_removing_keep_draft_only_asks_the_merge_gate_to_decide_again(self) -> None:
+        job = mapping(mapping(self.workflow["jobs"])["keep-draft-removed"])
+        self.assertEqual(job["if"], "github.event.action == 'unlabeled' && github.event.label.name == 'keep-draft' && "
+                                    "inputs.merge-gate-workflow != ''")
+        self.assertEqual(job["permissions"], {"actions": "write"})
+        self.assertNotIn("needs", job)
+        steps = job["steps"]
+        assert isinstance(steps, list)
+        self.assertEqual(len(steps), 1)
+        step = mapping(steps[0])
+        self.assertNotIn("uses", step)
+        self.assertEqual(mapping(step["env"]), {
+            "GH_TOKEN": "${{ github.token }}", "REPO": "${{ github.repository }}", "PR": "${{ github.event.pull_request.number }}",
+            "MERGE_GATE": "${{ inputs.merge-gate-workflow }}", "DRY_RUN": "${{ inputs.dry-run }}",
+        })
+        source = job_source(self.text, "keep-draft-removed")
+        self.assertIn('gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"', source)
+        self.assertNotIn("${{", str(step["run"]))
+        self.assertNotIn("checkout", source)
+
     def test_every_job_runs_hosted_with_the_reason_and_the_least_permissions(self) -> None:
         jobs = mapping(self.workflow["jobs"])
-        self.assertEqual(sorted(jobs), ["report", "review", "second-pending", "second-report", "second-review"])
+        self.assertEqual(sorted(jobs), ["keep-draft-removed", "report", "review", "second-pending", "second-report", "second-review"])
         for job in jobs:
             self.assertRegex(job_source(self.text, job), r"runs-on: ubuntu-latest[ \t]+# hosted: \S")
         for job in REVIEW_JOBS:

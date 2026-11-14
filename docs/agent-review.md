@@ -28,6 +28,7 @@ Both run on `ubuntu-latest` (`# hosted:`): the review job reads untrusted conten
 - **`ready_for_review`** reviews only when the head has no "Agent review" status set by the workflow yet (`wanted`): a draft is reviewed on each push like any pull request, and marking it ready doesn't pay for it twice.
 - **`labeled` and `unlabeled`** run no first review: the review job's `if:` keeps them out, and the concurrency group (`agent-review-<pr>-<fake-review>`, the last part empty outside the self-test, `cancel-in-progress`) is the job's, not the workflow's, so a label event can't cancel a running review. Only the second review (`FLEET-SECOND-REVIEW`) reacts to labels.
 - **`first-review: false`** (the default) runs neither job: no status, no comment. `true` runs both.
+- **Removing `keep-draft`** (an agent's "waiting on the owner", `AGENTS.md`'s "Git and PRs") runs only the `keep-draft-removed` job: an `unlabeled` event for that label (GitHub compares the name ignoring case) starts the caller's merge gate (`merge-gate-workflow`) with the pull request's number, so the gate decides again and marks the draft ready if it passes ([adopting.md](adopting.md#drafts-marked-ready)). It needs only `actions: write`, checks out nothing and runs nothing of the pull request's; anyone who may remove a label may start it, since the gate only decides again and reads the label itself. With `merge-gate-workflow` empty it doesn't run.
 
 ## The re-review and the carried verdict
 

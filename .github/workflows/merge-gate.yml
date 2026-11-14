@@ -3,14 +3,17 @@ name: Merge gate
 # The reusable merge gate: one commit status, "Merge gate", on a pull request's head, passing once every check on it
 # has passed (the rules are in .github/scripts/merge-gate.sh). An app requires it in a ruleset on main
 # (Settings → Rules → Rulesets → Require status checks to pass → "Merge gate") and it's the one check a merge waits on.
-# It also merges Dependabot's pull requests once it passes, except one that bumps a fleet reference unless
-# automerge-fleet-bumps is on.
+# It also marks a draft from the repository ready for review once it passes (auto-ready, on by default; the keep-draft
+# label keeps one a draft, one someone has converted to draft is left to them, and one whose description would fail
+# the verification check as a ready pull request's stays a draft), and merges Dependabot's pull requests once it
+# passes, except one that bumps a fleet reference unless automerge-fleet-bumps is on.
 #
 # The caller (docs/adopting.md has the snippet) keeps the triggers, because a called workflow can't declare them: its
 # workflow_run list names the app's own workflows, check_suite covers other apps' checks, and workflow_dispatch takes a
 # pull request number. It runs from the caller's main copy with a write token and never checks out or runs a pull
 # request's code: it only reads the pull request's checks and statuses through the API, so it works for pull requests
-# from forks too. The only checkout is fleet's own scripts, at the pinned ref.
+# from forks too. The only checkout is fleet's own scripts and tools, at the pinned ref; the app's pyproject.toml is
+# read through the API as data, for the verification check before marking a draft ready.
 on:
   workflow_call:
     inputs:
@@ -73,8 +76,12 @@ on:
         description: Workflow files to start on main after such a merge, space-separated (a merge made with the token starts none by itself).
         type: string
         default: docker.yml security.yml
+      auto-ready:
+        description: Mark a draft pull request from this repository (not a fork's, not Dependabot's) ready for review once the gate passes on its head, unless it has the keep-draft label, someone has ever converted it to draft, or its description would fail fleet checks' verification check as a ready pull request's (main's and the head's [tool.fleet.verification]). false turns it off. Best-effort; the flip starts no workflow.
+        type: boolean
+        default: true
       dry-run:
-        description: Print the status posts, the merge and the workflow starts instead of doing them.
+        description: Print the status posts, the merge, the workflow starts and the marking ready instead of doing them.
         type: boolean
         default: false
       fleet-ref:
@@ -98,8 +105,8 @@ jobs:
     runs-on: ubuntu-latest   # hosted: runs for every pull request, forks included, with a write token
     timeout-minutes: 15   # waiting for CodeQL takes up to 10 at the default poll settings (merge-gate.sh)
     permissions:
-      contents: write          # merge Dependabot's pull requests
-      pull-requests: write     # merge them, read their commits and files, the review threads and Codex's reviews
+      contents: write          # merge Dependabot's pull requests, and read pyproject.toml
+      pull-requests: write     # merge them, mark a draft ready, read their commits and files, the threads and Codex's reviews
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
@@ -116,7 +123,9 @@ jobs:
           repository: AnthonyPluth/fleet
           ref: ${{ inputs.fleet-ref || job.workflow_sha }}
           path: .fleet
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            fleet_tools
           persist-credentials: false
       - name: Decide
         env:
@@ -137,5 +146,6 @@ jobs:
           AUTOMERGE_DEPENDABOT: ${{ inputs.automerge-dependabot }}
           AUTOMERGE_FLEET_BUMPS: ${{ inputs.automerge-fleet-bumps }}
           AFTER_MERGE_WORKFLOWS: ${{ inputs.after-merge-workflows }}
+          AUTO_READY: ${{ inputs.auto-ready }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: .fleet/.github/scripts/merge-gate.sh

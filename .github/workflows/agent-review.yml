@@ -27,7 +27,8 @@ name: Agent review
 # request. labeled and unlabeled events run only the second review, which re-decides; an unlabeled event sent by anyone
 # but the repository owner changes nothing (the job doesn't run, and agent_review.py refuses it too), and a label that
 # isn't one of the trigger labels is a skip. A head already reviewed a second time isn't reviewed again on a label
-# event. The second review reads main's AGENTS.md, context.md and, when the caller sets second-review-paths, the app's
+# event. Removing the keep-draft label also starts the merge gate (keep-draft-removed, at the end), which marks a
+# passing draft ready. The second review reads main's AGENTS.md, context.md and, when the caller sets second-review-paths, the app's
 # .github/agent-review/invariants.md (required then: a risky pull request without it is an error status), plus the
 # first review's comment as data; the two reviews run in parallel and neither waits for the other.
 #
@@ -1075,3 +1076,27 @@ jobs:
           if [ -n "$MERGE_GATE" ]; then
             run gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"
           fi
+
+  # Removing the keep-draft label (an agent's "waiting on the owner", AGENTS.md's "Git and PRs") starts no workflow the
+  # merge gate listens to, so this asks the gate to decide again, and it marks the draft ready if it passes
+  # (merge-gate.sh's AUTO_READY). Anyone who may remove a label may start it: the gate only decides again, and reads the
+  # label itself. GitHub compares the label's name ignoring case, as label names are. It checks out nothing, runs
+  # nothing of the pull request's and hands main's merge gate only the number; with dry-run it prints the start.
+  keep-draft-removed:
+    name: Merge gate after keep-draft
+    if: github.event.action == 'unlabeled' && github.event.label.name == 'keep-draft' && inputs.merge-gate-workflow != ''
+    runs-on: ubuntu-latest   # hosted: holds the token that starts the merge gate
+    timeout-minutes: 5
+    permissions:
+      actions: write   # start the merge gate
+    steps:
+      - name: Ask the merge gate to decide again
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_GATE: ${{ inputs.merge-gate-workflow }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then echo "(dry run) gh workflow run $MERGE_GATE --repo $REPO --ref main -f pr=$PR"; exit 0; fi
+          gh workflow run "$MERGE_GATE" --repo "$REPO" --ref main -f pr="$PR"

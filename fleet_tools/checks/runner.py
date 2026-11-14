@@ -102,6 +102,9 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pr-event", metavar="PATH", type=Path, help="a pull request event payload ($GITHUB_EVENT_PATH on "
                         "Actions): its description's verification record is checked where [tool.fleet.verification] is set")
     parser.add_argument("--root", type=Path, help="the consumer's checkout (default: the nearest pyproject.toml up from here)")
+    parser.add_argument("--only", action="append", metavar="CHECK", choices=[each.name for each in CHECKS],
+                        help="run only this check (repeatable): the merge gate runs `--only verification` on a draft's "
+                        "description as a ready pull request's before marking it ready")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -110,7 +113,8 @@ def run(args: argparse.Namespace) -> int:
         conf = config.load(root)
         found = resolve(root, args.commits) if args.commits else None
         pull_request = pull_request_of(args.pr_event) if args.pr_event else None
-        problems, warnings, ran = check(Context(root, conf, found, pull_request))
+        only = [each for each in CHECKS if each.name in args.only] if args.only else None
+        problems, warnings, ran = check(Context(root, conf, found, pull_request), only)
     except config.ConfigError as error:
         print(f"fleet checks: {error}", file=sys.stderr)
         return 2
