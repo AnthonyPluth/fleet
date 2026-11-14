@@ -79,10 +79,13 @@ def changed_file(filename: str, patch: str) -> Json:
     return {"filename": filename, "patch": patch}
 
 
-def ready_state(draft: bool = True, head: str = SHA, labels: tuple[str, ...] = (), converted: int = 0) -> Json:
+def ready_state(
+    draft: bool = True, head: str = SHA, labels: tuple[str, ...] = (), converted: int = 0, body: str | None = "## What\n"
+) -> Json:
     pull_request: Json = {
         "isDraft": draft,
         "headRefOid": head,
+        "body": body,
         "labels": {"nodes": [{"name": name} for name in labels]},
         "timelineItems": {"totalCount": converted},
     }
@@ -173,9 +176,21 @@ class Gate:
     def ready_state(self, **state: Any) -> None:
         self.record("graphql__ReadyState", ready_state(**state))
 
-    def draft(self, **state: Any) -> None:
-        self.pulls([pull(draft=True)])
+    def pyprojects(self, *texts: str) -> None:
+        for stale in self.answers.glob("contents__pyproject.toml*.json"):
+            stale.unlink()
+        names = ["contents__pyproject.toml"] if len(texts) == 1 else [f"contents__pyproject.toml.{index}" for index in range(1, len(texts) + 1)]
+        for name, text in zip(names, texts, strict=True):
+            (self.answers / f"{name}.json").write_text(text, encoding="utf-8")
+
+    def ready_answers(self, *, pyproject: str = "[tool.fleet]\n", head_now: str = SHA, **state: Any) -> None:
         self.ready_state(**state)
+        self.pyprojects(pyproject)
+        self.record("pulls__N", {"head": {"sha": head_now}})
+
+    def draft(self, **answers: Any) -> None:
+        self.pulls([pull(draft=True)])
+        self.ready_answers(**answers)
 
     def dependabot(self, files: list[Json] | None = None) -> None:
         self.pulls([pull(author=DEPENDABOT)])
@@ -756,6 +771,12 @@ class ForkTest(unittest.TestCase):
 
 
 READY = ["gh", "pr", "ready", str(NUMBER), "--repo", REPO]
+REQUIRED = "[tool.fleet.verification]\nrequired = true\n"
+ADVISORY = "[tool.fleet.verification]\nrequired = false\n"
+VALID_RECORD = (
+    "## Verification\n\n<!-- fleet-verification -->\n| Dimension | Status | How | Evidence |\n| --- | --- | --- | --- |\n"
+    "| The flip | verified | `make check` | `test_the_flip` passed |\n<!-- /fleet-verification -->\n"
+)
 STATUS_POST = ["gh", "api", "-X", "POST", f"repos/{REPO}/statuses/{SHA}"]
 PASSED = [("success", "Every check passed")]
 
@@ -825,7 +846,7 @@ class AutoReadyTest(unittest.TestCase):
     def test_a_draft_from_this_repository_named_in_another_case_is_marked_ready(self) -> None:
         gate = Gate(self)
         gate.pulls([pull(head_repo=REPO.upper(), draft=True)])
-        gate.ready_state()
+        gate.ready_answers()
         self.assertEqual(gate.run().marked_ready, [READY])
 
     def test_a_dependabot_draft_is_neither_marked_ready_nor_merged(self) -> None:
@@ -910,6 +931,84 @@ class AutoReadyTest(unittest.TestCase):
         self.assertEqual(result.posted, PASSED)
         self.assertEqual((result.marked_ready, result.reads_of("ReadyState")), ([], 0))
         self.assertIn(f"Not marking #{NUMBER} ready for review: AUTO_READY is off.", result.stdout)
+
+    def test_required_verification_without_a_record_keeps_it_a_draft(self) -> None:
+        gate = Gate(self)
+        gate.draft(pyproject=REQUIRED)
+        result = gate.run(GITHUB_ACTIONS="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.posted, PASSED)
+        self.assertEqual(result.marked_ready, [])
+        self.assertIn(f"::warning::Not marking #{NUMBER} ready for review: as a ready pull request it fails fleet checks' "
+                      "verification check (pyproject.toml at main).", result.stdout)
+        self.assertIn("no verification block", result.stdout)
+        self.assertNotIn("::error::", result.stdout)
+        self.assertEqual(result.reads_of(f"pulls/{NUMBER}"), 0)
+        gate.draft(pyproject=REQUIRED, body=None)
+        self.assertEqual(gate.run().marked_ready, [])
+
+    def test_required_verification_with_a_valid_record_is_marked_ready(self) -> None:
+        gate = Gate(self)
+        gate.draft(pyproject=REQUIRED, body=VALID_RECORD)
+        result = gate.run()
+        self.assertEqual(result.marked_ready, [READY])
+        self.assertEqual(result.reads_of("contents/pyproject.toml"), 2)
+        self.assertIn(["gh", "api", f"repos/{REPO}/contents/pyproject.toml?ref=main", "-H", "Accept: application/vnd.github.raw+json"], result.calls)
+        self.assertIn(["gh", "api", f"repos/{REPO}/contents/pyproject.toml?ref={SHA}", "-H", "Accept: application/vnd.github.raw+json"], result.calls)
+
+    def test_advisory_or_no_verification_is_marked_ready_without_a_record(self) -> None:
+        for pyproject in (ADVISORY, "[tool.fleet]\n", "[project]\nname = \"app\"\n"):
+            gate = Gate(self)
+            gate.draft(pyproject=pyproject)
+            self.assertEqual(gate.run().marked_ready, [READY], pyproject)
+
+    def test_the_heads_pyproject_and_mains_both_count(self) -> None:
+        for texts, where in (((ADVISORY, REQUIRED), SHA), ((REQUIRED, ADVISORY), "main")):
+            gate = Gate(self)
+            gate.draft()
+            gate.pyprojects(*texts)
+            result = gate.run()
+            self.assertEqual(result.marked_ready, [])
+            self.assertIn(f"verification check (pyproject.toml at {where}).", result.stdout)
+
+    def test_an_exempt_author_needs_no_record_as_in_fleet_checks(self) -> None:
+        gate = Gate(self)
+        gate.draft(pyproject=REQUIRED + 'exempt-authors = ["octocat"]\n')
+        self.assertEqual(gate.run().marked_ready, [READY])
+
+    def test_a_verification_check_that_cannot_run_keeps_it_a_draft(self) -> None:
+        for pyproject in ("[tool.fleet\n", '[tool.fleet.verification]\nrequired = "yes"\n'):
+            gate = Gate(self)
+            gate.draft(pyproject=pyproject)
+            result = gate.run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.posted, PASSED)
+            self.assertEqual(result.marked_ready, [])
+            self.assertIn("fleet checks: ", result.stdout)
+            self.assertIn("fleet checks' verification check couldn't run (pyproject.toml at main, exit 2).", result.stdout)
+        gate = Gate(self)
+        gate.draft()
+        gate.pyprojects()
+        result = gate.run()
+        self.assertEqual((result.returncode, result.marked_ready), (0, []))
+        self.assertIn(f"::warning::Not marking #{NUMBER} ready for review: couldn't read pyproject.toml at main", result.stdout)
+
+    def test_the_head_is_read_again_right_before_the_flip(self) -> None:
+        gate = Gate(self)
+        gate.draft(head_now="b" * 40)
+        result = gate.run()
+        self.assertEqual(result.posted, PASSED)
+        self.assertEqual(result.marked_ready, [])
+        self.assertIn(f"Not marking #{NUMBER} ready for review: its head moved on to {'b' * 40}.", result.stdout)
+        gate.draft()
+        result = gate.run()
+        guard = ["gh", "api", f"repos/{REPO}/pulls/{NUMBER}", "--jq", ".head.sha"]
+        self.assertLess(result.index_of(["gh", "api", f"repos/{REPO}/contents/pyproject.toml?ref={SHA}"]), result.index_of(guard))
+        self.assertLess(result.index_of(guard), result.index_of(READY))
+        (gate.answers / "pulls__N.json").unlink()
+        result = gate.run()
+        self.assertEqual((result.returncode, result.marked_ready), (0, []))
+        self.assertIn(f"::warning::Couldn't read #{NUMBER}'s head again, so it stays a draft", result.stdout)
 
     def test_a_dry_run_prints_the_flip_instead(self) -> None:
         gate = Gate(self)
@@ -1032,6 +1131,8 @@ class WorkflowTest(unittest.TestCase):
         })
         steps = gate["steps"]
         assert isinstance(steps, list)
+        text = (cli.ROOT / ".github" / "workflows" / "merge-gate.yml").read_text(encoding="utf-8")
+        self.assertIn("          sparse-checkout: |\n            .github/scripts\n            fleet_tools\n          persist-credentials: false\n", text)
         decide = steps[-1]
         assert isinstance(decide, dict)
         self.assertEqual(decide["run"], ".fleet/.github/scripts/merge-gate.sh")

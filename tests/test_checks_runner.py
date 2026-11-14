@@ -81,6 +81,24 @@ class Reporting(unittest.TestCase):
         self.assertIn("isn't valid UTF-8", err)
         self.assertNotIn("Traceback", err)
 
+    def test_only_runs_the_named_checks(self) -> None:
+        root = copy(self, RUNWAY)
+        commit(root, "fix: x\n\nClaude-Session: https://claude.ai/code/session_x")
+        code, out, _ = run("--root", str(root), "--commits", "HEAD~1..HEAD", "--only", "workflows", "--only", "skills")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "Fleet checks passed: workflow conventions, skills well formed, generated references and "
+                              "feature maps current.\n")
+        self.assertEqual(run("--root", str(root), "--commits", "HEAD~1..HEAD", "--only", "commits")[0], 1)
+
+    def test_only_a_check_that_does_not_apply_passes_with_nothing_checked(self) -> None:
+        code, out, _ = run("--root", str(copy(self, WAYPOINT, repository=False)), "--only", "verification")
+        self.assertEqual((code, out), (0, "Fleet checks passed: nothing is configured to check.\n"))
+
+    def test_only_an_unknown_check_is_a_usage_error(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            cli.main(["checks", "--only", "no-such-check"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_the_root_defaults_to_the_nearest_pyproject(self) -> None:
         root = copy(self, RUNWAY, repository=False)
         here = Path.cwd()
