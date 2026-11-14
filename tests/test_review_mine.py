@@ -1386,6 +1386,16 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotRegex(script, r"\$\{\{")
         self.assertIn("[tool.fleet.verification.gap-issues]", self.text)
         self.assertIn("(opt-in; without it nothing changes)", self.text)
+        self.assertNotIn("concurrency", self.workflow)
+        self.assertEqual(mine["concurrency"], {"group": "review-mining-${{ inputs.dry-run && format('dry-run-{0}', github.run_id) || 'live' }}",
+                                               "cancel-in-progress": "false"})
+        self.assertEqual(self.text.count("concurrency:"), 1)
+        self.assertEqual(self.text.count("cancel-in-progress"), 1)
+        test = mapping(self_check.parse((WORKFLOWS / "self-test.yml").read_text(encoding="utf-8")))
+        callers = [job for job in mapping(test["jobs"]).values() if mapping(job).get("uses") == "./.github/workflows/review-mining.yml"]
+        self.assertEqual([mapping(job)["with"]["dry-run"] for job in callers], ["true"])
+        mining = mapping(mapping(mapping(self_check.parse((WORKFLOWS / "mining-tasks.yml").read_text(encoding="utf-8")))["jobs"])["tasks"])
+        self.assertFalse(str(mapping(mining["concurrency"])["group"]).startswith("review-mining-"))
         for doc in ("docs/review-mining.md", "docs/adopting.md"):
             text = (ROOT / doc).read_text(encoding="utf-8")
             self.assertIn("[tool.fleet.verification.gap-issues]", text, doc)

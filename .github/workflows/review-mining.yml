@@ -37,7 +37,8 @@ name: Review mining
 # `<!-- mined-from row:verification-gap:… -->` marker, at most 3 a run), never a second while any review-mining issue by
 # github-actions[bot] carries the marker, open or closed. Its first four lines are `Area:`, `Gap:`, `Evidence:` and
 # `Would make it verifiable:`; text from pull requests is quoted in code spans after the same defusing. The bot's issue
-# isn't a task until the owner labels it. The same `issues: write`; no new permission, input or secret.
+# isn't a task until the owner labels it. The same `issues: write`; no new permission, input or secret. Live runs
+# share the job's concurrency group, `review-mining-live`, so they queue; each dry run has one of its own.
 on:
   workflow_call:
     inputs:
@@ -77,6 +78,14 @@ jobs:
     name: Review mining
     runs-on: ubuntu-latest   # hosted: holds the write token for the issue; a few API reads and one write
     timeout-minutes: 15
+    # Live runs queue in one group, so a run by hand during the scheduled one waits rather than overlapping (two at once
+    # could each open the same verification gap issue); none is cancelled while it runs, and a third that arrives while
+    # one waits replaces the waiting one, which loses nothing: each run reads everything afresh. A dry run (fleet's
+    # Self-test calls this on every pull request) gets a group of its own, keyed by its run, so it never waits or is
+    # cancelled. mining-tasks.yml writes the same report in no shared group (an owner's edit must not drop this run).
+    concurrency:
+      group: review-mining-${{ inputs.dry-run && format('dry-run-{0}', github.run_id) || 'live' }}
+      cancel-in-progress: false
     outputs:
       loop-stats-url: ${{ steps.upload.outputs.artifact-url }}
     permissions:
