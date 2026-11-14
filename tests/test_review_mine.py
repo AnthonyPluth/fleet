@@ -818,6 +818,7 @@ class SignalsTest(unittest.TestCase):
 
 GAP = "[tool.fleet.verification.gap-issues]\n"
 REASON = "no fake provider; a fake under `tests/fakes/` would make it verifiable"
+TITLE = "Verification gap: no fake provider; a fake under tests/fakes/ would make it verifiable"
 
 
 def gap_app(directory: Path, table: str = GAP, guides: bool = True, name: str = "gap-app") -> Path:
@@ -864,7 +865,7 @@ class GapIssuesTest(unittest.TestCase):
         issues = gap_issues(self.miner)
         self.assertEqual(len(issues), 1)
         issue = issues[0]
-        self.assertEqual(issue["title"], f"Verification gap: {REASON}")
+        self.assertEqual(issue["title"], TITLE)
         self.assertEqual(issue["labels"], ["review-mining"])
         self.assertNotIn("assignees", issue)
         lines = issue["body"].splitlines()
@@ -1048,7 +1049,7 @@ class GapIssuesTest(unittest.TestCase):
     def test_a_dry_run_prints_the_issues_and_posts_nothing(self) -> None:
         result = self.miner.run(self.reasons(20, 21, 22), "--app-root", str(gap_app(self.miner.directory)), "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f'would open "Verification gap: {REASON}"', result.stdout)
+        self.assertIn(f'would open "{TITLE}"', result.stdout)
         self.assertIn("\nEvidence: #20, #21, #22\n", result.stdout)
         self.assertEqual(self.miner.writes(), [])
         self.assertIn("- would open `Verification gap:", self.miner.summary.read_text(encoding="utf-8"))
@@ -1078,8 +1079,25 @@ class GapIssuesTest(unittest.TestCase):
                     self.assertNotIn("<b>", outside, line)
                     self.assertNotIn("other/repo", outside, line)
             self.assertEqual(len(body.splitlines()[1].split("`")), 3)
+            self.assertTrue(title.startswith("Verification gap: "), title)
+            for mark in ("@", "#", "`", "<", ">", "[", "]", "!", "*", "\n", "\r", "\u200b"):
+                self.assertNotIn(mark, title)
+            self.assertLessEqual(len(title), len("Verification gap: no verification guide covers ") + rm.MAX_GAP_TITLE + 2)
         reason = next(i for i in issues if "covers" not in str(i["title"]))
         self.assertIn("`see @\u200boctocat 'x' &lt;!-- mined-from", reason["body"].splitlines()[1])
+        self.assertEqual(reason["title"], "Verification gap: see octocat x -- mined-from row verification-gap reason forged -- i (https …")
+        folder = next(i for i in issues if "covers" in str(i["title"]))
+        self.assertEqual(folder["title"], "Verification gap: no verification guide covers octocat/ b /")
+
+    def test_a_title_keeps_only_plain_words_and_is_cut_at_a_word(self) -> None:
+        self.assertEqual(rm.title_form("fix @octocat's #12 and other/repo#3\nthen `run` <b>it</b>\r\n[l](x)!"),
+                         "fix octocat's 12 and other/repo 3 then run b it /b l (x)")
+        long = "word " * 40
+        cut = rm.title_form(long)
+        self.assertLessEqual(len(cut), rm.MAX_GAP_TITLE + 2)
+        self.assertTrue(cut.endswith("word …"), cut)
+        self.assertEqual(rm.title_form("@#`<>"), "?")
+        self.assertEqual(rm.title_form("a" * 200), "a" * rm.MAX_GAP_TITLE + " …")
 
     def test_a_setting_out_of_range_fails_the_run_after_the_report(self) -> None:
         for index, table in enumerate(("pulls = 1\n", "pulls = true\n", "days = 0\n", 'days = "60"\n', "window = 3\n")):
@@ -1135,7 +1153,8 @@ def loop_stats(merged: int = 3, resolved: float | None = 0.4, when: str = NOW, d
     return {"schema": 1, "repo": REPO, "generated": when, "since": SINCE, "days": days, "default_branch": "main", "missing": [],
             "reviews": {"merged": merged, "unread": 0, "with_agent_review": 2, "with_second_review": 1, "findings": findings},
             "verification": {"configured": False},
-            "report": {"issue": 60, "rows": 2, "ticked": 1, "tasks_opened": 1, "tasks_opened_in_window": 1, "tasks_closed_in_window": 0},
+            "report": {"issue": 60, "rows": 2, "ticked": 1, "tasks_opened": 1, "tasks_opened_in_window": 1, "tasks_closed_in_window": 0,
+                       "gap_issues_opened": 0},
             "harness": {"commits": {"context": 1, "invariants": 0, "semgrep": 0, "skills": 2, "verification_guides": None, "total": 4},
                         "checked_in_window": 1, "checked_items": ["Layout"], "days_since_change": {"AGENTS.md": 3}},
             "fleet": {"version": "v1.0.0", "sync_open": False}}

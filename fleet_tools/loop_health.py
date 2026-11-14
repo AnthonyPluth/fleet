@@ -67,7 +67,7 @@ SHAPE: Json = {
                      "verified": ANY, "not_verified": ANY, "mean_not_verified": ANY, "uncovered_paths": ANY,
                      "pulls_with_uncovered_paths": ANY, "unread_files": ANY, "uncovered_samples": LIST},
     "report": {"issue": ANY, "rows": ANY, "ticked": ANY, "tasks_opened": ANY, "tasks_opened_in_window": ANY,
-               "tasks_closed_in_window": ANY},
+               "tasks_closed_in_window": ANY, "gap_issues_opened": ANY},
     "harness": {"commits": {"context": ANY, "invariants": ANY, "semgrep": ANY, "skills": ANY, "verification_guides": ANY,
                             "total": ANY}, "checked_in_window": ANY, "checked_items": LIST, "days_since_change": MAP},
     "fleet": {"version": ANY, "sync_open": ANY},

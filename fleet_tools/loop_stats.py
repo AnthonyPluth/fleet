@@ -265,14 +265,18 @@ def report_of(run: Run) -> Json:
     listed = rm.gh("--paginate", f"repos/{run.repo}/issues?state=all&labels={rm.LABEL}&per_page={PER_PAGE}")
     if not isinstance(listed, list):
         raise Unreadable("the review-mining issue list isn't a list")
-    opened = in_window = closed = 0
+    opened = in_window = closed = gaps = 0
     for each in listed:
         if not isinstance(each, dict) or "pull_request" in each or not isinstance(each.get("number"), int):
             continue
         user, text = each.get("user"), each.get("body")
         if not isinstance(user, dict) or user.get("login") != rm.BOT or not isinstance(text, str):
             continue
-        if not any(rm.MINED.match(line.strip()) for line in text.splitlines()):
+        ids = [found.group("id") for found in (rm.MINED.match(line.strip()) for line in text.splitlines()) if found]
+        if not ids:
+            continue
+        if all(row_id.startswith(f"{rm.GAP_ID}:") for row_id in ids):
+            gaps += 1
             continue
         opened += 1
         if run.since <= str(each.get("created_at") or "") <= run.until:
@@ -281,7 +285,7 @@ def report_of(run: Run) -> Json:
         if each.get("state") == "closed" and isinstance(closed_at, str) and run.since <= closed_at <= run.until:
             closed += 1
     return {"issue": int(issue["number"]) if issue else None, "rows": len(rows), "ticked": sum(1 for ticked, _ in rows.values() if ticked),
-            "tasks_opened": opened, "tasks_opened_in_window": in_window, "tasks_closed_in_window": closed}
+            "tasks_opened": opened, "tasks_opened_in_window": in_window, "tasks_closed_in_window": closed, "gap_issues_opened": gaps}
 
 
 def default_branch(run: Run) -> str:
@@ -570,7 +574,8 @@ def render(stats: Json) -> str:
         lines += table([
             ("Report issue", f"#{rep['issue']}" if rep["issue"] else "none open"), ("Rows in it now", rep["rows"]),
             ("… ticked", rep["ticked"]), ("Issues opened from rows (all time)", rep["tasks_opened"]),
-            ("… opened in the window", rep["tasks_opened_in_window"]), ("… closed in the window", rep["tasks_closed_in_window"])])
+            ("… opened in the window", rep["tasks_opened_in_window"]), ("… closed in the window", rep["tasks_closed_in_window"]),
+            ("Verification gap issues opened, from no row (all time)", rep["gap_issues_opened"])])
     h = stats.get("harness")
     lines += ["", f"### Harness changes on `{md(stats.get('default_branch') or '?')}`", ""]
     if h is None:

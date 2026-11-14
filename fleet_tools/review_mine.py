@@ -69,6 +69,8 @@ MAX_GAP_DAYS = 3650
 MAX_GAP_ISSUES = 3
 MAX_GAP_LISTED = 20
 MAX_GAP_DETAILS = 3
+MAX_GAP_TITLE = 80
+TITLE_PUNCTUATION = " ._/,;'()-"
 AREA_DEPTH = 2
 GAP_VERIFIABLE = ("what the gap names, or else a fake under `tests/fakes/`, a fixture or a flow that exercises it, and a step "
                   "that uses it in the area's verification guide (`## How to verify`)")
@@ -786,10 +788,17 @@ def gap_header(area: str, gap: str, numbers: list[int], verifiable: str) -> list
     return [f"Area: {area}", f"Gap: {gap}", f"Evidence: {evidence}", f"Would make it verifiable: {verifiable}"]
 
 
+def title_form(text: str, limit: int = MAX_GAP_TITLE) -> str:
+    kept = " ".join("".join(char if char.isalnum() or char in TITLE_PUNCTUATION else " " for char in str(text)).split())
+    if len(kept) <= limit:
+        return kept or "?"
+    return kept[:limit].rsplit(" ", 1)[0].rstrip(" ._/,;'(-") + " …"
+
+
 def gap_title(cluster: GapCluster) -> str:
     if cluster.kind == GAP_REASON:
-        return f"Verification gap: {flat(cluster.text, 100)}"
-    return f"Verification gap: no verification guide covers {flat(cluster.text, 120)}"
+        return f"Verification gap: {title_form(cluster.text)}"
+    return f"Verification gap: no verification guide covers {title_form(cluster.text)}"
 
 
 def gap_body(cluster: GapCluster, repo: str, settings: GapSettings, days: int, since: str) -> str:
@@ -1150,7 +1159,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stats", type=Path, metavar="LOOP-STATS.json",
                         help="`fleet loop-stats`' JSON: a \"Loop health\" section at the top, beside the last run's numbers read "
                              "from the report's hidden loop-stats line (default: none, no section)")
-    parser.add_argument("--dry-run", action="store_true", help="print the issue instead of opening or rewriting it")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the issue, and the verification gap issues it would open, instead of opening or rewriting them")
     parser.add_argument("--now", help="the end of the window as an ISO 8601 time (tests; default: now)")
 
 
