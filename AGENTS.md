@@ -80,4 +80,5 @@ Review findings on agents' pull requests fall into the same few kinds: check you
 - Don't hard-wrap lines in pull request descriptions, comments, issues or the body of a commit message: write each paragraph or list item as one line, and let GitHub wrap it to the screen. Only code and repo files keep their own wrapping. Keep the commit subject to one short line.
 <!-- fleet:end git-and-prs -->
 - Use `.github/pull_request_template.md`, and add a line to `CHANGELOG.md`'s Unreleased section.
+- **fleet has no merge gate** (its agent review caller passes `merge-gate-workflow: ""`), so nothing marks a fleet pull request ready by itself: the agent marks it ready by hand, as the block above says for an app with `auto-ready` off, once every check is green (`fleet CI` and `Self-test` included), every review that runs on it has finished and every review comment has been fixed or answered and resolved. `keep-draft` still holds one that waits on the owner.
 - fleet itself releases when a release pull request bumps `VERSION` ([docs/release.md](docs/release.md)), not on each merge: its title still says what kind of change it is.

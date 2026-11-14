@@ -252,6 +252,17 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(len(agents_md.blocks(text)), len(agents_md.ORDER))
 
 
+    def test_fleets_own_agents_md_says_agents_mark_ready_by_hand_while_fleet_has_no_merge_gate(self) -> None:
+        text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        caller = (ROOT / ".github" / "workflows" / "agent-review-caller.yml").read_text(encoding="utf-8")
+        line = "- **fleet has no merge gate** (its agent review caller passes `merge-gate-workflow: \"\"`)"
+        no_gate = 'merge-gate-workflow: ""' in caller
+        self.assertEqual(line in agents_md.outside(text), no_gate,
+                         "fleet's AGENTS.md says agents mark ready by hand exactly while fleet has no merge gate caller")
+        if no_gate:
+            self.assertIn("the agent marks it ready by hand, as the block above says for an app with `auto-ready` off", text)
+
+
 class Command(unittest.TestCase):
     def test_sync_writes_the_blocks_and_the_version(self) -> None:
         root = copy(self, WAYPOINT, repository=False)
