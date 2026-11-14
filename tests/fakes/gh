@@ -16,12 +16,15 @@
 #       pulls/12/reviews                 -> pulls__N__reviews.json
 #       issues/12/comments               -> issues__N__comments.json
 #       graphql (the review threads)     -> graphql.json, the whole GraphQL reply
+#       graphql, a query named ReadyState -> graphql__ReadyState.json (a named query or mutation answers by its name)
 #     An answer that changes between looks (CodeQL arriving while the gate polls) is a numbered series: the first read
 #     of a path answers <name>.1.json, the second <name>.2.json, and so on; the last file in the series answers every
 #     later read. A read with no file fails, so a case that forgot an answer fails loudly.
 #     A write (-X POST, ...) answers {} and is only logged.
-#   gh pr merge ..., gh workflow run ...
+#   gh pr merge ..., gh pr ready ..., gh workflow run ...
 #     Logged, nothing else.
+# FAKE_GH_FAIL, when set, is the start of a command line (like "pr ready") that fails with exit 1 once logged, as a
+# refused call would.
 set -euo pipefail
 
 : "${FAKE_GH_DIR:?set FAKE_GH_DIR to the directory of recorded answers}"
@@ -30,6 +33,8 @@ set -euo pipefail
 printf '%q ' gh "$@" >> "$FAKE_GH_LOG"
 printf '\n' >> "$FAKE_GH_LOG"
 
+if [ -n "${FAKE_GH_FAIL:-}" ] && [[ "$*" == "$FAKE_GH_FAIL"* ]]; then echo "fake gh: failing $*" >&2; exit 1; fi
+
 case "${1:-}" in
   api) ;;
   pr|workflow) exit 0 ;;
@@ -37,12 +42,12 @@ case "${1:-}" in
 esac
 shift
 
-method=GET path="" filter=""
+method=GET path="" filter="" query=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --paginate) shift ;;
     -X) method=$2; shift 2 ;;
-    -f|-F|-H) shift 2 ;;
+    -f|-F|-H) if [[ "$2" == query=* ]]; then query=${2#query=}; fi; shift 2 ;;
     --jq) filter=$2; shift 2 ;;
     -*) echo "fake gh: unexpected option: $1" >&2; exit 64 ;;
     *) path=$1; shift ;;
@@ -50,6 +55,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$method" != GET ]; then echo '{}'; exit 0; fi
+if [ "$path" = graphql ] && [[ "$query" =~ ^[[:space:]]*(query|mutation)[[:space:]]+([A-Za-z]+) ]]; then
+  path="graphql/${BASH_REMATCH[2]}"
+fi
 
 name=${path%%\?*}
 name=$(sed -E -e 's#^repos/[^/]+/[^/]+/##' -e 's#/#__#g' -e 's#[0-9a-f]{40}#SHA#g' -e 's#^(pulls|issues)__[0-9]+#\1__N#' <<< "$name")

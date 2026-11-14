@@ -349,7 +349,7 @@ The workflow conventions check runs wherever `.github/workflows/` or `.github/ac
 
 ## Merge gate
 
-`.github/workflows/merge-gate.yml` (`workflow_call`) sets one commit status, "Merge gate", on a pull request's head: passing once the newest run of every workflow the pull request started has succeeded (and the required ones ran at all), every other app's check run and every commit status has passed (and the required statuses are set), pending while anything is still running, failing otherwise. Require that one status in the ruleset on `main`. It merges Dependabot's pull requests once it passes, except one that changes an `AnthonyPluth/fleet/` reference, which it leaves for the owner unless `automerge-fleet-bumps` is on. The rules are in `.github/scripts/merge-gate.sh`, which the workflow fetches from fleet at its pinned ref.
+`.github/workflows/merge-gate.yml` (`workflow_call`) sets one commit status, "Merge gate", on a pull request's head: passing once the newest run of every workflow the pull request started has succeeded (and the required ones ran at all), every other app's check run and every commit status has passed (and the required statuses are set), pending while anything is still running, failing otherwise. Require that one status in the ruleset on `main`. It marks a draft ready for review once it passes ([Drafts marked ready](#drafts-marked-ready)), and merges Dependabot's pull requests once it passes, except one that changes an `AnthonyPluth/fleet/` reference, which it leaves for the owner unless `automerge-fleet-bumps` is on. The rules are in `.github/scripts/merge-gate.sh`, which the workflow fetches from fleet at its pinned ref.
 
 The triggers stay in the app's caller, because a called workflow can't declare them. The `workflow_run` list names the app's own pull request workflows (the last one to finish decides); `check_suite` covers other apps' checks; `workflow_dispatch` decides a pull request by number (the agent review starts it this way once it has set its status). The job's `if:` keeps it to pull requests. The caller runs from `main`'s copy with a write token and checks out nothing of the pull request.
 
@@ -382,7 +382,7 @@ jobs:
       (github.event_name == 'check_suite' && github.event.check_suite.app.slug != 'github-actions')
     permissions:
       contents: write          # merge Dependabot's pull requests
-      pull-requests: write     # merge them, and read their commits and files
+      pull-requests: write     # merge them, mark a draft ready, and read their commits and files
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
@@ -412,8 +412,15 @@ Inputs, each with the default fleet's own gate uses:
 | `automerge-dependabot` | `true` | Merge Dependabot's pull requests once the gate passes (every commit Dependabot's own and verified, same repository, not a draft, no fleet reference changed unless `automerge-fleet-bumps`) |
 | `automerge-fleet-bumps` | `false` | `true` also merges a Dependabot pull request that changes a fleet reference, once the gate passes; `false` leaves it for the owner. List the content sync's caller in `after-merge-workflows` with it, since the gate's merge starts no `push` workflow |
 | `after-merge-workflows` | `docker.yml security.yml` | Workflow files to start on `main` after such a merge, space-separated; a merge made with the token starts none by itself. With `automerge-fleet-bumps`, add the content sync's caller (`docker.yml security.yml fleet-sync.yml`) so it follows a merged fleet bump |
-| `dry-run` | `false` | Print the status posts, the merge and the workflow starts instead of doing them |
+| `auto-ready` | `true` | Mark a draft ready for review once the gate passes on its head: only a pull request from this repository (not a fork's, not Dependabot's), still a draft at that commit, without the `keep-draft` label, and never converted to draft by anyone ([Drafts marked ready](#drafts-marked-ready)). `false` turns it off |
+| `dry-run` | `false` | Print the status posts, the merge, the workflow starts and the marking ready instead of doing them |
 | `fleet-ref` | the workflow's own commit | Where to fetch the script from; the self-test passes its own commit |
+
+### Drafts marked ready
+
+When the gate passes on a draft's head (the run that posts or keeps "Merge gate" at success), it marks the draft ready for review with `gh pr ready`, so a green draft doesn't wait for someone to notice. It reads the pull request again first and leaves it a draft unless all of these hold: it is from this repository (a fork's draft is its author's to mark) and not Dependabot's (whose pull requests are never drafts), it is still a draft, its head is still the commit just decided (a push since is decided by its own run), it has no `keep-draft` label (any case; create the label to use it), and no one has ever converted it to draft (its timeline has no "converted to draft" event). That last rule means the gate marks a pull request ready at most once, and never against a person: once ready, it is a draft again only if someone converts it, and from then on it's theirs to mark ready. Marking it ready may make Codex review the commit again, and the gate decides again then; that run finds it no longer a draft. It is best-effort: the verdict is posted first, and a read or a flip that fails is a `::warning::` that changes neither the verdict nor the job's result. `auto-ready: false` turns it off; the `keep-draft` label keeps one pull request a draft.
+
+The flip is made with the job's token, and GitHub starts no workflow for an event that token causes, so a caller's `ready_for_review` trigger doesn't run for it: what the pull request's workflows decided on the draft stands. An app whose checks treat a draft more leniently than a ready pull request passes `auto-ready: false`, or the gate would mark ready a draft whose checks only ran as a draft's. With `[tool.fleet.verification]`'s `required = true` that is the verification record, which is a warning on a draft ([Verification records](#verification-records)); so is a workflow that skips its jobs on a draft.
 
 ### Open review threads
 
@@ -636,7 +643,7 @@ The app's pull request template keeps its "Testing" section and gains this one a
 <!-- /fleet-verification -->
 ```
 
-From advisory to required: set the table with `required = false` and `edited` and `ready_for_review` in the caller's types, read the warnings on a few agents' pull requests until the records are complete and honest, then flip `required = true`; a ready pull request without a parseable record then fails "fleet checks", which the merge gate sees, while drafts stay warnings. `fleet verification show --pr N` prints a record as the tools read it.
+From advisory to required: set the table with `required = false` and `edited` and `ready_for_review` in the caller's types, read the warnings on a few agents' pull requests until the records are complete and honest, then flip `required = true`; a ready pull request without a parseable record then fails "fleet checks", which the merge gate sees, while drafts stay warnings. Pass `auto-ready: false` to the merge gate along with it: the gate's own flip from draft to ready starts no workflow, so "fleet checks" wouldn't check the pull request again as a ready one ([Drafts marked ready](#drafts-marked-ready)). `fleet verification show --pr N` prints a record as the tools read it.
 
 ### Verification guides
 

@@ -21,7 +21,8 @@
 #     happens.
 #   - with REQUIRE_CODEX_REVIEW, Codex has reviewed the head commit itself (not an older one): it waits until then.
 # Anything still running makes it "pending". Workflows and apps that aren't about whether the change is sound are left
-# out (IGNORED_*). When it passes on one of Dependabot's pull requests, it merges it (see the end).
+# out (IGNORED_*). When it passes on a draft, it marks the draft ready for review (AUTO_READY), and when it passes on
+# one of Dependabot's pull requests, it merges it (see the end).
 #
 # CodeQL's finishing starts no workflow here (GitHub sends no event for its own Actions runs), so when CodeQL is all
 # it's waiting for, it looks again every POLL_SECONDS, up to POLL_ATTEMPTS times, rather than stay pending.
@@ -48,6 +49,8 @@
 #                        (default: false)
 #   AFTER_MERGE_WORKFLOWS workflow files to start on main after such a merge, space-separated
 #                        (default: docker.yml security.yml)
+#   AUTO_READY           mark a draft from this repository ready for review once the gate passes on its head, unless
+#                        it has the keep-draft label or someone has converted it to draft (default: true)
 # DRY_RUN=1 (or true) prints what it would do instead of doing it.
 set -euo pipefail
 
@@ -75,6 +78,8 @@ AUTOMERGE_DEPENDABOT=${AUTOMERGE_DEPENDABOT:-true}
 AUTOMERGE_FLEET_BUMPS=${AUTOMERGE_FLEET_BUMPS:-false}
 AFTER_MERGE_WORKFLOWS=${AFTER_MERGE_WORKFLOWS-docker.yml security.yml}
 FLEET_REFERENCE='AnthonyPluth/fleet/'
+AUTO_READY=${AUTO_READY:-true}
+KEEP_DRAFT='keep-draft'
 
 lines() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' <<< "$1"; }
 mapfile -t required_workflows < <(lines "$required_workflows_text")
@@ -235,6 +240,45 @@ for (( attempt = 0; ; attempt++ )); do
   [ "$state" = pending ] && [ ${#failing[@]} -eq 0 ] && only_codeql && [ "$attempt" -lt "$POLL_ATTEMPTS" ] || break
   sleep "$POLL_SECONDS"
 done
+
+# A draft from this repository is marked ready for review once the gate passes on its head (AUTO_READY), so a green
+# draft doesn't wait for someone to notice. Dependabot's pull requests are never drafts (and merge below), and a fork's
+# is its author's to mark. The pull request is read again now, not taken from the listing above: it must still be a
+# draft, still at the commit just decided (a push since is decided by its own run), without the keep-draft label (any
+# case), and never converted to draft by anyone. That last rule flips a pull request at most once and never against a
+# person: once ready, it is a draft again only if someone converts it, and from then on it's theirs to mark ready. If
+# the flip makes Codex review again, the gate decides again, and that run finds it no longer a draft. It's best-effort:
+# the verdict is already posted, and a read or a flip that fails is a warning that changes neither it nor the job's
+# result. The flip is made with the job's token, so it starts no workflow (a caller's ready_for_review trigger doesn't
+# fire for it).
+READY_STATE='query ReadyState($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    isDraft headRefOid
+    labels(first: 100) { nodes { name } }
+    timelineItems(first: 1, itemTypes: [CONVERT_TO_DRAFT_EVENT]) { totalCount } } } }'
+READY_FIELDS='.data.repository.pullRequest
+  | "\(.isDraft) \(.headRefOid) \(any(.labels.nodes[]; (.name | ascii_downcase) == "'"$KEEP_DRAFT"'")) \(.timelineItems.totalCount)"'
+mark_ready() {
+  local fresh is_draft head kept converted
+  if [ "$AUTO_READY" != true ]; then echo "Not marking #$number ready for review: AUTO_READY is off."; return 0; fi
+  if ! fresh=$(gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F number="$number" -f query="$READY_STATE" \
+                 --jq "$READY_FIELDS"); then
+    echo "::warning::Couldn't read #$number again, so it stays a draft; the gate's verdict stands."
+    return 0
+  fi
+  read -r is_draft head kept converted <<< "$fresh"
+  if [ "$head" != "$SHA" ]; then echo "Not marking #$number ready for review: its head is now ${head:-unknown}, not $SHA."; return 0; fi
+  if [ "$is_draft" != true ]; then echo "#$number is no longer a draft."; return 0; fi
+  if [ "$kept" != false ]; then echo "Not marking #$number ready for review: it has the $KEEP_DRAFT label."; return 0; fi
+  if [ "$converted" != 0 ]; then
+    echo "Not marking #$number ready for review: someone converted it to draft, so it's theirs to mark ready."
+    return 0
+  fi
+  run gh pr ready "$number" --repo "$REPO" || echo "::warning::Couldn't mark #$number ready for review; the gate's verdict stands."
+}
+if [ "$state" = success ] && [ "$draft" = true ] && [ "$author" != "dependabot[bot]" ] && [ "${head_repo,,}" = "${REPO,,}" ]; then
+  mark_ready
+fi
 
 # Dependabot's pull requests merge themselves once the gate passes (any update type: the gate is the tests), as long as
 # every commit is Dependabot's own, so nobody else's change rides along.

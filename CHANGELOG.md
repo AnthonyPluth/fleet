@@ -4,6 +4,10 @@ Every change to fleet is a change to three repositories' CI, so each one is list
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the merge gate marks a draft pull request ready for review once it passes (owner decision: every draft, on by default). A new input to `.github/workflows/merge-gate.yml`, `auto-ready` (boolean, default `true`), read by `merge-gate.sh` as `AUTO_READY`: when the gate's verdict on the head is success (the run that posts or keeps "Merge gate" at success), it reads the pull request again with one GraphQL query and runs `gh pr ready` only if it is still a draft, its head is still the commit just decided, it is from the repository itself (not a fork) and not Dependabot's, it has no `keep-draft` label (any case), and no one has ever converted it to draft (its timeline has no convert-to-draft event). That last rule flips a pull request at most once and never against a person: once ready, it is a draft again only if someone converts it, and then it's theirs to mark ready, so the gate's next run (when Codex reviews again on the flip, say) leaves it alone. A pending or failing verdict never flips. The flip is best-effort: the verdict is posted first, and a read or a flip that fails is a `::warning::` that changes neither the verdict nor the job's result; `dry-run` prints it instead. What apps do: nothing; the gate job already has `pull-requests: write`, which their callers grant. `auto-ready: false` restores the old behaviour, and the `keep-draft` label (created in the app) keeps one pull request a draft. The flip is made with the job's token, which starts no workflow, so a caller's `ready_for_review` trigger doesn't run for it: an app whose checks are more lenient on a draft (`[tool.fleet.verification]` with `required = true`, or a workflow that skips drafts) passes `auto-ready: false` (`docs/adopting.md`, "Drafts marked ready").
+
 ## [3.3.0] - 2026-11-13
 
 ### Added
