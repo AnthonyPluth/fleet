@@ -136,7 +136,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -155,7 +155,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -174,7 +174,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -193,7 +193,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -294,7 +294,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -312,7 +312,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}

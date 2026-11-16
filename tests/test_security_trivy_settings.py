@@ -12,7 +12,7 @@ SELF_TEST = cli.ROOT / ".github" / "workflows" / "self-test.yml"
 SCRIPT = cli.ROOT / ".github" / "scripts" / "security-trivy-settings.sh"
 STEP = "Keep the checkout's own Trivy settings out of the scan"
 NAMES = ("trivy.yaml", ".trivyignore", "trivy-secret.yaml")
-SECRET_CONFIG = "fleet-empty-secret-config.yaml"
+SECRET_CONFIG = ".git"
 SETTINGS = "${{ runner.temp }}/trivy-settings"
 SCAN_ENV = {"TRIVY_CONFIG": f"{SETTINGS}/trivy.yaml", "TRIVY_IGNOREFILE": f"{SETTINGS}/trivyignore",
             "TRIVY_SECRET_CONFIG": f"{SETTINGS}/{SECRET_CONFIG}"}
@@ -182,8 +182,8 @@ class SelfTestTest(unittest.TestCase):
                       "            jq -e --arg name \"$name\" '[.Results[]? | select(.Target == $name) | .Secrets[]?.RuleID] | "
                       "index(\"gitlab-pat\") != null' workspace.json > /dev/null || {", text)
 
-    def test_the_empty_secret_config_is_not_named_like_the_checkouts(self) -> None:
-        self.assertNotIn(SECRET_CONFIG, NAMES)
+    def test_the_empty_secret_config_has_a_name_no_file_of_a_checkout_can_have(self) -> None:
+        self.assertEqual(SECRET_CONFIG, ".git")
         for path in (SECURITY, SELF_TEST):
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("trivy-settings/trivy-secret.yaml", text, path.name)

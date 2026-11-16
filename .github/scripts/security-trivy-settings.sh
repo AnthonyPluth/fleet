@@ -9,10 +9,11 @@
 # TRIVY_SETTINGS, outside the workspace, for the scan step to name in TRIVY_CONFIG, TRIVY_IGNOREFILE and
 # TRIVY_SECRET_CONFIG: Trivy then reads those and never looks for the three names in its working directory, whatever
 # is there by the time it runs. That alone is enough. The empty files exist and parse because Trivy fails on a named
-# ignore file that isn't there and on a secret config with no YAML document in it. The empty secret config is not
-# called trivy-secret.yaml: Trivy's secret scan skips the file at the scan's root whose name is the secret config's
-# own, so under that name the checkout's trivy-secret.yaml would never be scanned for secrets (a file named
-# fleet-empty-secret-config.yaml at the root is the one skipped instead).
+# ignore file that isn't there and on a secret config with no YAML document in it. The empty secret config is a file
+# named .git: Trivy's secret scan skips the file at the scan's root whose name is the secret config's own, so under
+# the name trivy-secret.yaml the checkout's trivy-secret.yaml would never be scanned for secrets, and under any other
+# ordinary name a file of that name would not. No checkout holds a file of its own named .git (git refuses the path,
+# and the root's .git is the repository, which Trivy doesn't walk), so the skip falls on nothing.
 #
 # What happens to the checkout's own three is CHECKOUT_SETTINGS, and each one found gets a warning naming it:
 #   keep    (the file scan) they stay where they are, so the scan reads them as it reads any other file: a secret
@@ -56,5 +57,5 @@ rm -rf -- "$resolved"
 mkdir -p -- "$resolved"
 printf '{}\n' > "$resolved/trivy.yaml"
 : > "$resolved/trivyignore"
-printf '{}\n' > "$resolved/fleet-empty-secret-config.yaml"
+printf '{}\n' > "$resolved/.git"
 echo "Trivy reads its settings from $resolved (empty), not from the checkout."
