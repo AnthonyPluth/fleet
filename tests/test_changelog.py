@@ -199,8 +199,28 @@ class PullRequestCheckTest(unittest.TestCase):
                 git(self.root, "checkout", "-q", "-B", "change", "main")
                 code, out, err = self.titled("added", title, body)
                 self.assertEqual((code, out), (1, ""))
-                self.assertIn("fleet release check: the title or the description marks this pull request breaking", err)
-                self.assertIn("but it adds no `kind: breaking` fragment", err)
+                self.assertEqual(err, "fleet release check: the title or the description marks this pull request breaking "
+                                      "(a `!` before the title's colon, a `BREAKING CHANGE:` line or a `#major` marker), but "
+                                      "it adds no `kind: breaking` fragment: a major release's notes say what a consumer "
+                                      "has to change (docs/release.md)\n")
+
+    def test_an_added_fragment_needs_a_feat_title(self) -> None:
+        for title, body in (("fix: a new input", ""), ("chore: a new input", ""), ("docs(sync): a new input", ""),
+                            ("fix: a new input", "feat: a new input\n"), ("featured: a new input", "")):
+            with self.subTest(title=title, body=body):
+                git(self.root, "checkout", "-q", "-B", "change", "main")
+                code, out, err = self.titled("added", title, body)
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(err, "fleet release check: changelog.d/change.md: `kind: added`, but the title doesn't make "
+                                      "the pull request a minor: `feat: …`, in the title itself (the merge commit's subject), "
+                                      "not the description, or `feat!: …` with a `kind: breaking` fragment; an addition is "
+                                      "a minor release at least (docs/release.md)\n")
+
+    def test_a_marker_doesnt_make_an_added_fragments_title_a_feat(self) -> None:
+        code, out, err = self.titled("added", "fix: a new input #minor")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("ends with a `#major` or `#minor` marker, which never reaches main", err)
+        self.assertIn("changelog.d/change.md: `kind: added`, but the title doesn't make the pull request a minor", err)
 
     def test_the_title_gives_a_minor_or_a_patch(self) -> None:
         for kind, title, step in (("added", "feat: a new input", "minor"), ("added", "feat(sync): a new input", "minor"),

@@ -17,7 +17,8 @@ HELP = ("fleet's release stamps and changelog: `prepare X.Y.Z` rewrites VERSION,
         "changelog fragments (changelog.d/<name>.md) into the release's notes (changelog.d/released/X.Y.Z.md), and "
         "re-syncs the fixture consumers and the drifted fixture; `notes X.Y.Z` prints a release's notes (with `--since "
         "vW`, from the fragments the tree adds to vW's); `check --base REF` checks that a pull request adds a changelog "
-        "fragment that parses, and with --title that the title agrees with it on whether it breaks anything")
+        "fragment that parses, and with --title that the title agrees with it: breaking exactly when it is `kind: "
+        "breaking`, and `feat:` (or breaking) when it is `kind: added`")
 
 VERSION_FILE = Path("VERSION")
 CHANGELOG = Path("CHANGELOG.md")
@@ -689,6 +690,11 @@ def title_errors(title: str, body: str, added: Sequence[str], kinds: dict[str, s
         errors.append("the title or the description marks this pull request breaking (a `!` before the title's colon, a "
                       "`BREAKING CHANGE:` line or a `#major` marker), but it adds no `kind: breaking` fragment: a major "
                       "release's notes say what a consumer has to change (docs/release.md)")
+    additions = [path for path in added if kinds.get(path) == "added"]
+    if additions and claimed(TITLE_MARKER.sub("", title), "") == "patch":
+        errors.append(f"{', '.join(additions)}: `kind: added`, but the title doesn't make the pull request a minor: "
+                      "`feat: …`, in the title itself (the merge commit's subject), not the description, or `feat!: …` "
+                      "with a `kind: breaking` fragment; an addition is a minor release at least (docs/release.md)")
     return errors, kind
 
 
@@ -767,7 +773,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
                                       "(changelog.d/<name>.md), that every fragment parses, and that they add no entry "
                                       "to CHANGELOG.md and change no release's notes; a release pull request (VERSION "
                                       "changes) adds no fragment. With --title, also that the title and the description "
-                                      "mark the change breaking exactly when its fragment is `kind: breaking`")
+                                      "mark the change breaking exactly when its fragment is `kind: breaking`, and that "
+                                      "the title is a `feat:` one (or breaking) when its fragment is `kind: added`")
     check_parser.add_argument("--base", required=True, metavar="REF", help="the pull request's base (Release check "
                               "passes HEAD^1, the base side of the merge commit it checks out)")
     check_parser.add_argument("--title", metavar="TEXT", help="the pull request's title (Release check passes it from the "
