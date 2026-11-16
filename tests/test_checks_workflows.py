@@ -24,7 +24,7 @@ def snippets() -> list[tuple[str, str]]:
     for doc in sorted([*(ROOT / "docs").glob("*.md"), ROOT / "README.md"]):
         for block in re.finditer(r"^```yaml\n(.*?)^```", doc.read_text(encoding="utf-8"), re.MULTILINE | re.DOTALL):
             if re.search(r"^jobs:", block.group(1), re.MULTILINE):
-                found.append((doc.name, block.group(1).replace("@<commit>", "@" + "0" * 40)))
+                found.append((doc.name, block.group(1).replace("@<commit>", "@" + "0" * 40).replace("# vX.Y.Z", "# v1.2.3")))
     return found
 
 
