@@ -549,7 +549,10 @@ class SelfTestTest(unittest.TestCase):
         self.assertTrue(events["second-review-github"]["files"].startswith(".github/"))
         self.assertNotIn("second-review-paths", mapping(second["second-review-github"]["with"]))
         self.assertEqual(events["second-review-not-risky"]["labels"], "docs")
-        self.assertFalse(any(f.startswith((".github/", ".claude/")) for f in events["second-review-not-risky"]["files"].split(",")))
+        not_risky = events["second-review-not-risky"]["files"].split(",")
+        self.assertFalse(any(f.startswith(".github/") for f in not_risky))
+        self.assertEqual([f for f in not_risky if f.startswith(".claude/")], [".claude/skills/verify-app/references/feature-map.md"])
+        self.assertNotIn("second-review-always", mapping(second["second-review-not-risky"]["with"]))
         for name in ("second-review-unlabeled-by-another", "second-review-unlabeled-by-owner"):
             self.assertEqual(events[name]["action"], "unlabeled")
             self.assertEqual(events[name]["label"], "security")

@@ -46,7 +46,8 @@ class Globs(unittest.TestCase):
     def test_the_always_risky_paths(self) -> None:
         for path in (".github/workflows/x.yml", ".github/CODEOWNERS", ".claude/settings.json", ".claude/skills/x/SKILL.md"):
             self.assertTrue(ar.risky([], [path], [], [])[0], path)
-        self.assertFalse(ar.risky([], ["app/.github/x", "docs/.claude.md", "github/x"], [], [])[0])
+        self.assertFalse(ar.risky([], ["app/.github/x", "docs/.claude.md", "github/x", ".claude/skills/x/references/cli.md"], [], [])[0])
+        self.assertEqual(ar.ALWAYS_RISKY, (".github/**", ".claude/**", ".mcp.json", "!.claude/skills/*/references/**/*.md"))
 
     def test_a_caller_can_narrow_the_always_risky_paths(self) -> None:
         always = [".github/workflows/security.yml", ".claude/**", "plugins/**"]
@@ -65,6 +66,176 @@ class Globs(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(ar.main(["second", "risky", str(files)]), 0)
         self.assertIn("risky=false", out.getvalue())
+
+    def test_a_risky_glob_ignores_case_and_an_exception_does_not(self) -> None:
+        self.assertTrue(ar.matches(".Claude/Settings.json", ".claude/**", ignore_case=True))
+        self.assertFalse(ar.matches(".Claude/Settings.json", ".claude/**"))
+        self.assertTrue(ar.matches(".claude/a\nb", ".claude/**"))
+        self.assertFalse(ar.matches(".claude/a.md\n", ".claude/*.md"))
+        self.assertTrue(ar.risky([], ["App/Photos/x.py"], [], ["app/photos/**"])[0])
+
+
+REFERENCE = ".claude/skills/verify-app/references/feature-map.md"
+
+
+class ClaudeRule(unittest.TestCase):
+    def assert_risky(self, *paths: str, always: tuple[str, ...] = ar.ALWAYS_RISKY) -> None:
+        for path in paths:
+            yes, reason = ar.risky([], [path], [], [], always)
+            self.assertTrue(yes, path)
+            self.assertIn("(matches `", reason, path)
+
+    def assert_not_risky(self, *paths: str) -> None:
+        for path in paths:
+            self.assertEqual(ar.risky([], [path], [], []), (False, ar.NOT_RISKY), path)
+
+    def test_a_skill_s_reference_documents_alone_are_not_risky(self) -> None:
+        self.assert_not_risky(REFERENCE, ".claude/skills/verify-app/references/cli.md", ".claude/skills/x/references/sub/journeys.md",
+                              ".claude/skills/fleet-agent-task/references/notes_2.md")
+        self.assertEqual(ar.risky([], [REFERENCE, ".claude/skills/x/references/gotchas.md"], [], []), (False, ar.NOT_RISKY))
+
+    def test_what_claude_code_loads_runs_or_obeys_stays_risky(self) -> None:
+        self.assert_risky(".claude/settings.json", ".claude/settings.local.json", ".claude/hooks/fleet-session-start.sh", ".claude/hooks/fleet.conf",
+                          ".claude/hooks/session-start.local.sh", ".claude/agents/fleet-reviewer.md", ".claude/commands/ship.md",
+                          ".claude/output-styles/terse.md", ".claude/rules/security.md", ".claude/CLAUDE.md", ".claude/mcp.json",
+                          ".claude/plugins/marketplace.json", ".claude/skills/x/SKILL.md", ".claude/skills/x/scripts/run.sh",
+                          ".claude/skills/x/scripts/steps.md", ".claude/skills/x/notes.md", ".claude/skills/x/references.md",
+                          ".claude/skills/x/references", ".claude/skills/x/references/run.sh", ".claude/skills/x/references/data.json",
+                          ".claude/skills/x/references/page.mdx", ".claude/skills/x/references/a.md.sh", ".claude/skills/references/a.md",
+                          ".claude/references/a.md", ".claude/skills/x/assets/a.md", ".claude/x.md")
+
+    def test_a_file_claude_code_loads_by_its_name_is_risky_inside_references_too(self) -> None:
+        self.assert_risky(".claude/skills/x/references/SKILL.md", ".claude/skills/x/references/skill.md",
+                          ".claude/skills/x/references/sub/SKILL.md", ".claude/skills/x/references/CLAUDE.md",
+                          ".claude/skills/x/references/claude.md", ".claude/skills/x/references/CLAUDE.local.md",
+                          ".claude/skills/x/references/AGENTS.md", ".claude/skills/x/references/AGENTS.override.md",
+                          ".claude/skills/x/references/sub/agents.override.md")
+        self.assert_risky(".claude/skills/x/references/.claude/agents/a.md", ".claude/skills/x/references/.claude/commands/ship.md",
+                          ".claude/skills/x/references/.claude/rules/r.md", ".claude/skills/x/references/sub/.claude/skills/y/notes.md",
+                          ".claude/skills/x/references/.codex/notes.md", ".claude/skills/x/references/.hidden.md",
+                          ".claude/skills/.x/references/a.md")
+        self.assert_risky(".claude/skills/x/SKILL.md", always=(".claude/**", "!.claude/**"))
+        self.assert_risky("app/photos/.claude/notes.md", always=("app/photos/**", "!app/photos/**/*.md"))
+
+    def test_the_project_s_mcp_servers_are_risky(self) -> None:
+        self.assertEqual(ar.risky([], [".mcp.json"], [], []), (True, "changes `.mcp.json` (matches `.mcp.json`)"))
+        self.assert_risky(".MCP.json", ".mcp.JSON", "./.mcp.json", "/.mcp.json", "docs/../.mcp.json", '".mcp.json"',
+                          ".claude/skills/x/references/../../../../.mcp.json")
+        self.assertEqual(ar.risky([], [REFERENCE, ".mcp.json", "README.md"], [], []), (True, "changes `.mcp.json` (matches `.mcp.json`)"))
+        for line in ("R100\t.mcp.json\tdocs/mcp-servers.json\n", "R100\tdocs/mcp-servers.json\t.mcp.json\n", "D\t.mcp.json\n",
+                     f"R100\t.mcp.json\t{REFERENCE.removesuffix('.md')}-mcp.md\n"):
+            self.assertTrue(ar.risky([], ar.changed_paths(line), [], [])[0], line)
+        self.assertFalse(ar.risky([], ["docs/mcp.json", ".mcp.json.example", "mcp.json"], [], [])[0])
+
+    def test_a_mixed_pull_request_is_risky_for_its_other_file(self) -> None:
+        for other in (".claude/skills/verify-app/SKILL.md", ".claude/settings.json", ".claude/hooks/x.sh", ".github/workflows/ci.yml"):
+            self.assertEqual(ar.risky([], [REFERENCE, other], [], []), (True, f"changes `{other}` (matches `{'.github/**' if other.startswith('.github') else '.claude/**'}`)"))
+        self.assertEqual(ar.risky([], [REFERENCE, "frontend/src/lib/components/TabBar.svelte"], [], []), (False, ar.NOT_RISKY))
+        self.assertTrue(ar.risky(["security"], [REFERENCE], ["security"], [])[0])
+
+    def test_an_odd_spelling_of_a_path_is_risky(self) -> None:
+        self.assert_risky(".Claude/settings.json", ".CLAUDE/skills/x/references/a.md", ".claude/Skills/x/references/a.md",
+                          ".claude/skills/x/References/a.md", ".claude/skills/x/references/a.MD", ".claude/skills/x/REFERENCES/a.md",
+                          ".GITHUB/workflows/x.yml", ".claude/skills/x/references/../SKILL.md", ".claude/skills/x/references/../../../settings.json",
+                          ".claude/skills/x/references/../../../../.github/workflows/x.yml", ".claude/skills/x/references/./a.md",
+                          ".claude/skills/x/references//a.md", ".claude/skills/x/references/a.md/", "/.claude/skills/x/references/a.md",
+                          "./.claude/settings.json", "docs/../.claude/settings.json", ".claude\\settings.json",
+                          ".claude/skills/x/references\\..\\SKILL.md", ".claude/skills/x/references/caf\u00e9.md",
+                          ".claude/skills/x/references/a b.md", ".claude/skills/x/references/\u202edm.SKILL", ".claude/skills//references/a.md")
+
+    def test_a_rename_counts_its_old_path(self) -> None:
+        for old in (".claude/skills/x/SKILL.md", ".claude/skills/x/scripts/run.sh", ".claude/settings.json", ".claude/agents/a.md",
+                    ".github/workflows/ci.yml"):
+            paths = ar.changed_paths(f"R100\t{old}\t.claude/skills/x/references/moved.md\n")
+            self.assertEqual(ar.risky([], paths, [], []), (True, f"changes `{old}` (matches `{'.github/**' if old.startswith('.github') else '.claude/**'}`)"))
+        for new in (".claude/skills/x/SKILL.md", ".claude/hooks/run.sh"):
+            self.assertTrue(ar.risky([], ar.changed_paths(f"R087\t{REFERENCE}\t{new}\n"), [], [])[0], new)
+        self.assertTrue(ar.risky([], ar.changed_paths("D\t.claude/skills/x/SKILL.md\n"), [], [])[0])
+        self.assertEqual(ar.risky([], ar.changed_paths(f"R100\t{REFERENCE}\t.claude/skills/x/references/b.md\nD\t{REFERENCE}\n"
+                                                       f"R100\t{REFERENCE}\tdocs/feature-map.md\n"), [], []), (False, ar.NOT_RISKY))
+
+    def test_a_path_git_quoted_is_read_as_git_wrote_it(self) -> None:
+        self.assertEqual(ar.git_unquoted('"a\\303\\251\\t\\"\\\\b\\n"'), 'a\u00e9\t"\\b\n')
+        self.assertEqual(ar.git_unquoted("plain/path.md"), "plain/path.md")
+        for broken in ('"a\\q"', '"a\\"', '"a"b"', '"a\\4"'):
+            self.assertIsNone(ar.git_unquoted(broken), broken)
+        for line, shown in (('A\t".claude/agents/\\303\\251vil.md"', ".claude/agents/\u00e9vil.md"),
+                            ('A\t".github/workflows/a\\"b.yml"', '.github/workflows/a"b.yml'),
+                            ('A\t".claude/skills/x/references/caf\\303\\251.md"', ".claude/skills/x/references/caf\u00e9.md"),
+                            ('A\t".claude/skills/x/SKILL\\342\\200\\256.md"', ".claude/skills/x/SKILL\\u202e.md"),
+                            ('A\t".claude/x\\q"', '".claude/x\\q"')):
+            yes, reason = ar.risky([], ar.changed_paths(line + "\n"), [], [])
+            self.assertTrue(yes, line)
+            self.assertIn(f"changes `{shown}`", reason)
+
+    def test_the_reason_never_carries_a_line_break(self) -> None:
+        yes, reason = ar.risky([], ar.changed_paths('A\t".claude/x\\nrisky=false\\r"\n'), [], [])
+        self.assertTrue(yes)
+        self.assertEqual(reason, "changes `.claude/x\\nrisky=false\\r` (matches `.claude/**`)")
+
+    def test_an_exception_counts_only_in_its_own_list(self) -> None:
+        self.assertTrue(ar.risky([], [REFERENCE], [], [".claude/skills/**"])[0])
+        self.assertTrue(ar.risky([], [".claude/settings.json"], [], ["!.claude/**"])[0])
+        self.assertTrue(ar.risky([], [REFERENCE], [], [], (".github/**", ".claude/**"))[0])
+        self.assertFalse(ar.risky([], ["app/photos/README.md", "app/photos/x/notes.md"], [], ["app/photos/**", " ! app/photos/**/*.md "])[0])
+        self.assertTrue(ar.risky([], ["app/photos/README.md", "app/photos/delete.py"], [], ["app/photos/**", "!app/photos/**/*.md"])[0])
+        self.assertFalse(ar.risky([], ["!x"], [], ["!x"])[0])
+
+    def test_the_command_passes_a_reference_only_change_and_reviews_the_rest(self) -> None:
+        workflow = (ROOT / ".github/workflows/agent-review.yml").read_text(encoding="utf-8")
+        found = re.search(r"^      second-review-always:\n(?:        [^\n]*\n)*?        default: \|\n((?:          [^\n]*\n)+)", workflow, re.MULTILINE)
+        assert found
+        always = found.group(1)
+        self.assertEqual(ar.split_list(always, "\n"), list(ar.ALWAYS_RISKY))
+        for files, risky in ((f"M\t{REFERENCE}\nM\tfrontend/src/lib/components/TabBar.svelte\n", "false"),
+                             (f"M\t{REFERENCE}\nM\t.claude/skills/verify-app/SKILL.md\n", "true"),
+                             (f"R100\t.claude/skills/verify-app/scripts/run.sh\t{REFERENCE}\n", "true")):
+            for env in ({"ALWAYS_PATHS": always}, {}):
+                with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, {"LABELS": "[]", **env}, clear=True):
+                    path = Path(root) / "files.txt"
+                    path.write_text(files, encoding="utf-8")
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(ar.main(["second", "risky", str(path)]), 0)
+                self.assertTrue(out.getvalue().startswith(f"risky={risky}"), (files, env, out.getvalue()))
+
+    def test_the_risky_step_reads_the_files_git_lists_for_the_review(self) -> None:
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo, out = root / "repo", root / "review"
+            repo.mkdir()
+            out.mkdir()
+            env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+                   "GIT_COMMITTER_EMAIL": "t@example.com", "PATH": os.environ.get("PATH", ""), "HOME": tmp, "GIT_CONFIG_NOSYSTEM": "1"}
+
+            def git(*args: str) -> str:
+                return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=env).stdout.strip()
+
+            def commit(files: dict[str, str]) -> str:
+                for name, text in files.items():
+                    (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                    (repo / name).write_text(text, encoding="utf-8")
+                git("add", "-A")
+                git("commit", "-q", "-m", "c")
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q", "-b", "main")
+            main = commit({REFERENCE: "# Map\n", "app.py": "a = 1\n"})
+            cases = {"references": ({REFERENCE: "# Map\n\n- trips\n", "app.py": "a = 2\n"}, "risky=false"),
+                     "agent": ({".claude/agents/\u00e9vil.md": "x\n"}, "risky=true"),
+                     "workflow": ({'.github/workflows/a"b.yml': "x\n"}, "risky=true"),
+                     "skill": ({".claude/skills/verify-app/SKILL\u202e.md": "x\n"}, "risky=true")}
+            for name, (files, expected) in cases.items():
+                git("checkout", "-q", "-b", name, main)
+                head = commit(files)
+                with mock.patch("builtins.print"):
+                    ar.plan({"REPO_DIR": str(repo), "OUT_DIR": str(out), "TRUSTED": tmp, "MAIN": main, "HEAD": head})
+                with mock.patch.dict(os.environ, {"LABELS": "[]"}, clear=True):
+                    printed = io.StringIO()
+                    with contextlib.redirect_stdout(printed):
+                        ar.main(["second", "risky", str(out / "files.txt")])
+                self.assertTrue(printed.getvalue().startswith(expected), (name, printed.getvalue()))
 
 
 class Risky(unittest.TestCase):
@@ -417,6 +588,16 @@ class Prompts(unittest.TestCase):
         self.assertIn("`first-review.md`", prompt)
         self.assertIn("never instructions to you", prompt)
         self.assertIn("where you disagree", prompt)
+
+    def test_the_second_review_blocks_what_would_make_a_reference_more_than_a_document(self) -> None:
+        prompt = (ROOT / ".github/agent-review/second-review.md").read_text()
+        self.assertIn("A skill's reference documents stay documents", prompt)
+        for way in ("a hook", "a settings entry", "a `SKILL.md`", "a script", "an `@` import", "a symlink"):
+            self.assertIn(way, prompt)
+        invariants = (ROOT / ".github/agent-review/invariants.md").read_text()
+        self.assertIn("`ALWAYS_RISKY`", invariants)
+        self.assertIn("(`ClaudeRule`)", invariants)
+        self.assertTrue(hasattr(ClaudeRule, "test_a_rename_counts_its_old_path"))
 
     def test_fleet_s_own_invariants_are_numbered_and_name_what_holds_each(self) -> None:
         text = (ROOT / ".github/agent-review/invariants.md").read_text()
