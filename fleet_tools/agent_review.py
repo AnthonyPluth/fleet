@@ -70,7 +70,7 @@ NOT_WANTED = {
 }
 NOT_RISKY = "Not a risky pull request"
 DEFAULT_TRIGGER_LABELS = "safety-critical,security"
-ALWAYS_RISKY = (".github/**", ".claude/**", "!.claude/skills/*/references/**/*.md")
+ALWAYS_RISKY = (".github/**", ".claude/**", ".mcp.json", "!.claude/skills/*/references/**/*.md")
 EXCEPTION = "!"
 PLAIN_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
 LOADED_BY_NAME = ("skill.md", "claude.md", "claude.local.md", "agents.md", "agents.override.md")

@@ -47,7 +47,7 @@ class Globs(unittest.TestCase):
         for path in (".github/workflows/x.yml", ".github/CODEOWNERS", ".claude/settings.json", ".claude/skills/x/SKILL.md"):
             self.assertTrue(ar.risky([], [path], [], [])[0], path)
         self.assertFalse(ar.risky([], ["app/.github/x", "docs/.claude.md", "github/x", ".claude/skills/x/references/cli.md"], [], [])[0])
-        self.assertEqual(ar.ALWAYS_RISKY, (".github/**", ".claude/**", "!.claude/skills/*/references/**/*.md"))
+        self.assertEqual(ar.ALWAYS_RISKY, (".github/**", ".claude/**", ".mcp.json", "!.claude/skills/*/references/**/*.md"))
 
     def test_a_caller_can_narrow_the_always_risky_paths(self) -> None:
         always = [".github/workflows/security.yml", ".claude/**", "plugins/**"]
@@ -116,6 +116,16 @@ class ClaudeRule(unittest.TestCase):
                           ".claude/skills/.x/references/a.md")
         self.assert_risky(".claude/skills/x/SKILL.md", always=(".claude/**", "!.claude/**"))
         self.assert_risky("app/photos/.claude/notes.md", always=("app/photos/**", "!app/photos/**/*.md"))
+
+    def test_the_project_s_mcp_servers_are_risky(self) -> None:
+        self.assertEqual(ar.risky([], [".mcp.json"], [], []), (True, "changes `.mcp.json` (matches `.mcp.json`)"))
+        self.assert_risky(".MCP.json", ".mcp.JSON", "./.mcp.json", "/.mcp.json", "docs/../.mcp.json", '".mcp.json"',
+                          ".claude/skills/x/references/../../../../.mcp.json")
+        self.assertEqual(ar.risky([], [REFERENCE, ".mcp.json", "README.md"], [], []), (True, "changes `.mcp.json` (matches `.mcp.json`)"))
+        for line in ("R100\t.mcp.json\tdocs/mcp-servers.json\n", "R100\tdocs/mcp-servers.json\t.mcp.json\n", "D\t.mcp.json\n",
+                     f"R100\t.mcp.json\t{REFERENCE.removesuffix('.md')}-mcp.md\n"):
+            self.assertTrue(ar.risky([], ar.changed_paths(line), [], [])[0], line)
+        self.assertFalse(ar.risky([], ["docs/mcp.json", ".mcp.json.example", "mcp.json"], [], [])[0])
 
     def test_a_mixed_pull_request_is_risky_for_its_other_file(self) -> None:
         for other in (".claude/skills/verify-app/SKILL.md", ".claude/settings.json", ".claude/hooks/x.sh", ".github/workflows/ci.yml"):

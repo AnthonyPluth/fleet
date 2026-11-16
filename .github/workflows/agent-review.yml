@@ -22,7 +22,8 @@ name: Agent review
 #
 # A pull request is risky when it carries a label in second-review-labels (safety-critical or security by default) or
 # changes a path matching second-review-paths (globs with **; second-review-always, by default everything under .github/
-# and .claude/ but a skill's reference documents, .claude/skills/<name>/references/**/*.md, always counts), decided by
+# and .claude/ but a skill's reference documents, .claude/skills/<name>/references/**/*.md, and the root .mcp.json,
+# always counts), decided by
 # agent_review.py risky from the pull request's labels and files.txt; the comment says which. One that isn't gets a
 # passing "Second review" saying "Not a risky pull request", so a merge gate can require the status on every pull
 # request. labeled and unlabeled events run only the second review, which re-decides; an unlabeled event sent by anyone
@@ -143,11 +144,12 @@ on:
         type: string
         default: ""
       second-review-always:
-        description: Changed paths that always make a pull request risky, one glob per line (`**` spans directories, any case). A line starting with `!` is an exception within this list, matched exactly; it never covers an odd spelling of a path, a path with a part after the first that starts with `.` (a nested `.claude/`), or a SKILL.md, CLAUDE.md, CLAUDE.local.md, AGENTS.md or AGENTS.override.md. The default is everything under `.github/` and `.claude/` but a skill's reference documents (`.claude/skills/<name>/references/**/*.md`); a caller that wants the second review on fewer paths lists them here.
+        description: Changed paths that always make a pull request risky, one glob per line (`**` spans directories, any case). A line starting with `!` is an exception within this list, matched exactly; it never covers an odd spelling of a path, a path with a part after the first that starts with `.` (a nested `.claude/`), or a SKILL.md, CLAUDE.md, CLAUDE.local.md, AGENTS.md or AGENTS.override.md. The default is everything under `.github/` and `.claude/` but a skill's reference documents (`.claude/skills/<name>/references/**/*.md`), and the root `.mcp.json` (the project's MCP servers); a caller that wants the second review on fewer paths lists them here.
         type: string
         default: |
           .github/**
           .claude/**
+          .mcp.json
           !.claude/skills/*/references/**/*.md
       second-review-budget-usd:
         description: The most the second review may spend, in US dollars as Claude Code estimates it.

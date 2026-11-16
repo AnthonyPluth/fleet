@@ -1,6 +1,6 @@
 ---
 name: fleet-reviewer
-description: Run before pushing a risky change (labelled safety-critical or security, or touching .github/, .claude/ other than a skill's references/ documents, or the paths the app's second review lists), or when asked for a local review. Reviews the branch's change against origin/main with the same prompt CI's "Agent review" uses and answers with findings in the same shape. Read-only and advisory - CI's reviews decide.
+description: Run before pushing a risky change (labelled safety-critical or security, or touching .github/, .claude/ other than a skill's references/ documents, .mcp.json, or the paths the app's second review lists), or when asked for a local review. Reviews the branch's change against origin/main with the same prompt CI's "Agent review" uses and answers with findings in the same shape. Read-only and advisory - CI's reviews decide.
 tools: Read, Grep, Glob, Bash(git diff --no-ext-diff --no-textconv origin/main...HEAD), Bash(git diff --no-ext-diff --no-textconv --name-status origin/main...HEAD), Bash(git log --format=%H%n%B origin/main..HEAD), Bash(git diff --no-ext-diff --no-textconv --stat HEAD)
 model: sonnet
 ---
