@@ -252,6 +252,10 @@ def main(argv: list[str]) -> int:
     try:
         today = datetime.date.fromisoformat(arguments.today) if arguments.today else datetime.datetime.now(datetime.UTC).date()
         if arguments.file:
+            if os.path.islink(arguments.file) or not os.path.isfile(arguments.file):
+                raise Invalid(f"{arguments.file} isn't a regular file: the list is a file of its own, not a link or a directory")
+            if os.path.getsize(arguments.file) > MAX_BYTES:
+                raise Invalid(f"{arguments.file} is larger than {MAX_BYTES} bytes")
             with open(arguments.file, encoding="utf-8") as file:
                 text: str | None = file.read()
             origin = arguments.file

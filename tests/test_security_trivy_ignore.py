@@ -89,11 +89,20 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(check["env"], {"IGNORE_FILE": "${{ inputs.trivy-image-ignore-file }}"})
         text = SECURITY.read_text(encoding="utf-8")
         self.assertIn('env -u GITHUB_OUTPUT python3 -I .fleet/.github/scripts/trivy_ignore.py --file="$IGNORE_FILE" --out=/dev/null\n', text)
-        self.assertIn('if [ -L "$IGNORE_FILE" ] || ! [ -f "$IGNORE_FILE" ]; then', text)
+        self.assertIn('if ! [ -e "$IGNORE_FILE" ] && ! [ -L "$IGNORE_FILE" ]; then echo "No file', text)
         self.assertNotIn("id", check)
         self.assertLess(index_of(job, "Check the accepted image findings in this checkout"), index_of(job, "rm -rf .fleet"))
         self.assertNotIn("trivyignores", str(job))
         self.assertNotIn("steps.accepted", str(job))
+
+    def test_the_self_test_runs_that_check_on_a_fixture_list_the_script_accepts(self) -> None:
+        named = workflow(SELF_TEST)["jobs"]["security"]["with"][INPUT]
+        self.assertEqual(named, "tests/fixtures/security/accepted.yaml")
+        self.assertNotIn("image-paths", workflow(SELF_TEST)["jobs"]["security"]["with"])
+        script = Script(self)
+        result = script.run(f"--file={cli.ROOT / named}")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(script.written(), "vulnerabilities: []\n")
 
     def test_nothing_else_reads_the_input(self) -> None:
         text = SECURITY.read_text(encoding="utf-8")
@@ -354,6 +363,42 @@ class EntriesTest(unittest.TestCase):
         self.assertIn("100%25 sure", result.stdout)
         refused = Script(self).local("vulnerabilities:\n  - id: \"x\\n::add-mask::y\"\n")
         self.assertEqual(len([line for line in refused.stdout.splitlines() if line.startswith("::")]), 1)
+
+    def test_a_local_list_is_a_regular_file(self) -> None:
+        target = self.script.root / "target.yaml"
+        target.write_text(listed(), encoding="utf-8")
+        link = self.script.root / "link.yaml"
+        link.symlink_to(target)
+        for path in (link, self.script.root, self.script.root / "missing.yaml"):
+            script = Script(self)
+            result = script.run(f"--file={path}")
+            self.assertEqual(result.returncode, 1, path)
+            self.assertIn("::error::The accepted findings can't be used, so the job fails: ", result.stdout, path)
+            self.assertIn("isn't a regular file", result.stdout, path)
+            self.assertFalse(script.out.exists(), path)
+        self.assertEqual(self.script.run(f"--file={target}").returncode, 0)
+
+    def test_a_local_list_has_the_size_limit_of_the_default_branchs(self) -> None:
+        self.assertEqual(self.script.local(listed() + "#" * (65536 - len(listed()))).returncode, 0)
+        self.refused(listed() + "#" * (65537 - len(listed())), "is larger than 65536 bytes")
+
+    def test_the_files_jobs_step_fails_on_a_link_and_passes_when_there_is_no_list(self) -> None:
+        text = SECURITY.read_text(encoding="utf-8")
+        body = text.split("- name: Check the accepted image findings in this checkout\n", 1)[1].split("run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in body.splitlines()[:2]).replace(".fleet/.github/scripts/trivy_ignore.py", str(SCRIPT))
+        target = self.script.root / "target.yaml"
+        target.write_text(listed(), encoding="utf-8")
+        (self.script.root / "link.yaml").symlink_to(target)
+        (self.script.root / "dangling.yaml").symlink_to(self.script.root / "nowhere")
+        for name, code in (("target.yaml", 0), ("absent.yaml", 0), ("link.yaml", 1), ("dangling.yaml", 1)):
+            result = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=self.script.root, capture_output=True, text=True,
+                                    check=False, env={"PATH": os.environ["PATH"], "IGNORE_FILE": name})
+            self.assertEqual(result.returncode, code, (name, result.stdout, result.stderr))
+            if code:
+                self.assertIn("isn't a regular file", result.stdout, name)
+        self.assertIn("nothing to check", subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", script], cwd=self.script.root, capture_output=True, text=True, check=False,
+            env={"PATH": os.environ["PATH"], "IGNORE_FILE": "absent.yaml"}).stdout)
 
     def test_today_is_utc_when_not_given(self) -> None:
         source = self.script.root / "source.yaml"

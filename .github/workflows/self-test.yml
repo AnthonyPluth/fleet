@@ -22,7 +22,8 @@ jobs:
   # The security scans over fleet itself, in the mode a repository without code scanning uses (`sarif-upload: false`:
   # a finding fails the job): Semgrep over fleet's own code and scripts, Trivy over the files, zizmor over the
   # workflows; no web app, no image, no Scorecard (it never runs on a pull request anyway). The called jobs ask for
-  # `security-events: write`, so the caller grants it.
+  # `security-events: write`, so the caller grants it. `trivy-image-ignore-file` names a fixture list that accepts
+  # nothing, so the file scan's job runs its check of the checkout's copy (with no image, nothing reads the list).
   security:
     name: Security scans
     permissions:
@@ -39,6 +40,7 @@ jobs:
       zizmor-paths: .github
       sarif-upload: false
       scorecard: false
+      trivy-image-ignore-file: tests/fixtures/security/accepted.yaml
 
   # With `sarif-upload: false`, the planted finding in the fixture tree (its own .semgrep rule flags its one line)
   # must fail the Semgrep step: the step passes only when the script exits non-zero. With SARIF it must reach the
