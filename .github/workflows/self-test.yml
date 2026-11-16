@@ -79,6 +79,58 @@ jobs:
           fi
           echo "The fail-on-findings check failed on the planted finding, as it should."
 
+  # `trivy-image-ignore-file`'s script against the real Trivy, at security.yml's pinned version: Trivy must honour the
+  # list the script writes for the entry's own path, and report the finding again for any other path and once the
+  # entry has expired. The vulnerable pin is written at run time, outside the workspace, so no scan of fleet sees it.
+  accepted-finding:
+    name: Trivy honours an accepted finding for its path only, until it expires
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TRIVY_VERSION: v0.70.0
+      TRIVY_SHA256_X64: 8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9
+      TRIVY_SHA256_ARM64: 2f6bb988b553a1bbac6bdd1ce890f5e412439564e17522b88a4541b4f364fc8d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Trivy
+        env:
+          TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
+          TRIVY_BIN: ${{ runner.temp }}/trivy-bin
+        run: .github/scripts/security-trivy-install.sh
+      - name: Trivy with the list the script writes
+        env:
+          WORK: ${{ runner.temp }}/accepted
+        run: |
+          scripts=$PWD/.github/scripts
+          mkdir -p "$WORK/app"
+          cd "$WORK"
+          printf 'requests==2.19.0\n' > app/requirements.txt
+          entry() {
+            printf 'vulnerabilities:\n  - id: CVE-2018-18074\n    paths:\n      - %s\n    statement: A made-up reason, for the self-test\n    expired_at: %s\n' "$1" "$2"
+          }
+          scan() {
+            python3 -I "$scripts/trivy_ignore.py" --file="$1.yaml" --out="$1.accepted.yaml"
+            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output "$1.json" --ignorefile "$1.accepted.yaml" app
+          }
+          reported() {
+            jq -e '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | index("CVE-2018-18074") != null' "$1.json" > /dev/null
+          }
+          soon=$(date -u -d '+30 days' +%F)
+          printf 'vulnerabilities: []\n' > none.yaml
+          entry requirements.txt "$soon" > accepted.yaml
+          entry other/requirements.txt "$soon" > elsewhere.yaml
+          entry requirements.txt "$(date -u +%F)" > expired.yaml
+          for list in none accepted elsewhere expired; do scan "$list"; done
+          reported none || { echo "::error::Trivy didn't report the planted CVE-2018-18074 at all"; exit 1; }
+          if reported accepted; then echo "::error::Trivy reported a finding accepted for its path"; exit 1; fi
+          reported elsewhere || { echo "::error::An entry for another path silenced the finding"; exit 1; }
+          reported expired || { echo "::error::An expired entry silenced the finding"; exit 1; }
+          echo "Trivy honoured the accepted finding for its path only, and not once expired, as it should."
+
   # The deep-scan reminder in dry run on fleet itself: it reads fleet's issues and prints the issue it would open (or
   # that one is open) without opening anything. The called job asks for `issues: write` and `contents: read` (the
   # commit count's compare call), so the caller grants both.

@@ -88,12 +88,39 @@ With `sarif-upload: true` (the default) Semgrep and Trivy pass their jobs with f
 | `web-dirs` | none | Directories with a `package-lock.json` to `npm audit`, one per line; a change to their `package.json` or `package-lock.json` runs it |
 | `image-paths` | none | Regex of the paths whose change rebuilds and scans the image (none: no image scan) |
 | `dockerfile` | `Dockerfile` | The image's Dockerfile |
+| `trivy-image-ignore-file` | none | The caller's Trivy YAML ignore file (`.trivyignore.yaml`) listing the findings the owner accepted for the image scan, read from the default branch ([Accepted image findings](#accepted-image-findings)); none leaves the image scan as it was |
 | `zizmor-paths` | `.` | What zizmor audits (space-separated paths); the whole tree by default |
 | `sarif-upload` | `true` | Upload findings to the Security tab; `false` fails the job on findings instead |
 | `fail-on-findings` | `false` | With `sarif-upload`, also fail the Semgrep and Trivy jobs after the upload when they found findings (Semgrep any, Trivy CRITICAL or HIGH); `false` leaves them to code scanning's check runs. No effect with `sarif-upload: false` |
 | `scorecard` | `true` | Run OpenSSF Scorecard (public repositories only) |
 | `runs-on` | `"ubuntu-latest"` | The runner for every job but Scorecard's, as JSON |
 | `fleet-ref` | the workflow's own commit | The fleet ref to fetch scripts from (fleet's self-test only) |
+
+### Accepted image findings
+
+The image scan reports every CRITICAL or HIGH vulnerability that has a fix (`ignore-unfixed: true`). When one can't be fixed yet and doesn't apply (a binary the image ships embeds a vulnerable module whose affected package isn't linked in, and upstream has no fixed release), the owner can accept it for a limited time: pass `trivy-image-ignore-file: .trivyignore.yaml` and list the finding in that file, in [Trivy's YAML format](https://trivy.dev/latest/docs/configuration/filtering/#trivyignoreyaml):
+
+```yaml
+vulnerabilities:
+  - id: CVE-2026-0001
+    paths:
+      - usr/local/bin/example
+    statement: "The affected package isn't linked into this binary, and upstream has no fixed release yet (#123)."
+    expired_at: 2027-01-31
+```
+
+Every entry needs all four:
+
+- `id`: the finding's id as Trivy reports it.
+- `paths`: the exact targets it is accepted for, as Trivy's report names them (`usr/local/bin/example`, no leading slash), one per line. No wildcards: the same CVE anywhere else in the image is still reported. `purls` (`pkg:golang/golang.org/x/net`) may narrow an entry further; it can't replace `paths`.
+- `statement`: why it is accepted, on one line.
+- `expired_at`: `YYYY-MM-DD`, at most 180 days away. From that day (UTC) the entry stops counting and the finding is reported again, with a warning naming the entry; renewing it is a new decision and a new pull request.
+
+Only `vulnerabilities:` is accepted (no `misconfigurations:`, `secrets:` or `licenses:`), and the file is plain block YAML as above: one `key: value` per line, comments allowed, no anchors, flow lists or multi-line strings. A file that breaks any of this fails the image scan with the line and the reason, rather than scanning with a list nobody checked.
+
+**Where the list is read from, and who approves an entry.** The image job never reads the file from its checkout. On a pull request the checkout is the pull request's own merge commit, which its author controls, from a fork or not, so a list read from there would let a change accept its own findings. The job asks GitHub's API for the file at the tip of the repository's default branch instead, on every event, checks it (`.github/scripts/trivy_ignore.py`), and hands Trivy a copy written from what the check understood, kept outside the workspace. So an entry counts only once it is on the default branch: the owner approves it by merging the pull request that adds it, and that pull request's own scan doesn't use it. To accept a finding a change introduces, merge the entry first (it matches nothing until the change lands), then re-run the change's scan. Adding `.trivyignore.yaml` to the caller's `second-review-paths` gives every change to the list the second review, and a `CODEOWNERS` entry with a ruleset that requires Code Owner review keeps anyone else's merge from adding one. A file that isn't on the default branch accepts nothing.
+
+With the input set, the image job also deletes the checkout's `trivy.yaml` and `.trivyignore` before the scan (the image is already built by then): Trivy reads both from its working directory when they exist, and they would be the pull request's. The list is then the only thing that accepts an image finding. Without the input, the image scan is as before, Trivy's own reading of those two files included. The file scan (`Trivy (files)`) never uses the list.
 
 ### Trivy's version
 

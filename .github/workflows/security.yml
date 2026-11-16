@@ -11,6 +11,11 @@ name: Security scans
 # personal account has no code scanning) those scans fail their job on findings instead. zizmor and npm audit fail their
 # job on findings either way. CodeQL and Dependabot alerts come from GitHub's own settings, not from here.
 #
+# `trivy-image-ignore-file` names the caller's list of findings the owner accepted for the image scan. The job reads it
+# from the default branch through the API (.github/scripts/trivy_ignore.py), never from its checkout, which on a pull
+# request is the pull request's own merge commit: an entry counts once it is merged, so no change accepts its own
+# findings. Trivy gets a copy rewritten from what the script understood, never the file itself.
+#
 # The caller (docs/adopting.md has the snippet) keeps the triggers: pull_request and push to main, the weekly schedule
 # (new vulnerabilities are published for code that hasn't changed) and workflow_dispatch. A pull request, and a push to
 # main, runs only the scans its change can affect (the `changes` job, .github/scripts/security-changes.sh); a
@@ -42,6 +47,10 @@ on:
         description: The Dockerfile to build the image from, for the image scan.
         type: string
         default: Dockerfile
+      trivy-image-ignore-file:
+        description: The path in the caller's repository of a Trivy YAML ignore file (".trivyignore.yaml") listing the findings the owner accepted for the image scan. It is read from the default branch, never from the checkout, so a pull request can't accept its own findings; each entry needs an id, exact paths, a statement and an expired_at at most 180 days away (docs/adopting.md, "Accepted image findings"). Empty (the default) leaves the image scan as it was.
+        type: string
+        default: ""
       zizmor-paths:
         description: What zizmor audits, space-separated paths (the default is the whole tree; fleet's own self-test narrows it to .github so test fixtures aren't audited).
         type: string
@@ -325,6 +334,26 @@ jobs:
           TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
           TRIVY_BIN: ${{ runner.temp }}/trivy-bin
         run: .fleet/.github/scripts/security-trivy-install.sh
+      # The findings the owner accepted for the image, from the default branch's tip: not from the checkout above, which
+      # on a pull request is the pull request's own merge commit, so an entry counts only once it is merged. The script
+      # checks every entry (an id, exact paths, a statement, an expired_at at most 180 days away), drops the expired
+      # ones and writes what it understood outside the workspace; a file it can't read or check fails the job, and a
+      # file that isn't there accepts nothing.
+      - name: Read the accepted findings from the default branch
+        id: accepted
+        if: ${{ inputs.trivy-image-ignore-file != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          IGNORE_FILE: ${{ inputs.trivy-image-ignore-file }}
+          ACCEPTED: ${{ runner.temp }}/trivy-image-accepted.yaml
+        run: python3 -I .fleet/.github/scripts/trivy_ignore.py --repo="$REPO" --path="$IGNORE_FILE" --out="$ACCEPTED"
+      # Trivy also reads ./trivy.yaml and ./.trivyignore when they exist, and here they are the checkout's (on a pull
+      # request, the pull request's). The image is already built and loaded, so with an ignore file named they go:
+      # the list above is then the only thing that accepts a finding.
+      - name: Remove the checkout's own Trivy settings
+        if: ${{ inputs.trivy-image-ignore-file != '' }}
+        run: rm -f trivy.yaml .trivyignore
       # fleet's scripts aren't the app's files: no scan sees them, as before.
       - name: Remove fleet's scripts from the workspace
         run: rm -rf .fleet
@@ -339,6 +368,7 @@ jobs:
           exit-code: ${{ inputs.sarif-upload && '0' || '1' }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: ${{ steps.accepted.outputs.file }}
       - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
         if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('trivy-image.sarif') != '' }}
         with:

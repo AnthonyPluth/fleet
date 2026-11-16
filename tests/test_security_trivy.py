@@ -257,7 +257,8 @@ class TrivyJobsTest(unittest.TestCase):
         def install_steps(job: str) -> list[Node]:
             job_steps = steps(job)
             start = install_checkout(job_steps)
-            return job_steps[start:index_of(job_steps, "rm -rf .fleet") + 1]
+            found = job_steps[start:index_of(job_steps, "rm -rf .fleet") + 1]
+            return [step for step in found if "inputs.trivy-image-ignore-file" not in str(step.get("if", ""))]
         files, image = install_steps("trivy"), install_steps("image")
         self.assertEqual(len(files), len(image))
         for left, right in zip(files, image, strict=True):
