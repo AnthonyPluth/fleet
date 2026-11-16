@@ -42,8 +42,8 @@ jobs:
       - name: Check that every stamp agrees
         run: /usr/bin/python3 -E -s -m fleet_tools.cli self-check
       # At a release commit `fleet release prepare` has folded every changelog fragment into the release's notes, so a
-      # fragment still in changelog.d/ merged to main after prepare ran. fleet CI's `fleet release check` refuses that
-      # only when it runs on the release pull request after that merge, and GitHub doesn't re-run a pull request's
+      # fragment still in changelog.d/ merged to main after prepare ran. Release check's `fleet release check` refuses
+      # that only when it runs on the release pull request after that merge, and GitHub doesn't re-run a pull request's
       # checks when its base moves: 4.1.0 was tagged that way, with two changes in its code and not in its notes, one of
       # them breaking under a minor version. So nothing is tagged while one is pending; the version stays untagged and
       # the next release pull request, cut from main, folds what's pending (docs/release.md).

@@ -20,6 +20,7 @@ PR_TITLE = "chore: fleet content {pin}"
 ISSUE_TITLE = "fleet v{major} needs a migration: see CHANGELOG"
 RELEASE_HEADING = re.compile(r"^## \[(?P<version>\d+\.\d+\.\d+)\]", re.MULTILINE)
 ANY_HEADING = re.compile(r"^## ", re.MULTILINE)
+RELEASES = "https://github.com/AnthonyPluth/fleet/releases"
 
 
 class PlanError(Exception):
@@ -99,7 +100,29 @@ def spans(text: str) -> list[tuple[int, int]]:
         return [(start, starts[index + 1] if index + 1 < len(starts) else len(text)) for index, start in enumerate(starts)]
 
 
-def changelog_between(text: str, after: str, upto: str, later: Sequence[str] = ()) -> str:
+@dataclass(frozen=True)
+class Unfolded:
+    fragments: tuple[release.Fragment, ...] = ()
+    problem: str | None = None
+
+
+NOTHING_UNFOLDED = Unfolded()
+
+
+def unfolded(fleet: Path, content: str) -> Unfolded:
+    pending, problems = release.fragments(fleet)
+    if not pending and not problems:
+        return Unfolded()
+    if not (fleet / ".git").exists():
+        return Unfolded((), f"{fleet.name} isn't a git clone")
+    try:
+        return Unfolded(tuple(release.added_fragments(fleet, f"refs/tags/{content}", "HEAD")))
+    except release.ReleaseError as error:
+        return Unfolded((), str(error))
+
+
+def changelog_between(text: str, after: str, upto: str, later: Sequence[str] = (), added: Unfolded | None = None) -> str:
+    added = added or NOTHING_UNFOLDED
     low, high = agents_md.version_key(after), agents_md.version_key(upto)
     sections = []
     for source in (text, *later):
@@ -111,9 +134,18 @@ def changelog_between(text: str, after: str, upto: str, later: Sequence[str] = (
             if not low < version <= high:
                 continue
             sections.append((version, source[start:end].rstrip() + "\n"))
-    if not sections:
+    blocks = []
+    if added.fragments:
+        newest = max((version for version, _ in sections), default=low)
+        since = "v" + ".".join(map(str, newest))
+        heading = f"## Releases after {since}, up to {upto}" if newest < high else f"## {upto}, beyond its notes"
+        blocks.append("\n".join([heading, *release.grouped(added.fragments)]) + "\n")
+    if added.problem:
+        blocks.append(f"fleet's changelog fragments between {after} and {upto} couldn't be read ({added.problem}); "
+                      f"fleet's releases list them: {RELEASES}\n")
+    if not sections and not blocks:
         return f"The CHANGELOG at {upto} has no entry between {after} and {upto}.\n"
-    return "\n".join(section for _, section in sorted(sections, key=lambda item: item[0], reverse=True))
+    return "\n".join([*blocks, *(section for _, section in sorted(sections, key=lambda item: item[0], reverse=True))])
 
 
 def release_notes(fleet: Path) -> list[str]:
@@ -124,7 +156,7 @@ def release_notes(fleet: Path) -> list[str]:
             if path.is_file() and not path.is_symlink()]
 
 
-def pull_request_body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
+def pull_request_body(found: Plan, changelog: str, later: Sequence[str] = (), added: Unfolded | None = None) -> str:
     where = ", ".join(f"`{name}`" for name in found.files)
     return (f"Syncs fleet's content from {found.content} to {found.pin}, the version the workflow pins carry ({where}): "
             "the `AGENTS.md` blocks between the fleet markers, the vendored `.claude/` files and `tools/fleet`, and "
@@ -134,10 +166,10 @@ def pull_request_body(found: Plan, changelog: str, later: Sequence[str] = ()) ->
             "Opened by fleet's sync workflow with the fleet-bot App, so the pull request's checks run; the branch "
             f"`{BRANCH}` is rewritten by each run until this merges. `fleet drift` lets the content trail the pins "
             "while it is open.\n\n"
-            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin, later)}")
+            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin, later, added)}")
 
 
-def issue_body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
+def issue_body(found: Plan, changelog: str, later: Sequence[str] = (), added: Unfolded | None = None) -> str:
     where = ", ".join(f"`{name}`" for name in found.files)
     return (f"The workflow pins ({where}) are at {found.pin} and the content (`.fleet/version`) at {found.content}: "
             "another major version. fleet's sync workflow doesn't cross a major, because a major release changes an "
@@ -147,14 +179,14 @@ def issue_body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
             f"--to {found.pin}` (the pins' commit, so `.fleet/version` gets it too), and commit `AGENTS.md`, "
             "`.fleet/version` and the vendored files together. "
             "`fleet drift` fails until they match; this issue is done when it passes.\n\n"
-            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin, later)}")
+            f"## CHANGELOG {found.content} → {found.pin}\n\n{changelog_between(changelog, found.content, found.pin, later, added)}")
 
 
-def body(found: Plan, changelog: str, later: Sequence[str] = ()) -> str:
+def body(found: Plan, changelog: str, later: Sequence[str] = (), added: Unfolded | None = None) -> str:
     if found.action == SYNC:
-        return pull_request_body(found, changelog, later)
+        return pull_request_body(found, changelog, later, added)
     if found.action == MIGRATION:
-        return issue_body(found, changelog, later)
+        return issue_body(found, changelog, later, added)
     return ""
 
 
@@ -168,7 +200,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", type=Path, help="the consumer's checkout (default: the nearest pyproject.toml up from here)")
     parser.add_argument("--changelog", type=Path, metavar="CHANGELOG.md", help="fleet's CHANGELOG.md at the pins' version, "
                         "for the body; the release notes beside it, changelog.d/released/X.Y.Z.md (the releases after "
-                        f"{release.FROZEN}, when CHANGELOG.md froze), are read too")
+                        f"{release.FROZEN}, when CHANGELOG.md froze), are read too, and, when its folder is a git clone "
+                        "holding the content's tag, the changelog fragments the pins' tree adds to that tag's")
     parser.add_argument("--body", type=Path, metavar="FILE", help="write the pull request's or the issue's body here (needs --changelog)")
 
 
@@ -184,7 +217,9 @@ def run(args: argparse.Namespace) -> int:
         if args.changelog is None:
             print("fleet sync-plan: --body needs --changelog", file=sys.stderr)
             return 2
-        args.body.write_text(body(found, args.changelog.read_text(encoding="utf-8"), release_notes(args.changelog.parent)),
+        fleet = args.changelog.parent
+        added = unfolded(fleet, found.content) if found.action in (SYNC, MIGRATION) else NOTHING_UNFOLDED
+        args.body.write_text(body(found, args.changelog.read_text(encoding="utf-8"), release_notes(fleet), added),
                              encoding="utf-8")
     for line in outputs(found):
         print(line)

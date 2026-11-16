@@ -342,6 +342,73 @@ class AcrossTheFreeze(unittest.TestCase):
         self.assertIn(f"\n## [{upto}] - 2026-12-01\n", body)
         self.assertNotIn(f"## [{newest}]", body)
 
+    def test_the_fragments_two_tags_differ_by_come_first_after_the_newest_notes(self) -> None:
+        added = sync_workflow.Unfolded((release.Fragment(Path("changelog.d/b-input.md"), "added", "A new input (#2)."),
+                                        release.Fragment(Path("changelog.d/a-gone.md"), "breaking", "An input is gone (#1).")))
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.1.0", "v2.1.0", self.LATER, added),
+                         "## Releases after v1.4.0, up to v2.1.0\n\n### Added\n\n- A new input (#2).\n\n### Changed\n\n"
+                         "- **Breaking:** An input is gone (#1).\n\n"
+                         "## [1.4.0] - 2026-05-01\n\n### Changed\n\n- **Breaking:** A fifth thing.\n\n"
+                         "## [1.3.0] - 2026-04-01\n\n### Added\n\n- A fourth thing.\n\n"
+                         "## [1.2.0] - 2026-03-01\n\n### Added\n\n- A third thing.\n")
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v2.0.0", "v2.1.0", self.LATER, added).split("\n", 1)[0],
+                         "## Releases after v2.0.0, up to v2.1.0")
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.3.0", "v1.4.0", self.LATER, added).split("\n", 1)[0],
+                         "## v1.4.0, beyond its notes")
+
+    def test_fragments_that_couldnt_be_read_are_said_so(self) -> None:
+        missing = sync_workflow.Unfolded((), "`git diff` failed: bad revision")
+        self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v2.0.0", "v2.1.0", self.LATER, missing),
+                         "fleet's changelog fragments between v2.0.0 and v2.1.0 couldn't be read (`git diff` failed: bad "
+                         f"revision); fleet's releases list them: {sync_workflow.RELEASES}\n")
+
+    def tagged_pin(self) -> Path:
+        fleet = temporary(self) / "fleet-pin"
+        write(fleet, "CHANGELOG.md", CHANGELOG)
+        git(fleet, "init", "-q", "-b", "main")
+        for notes in self.LATER:
+            write(fleet, f"changelog.d/released/{notes[4:9]}.md", notes)
+            commit(fleet, f"chore: release v{notes[4:9]}")
+            git(fleet, "tag", f"v{notes[4:9]}")
+        write(fleet, "changelog.d/in-two.md", "---\nkind: added\n---\nIn 2.0.0 (#1).\n")
+        commit(fleet, "feat!: two (#1)")
+        git(fleet, "tag", "v2.0.0")
+        write(fleet, "changelog.d/gone.md", "---\nkind: breaking\n---\nAn input is gone (#2).\n")
+        commit(fleet, "feat!: three (#2)")
+        git(fleet, "tag", "v3.0.0")
+        write(fleet, "changelog.d/message.md", "---\nkind: fixed\n---\nA message (#3).\n")
+        write(fleet, "changelog.d/released/1.4.0.md", self.LATER[1].replace("A fifth thing", "A fifth thing, reworded"))
+        commit(fleet, "fix: a message (#3)")
+        git(fleet, "tag", "v3.0.1")
+        return fleet
+
+    def test_the_command_lists_the_fragments_the_pins_tag_adds_to_the_contents(self) -> None:
+        fleet = self.tagged_pin()
+        out = temporary(self) / "body.md"
+        code, _, err = plan_cli(consumer(self, "v3.0.1", "v2.0.0"), "--changelog", str(fleet / "CHANGELOG.md"), "--body", str(out))
+        self.assertEqual((code, err), (0, ""))
+        text = out.read_text(encoding="utf-8")
+        between = text.split("## CHANGELOG v2.0.0 → v3.0.1\n\n", 1)[1]
+        self.assertEqual(between, "## Releases after v2.0.0, up to v3.0.1\n\n### Changed\n\n- **Breaking:** An input is gone "
+                                  "(#2).\n\n### Fixed\n\n- A message (#3).\n")
+        code, _, err = plan_cli(consumer(self, "v3.0.1", "v1.3.0"), "--changelog", str(fleet / "CHANGELOG.md"), "--body", str(out))
+        self.assertEqual((code, err), (0, ""))
+        between = out.read_text(encoding="utf-8").split("## CHANGELOG v1.3.0 → v3.0.1\n\n", 1)[1]
+        self.assertTrue(between.startswith("## Releases after v1.4.0, up to v3.0.1\n\n### Added\n\n- In 2.0.0 (#1).\n\n"
+                                           "### Changed\n\n- **Breaking:** An input is gone (#2).\n"), between)
+        self.assertIn("\n## [1.4.0] - 2026-05-01\n\n### Changed\n\n- **Breaking:** A fifth thing, reworded.\n", between)
+
+    def test_without_the_contents_tag_the_body_says_the_fragments_couldnt_be_read(self) -> None:
+        fleet = self.tagged_pin()
+        git(fleet, "tag", "-d", "v2.0.0")
+        out = temporary(self) / "body.md"
+        code, _, err = plan_cli(consumer(self, "v3.0.1", "v2.0.0"), "--changelog", str(fleet / "CHANGELOG.md"), "--body", str(out))
+        self.assertEqual((code, err), (0, ""))
+        between = out.read_text(encoding="utf-8").split("## CHANGELOG v2.0.0 → v3.0.1\n\n", 1)[1]
+        self.assertTrue(between.startswith("fleet's changelog fragments between v2.0.0 and v3.0.1 couldn't be read (`git diff "
+                                           "--diff-filter=A"), between)
+        self.assertIn(f"fleet's releases list them: {sync_workflow.RELEASES}\n", between)
+
     def test_the_command_reads_the_release_notes_beside_the_changelog(self) -> None:
         root = consumer(self, "v1.4.0", "v1.0.0")
         fleet = temporary(self) / "fleet-pin"
@@ -589,6 +656,9 @@ class SyncWorkflow(unittest.TestCase):
         self.assertIn('head=$(git -C .fleet-pin rev-parse HEAD)', script)
         self.assertIn('if [ "$head" != "$COMMIT" ]; then', script)
         self.assertIn("cp -a .fleet .fleet-pin", script)
+        self.assertIn("CONTENT: ${{ steps.plan.outputs.content }}", pin)
+        self.assertIn('[[ "$CONTENT" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]', script)
+        self.assertIn('git -C .fleet-pin fetch --quiet --depth 1 origin "refs/tags/$CONTENT:refs/tags/$CONTENT"', script)
         self.assertNotIn("GH_TOKEN", pin)
         self.assertNotIn("secrets.", pin)
 
@@ -705,12 +775,16 @@ class FixtureMode(unittest.TestCase):
     def test_a_real_sync_refuses_a_tag_off_the_pins_commit(self) -> None:
         workspace = temporary(self)
         fleet = workspace / "upstream"
-        write(fleet, "README.md", "fleet at v1.1.0\n")
+        write(fleet, "README.md", "fleet at v1.0.0\n")
         git(fleet, "init", "-q", "-b", "main")
+        commit(fleet, "chore: fleet at the content's tag")
+        git(fleet, "tag", "v1.0.0")
+        write(fleet, "README.md", "fleet at v1.1.0\n")
         commit(fleet, "chore: fleet at the tag")
         git(fleet, "tag", "v1.1.0")
         script = script_of(self.steps["fleet at the pins' version"]).replace("https://github.com/AnthonyPluth/fleet", str(fleet))
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "PIN": "v1.1.0", "FIXTURE": "", "COMMIT": release.FIXTURE_COMMIT}
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "PIN": "v1.1.0", "FIXTURE": "", "COMMIT": release.FIXTURE_COMMIT,
+               "CONTENT": "v1.0.0"}
         done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=workspace, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertIn(f"The tag v1.1.0 is at {git(fleet, 'rev-parse', 'HEAD').strip()}, but the workflow pins name {release.FIXTURE_COMMIT}",
@@ -720,6 +794,16 @@ class FixtureMode(unittest.TestCase):
         done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=workspace, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn(f"fleet v1.1.0 at {env['COMMIT']} in .fleet-pin", done.stdout)
+        self.assertEqual(git(workspace / ".fleet-pin", "rev-parse", "refs/tags/v1.0.0^{commit}"), git(fleet, "rev-parse", "v1.0.0"))
+        for content, code, needle in (("v0.9.0", 0, "::warning::Couldn't fetch fleet's tag v0.9.0, so the body can't list the "
+                                                    "changelog fragments since it"),
+                                      ("main", 1, "::error::The planned content version 'main' isn't a version")):
+            with self.subTest(content=content):
+                shutil.rmtree(workspace / ".fleet-pin", ignore_errors=True)
+                done = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=workspace, env={**env, "CONTENT": content},
+                                      capture_output=True, text=True, check=False)
+                self.assertEqual(done.returncode, code, done.stdout + done.stderr)
+                self.assertIn(needle, done.stdout)
 
 
 class ChecksWorkflow(unittest.TestCase):

@@ -5,8 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from fleet_tools import release
+
 HELP = ("the next release version from the commits since the last tag (feat: a minor, a ! or BREAKING CHANGE: a major, "
-        "else a patch), written to $GITHUB_OUTPUT as version, new, newest and skip")
+        "else a patch), written to $GITHUB_OUTPUT as version, new, newest and skip; fleet's own release adds "
+        "--first-parent and --fragments")
 
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 TAG_GLOB = "v[0-9]*.[0-9]*.[0-9]*"
@@ -47,7 +50,12 @@ def unused(version: str, taken: set[str]) -> str:
     return version
 
 
-def decide(root: Path, sha: str, remote: str = "origin", branch: str = "main") -> tuple[dict[str, str], list[str]]:
+def breaking_fragments(root: Path, since: str) -> list[str]:
+    return [fragment.path.as_posix() for fragment in release.added_fragments(root, since, "HEAD") if fragment.kind == "breaking"]
+
+
+def decide(root: Path, sha: str, remote: str = "origin", branch: str = "main", first_parent: bool = False,
+           fragments: bool = False) -> tuple[dict[str, str], list[str]]:
     git(root, "fetch", "--quiet", remote, branch)
     head = git(root, "rev-parse", "FETCH_HEAD").strip()
     newest = head == sha
@@ -65,14 +73,19 @@ def decide(root: Path, sha: str, remote: str = "origin", branch: str = "main") -
         last = ""
     tags = git(root, "tag", "--list", TAG_GLOB).split()
     top = highest(tags)
+    breaking: list[str] = []
     if top is None:
         version = "v1.0.0"
     else:
-        log = git(root, "log", "--format=%s%n%b", f"{last}..HEAD" if last else "HEAD")
+        log = git(root, "log", *(["--first-parent"] if first_parent else []), "--format=%s%n%b", f"{last}..HEAD" if last else "HEAD")
         version = bump(top, log)
+        breaking = breaking_fragments(root, last or top) if fragments else []
+        if breaking and not MAJOR.search(log):
+            version = f"v{(parse(top) or (0, 0, 0))[0] + 1}.0.0"
     version = unused(version, set(tags))
     outputs |= {"version": version, "new": "true"}
-    return outputs, [f"Next version: {version} (last in this history: {last or 'none'}; highest: {top or 'none'})"]
+    because = f"; a major for {', '.join(breaking)} (kind: breaking)" if breaking else ""
+    return outputs, [f"Next version: {version} (last in this history: {last or 'none'}; highest: {top or 'none'}{because})"]
 
 
 def configure(parser: argparse.ArgumentParser) -> None:
@@ -81,16 +94,23 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--remote", default="origin", help="the remote to fetch the branch from (default: origin)")
     parser.add_argument("--branch", default="main", help="the release branch (default: main)")
     parser.add_argument("--output", type=Path, help="where to append key=value lines (default: $GITHUB_OUTPUT, else stdout)")
+    parser.add_argument("--first-parent", action="store_true", help="read only the first-parent commits since the last "
+                        "tag (one per merged pull request), not the commits inside a merged branch")
+    parser.add_argument("--fragments", action="store_true", help="a changelog fragment of kind breaking (changelog.d/"
+                        "<name>.md) added since the last tag's tree makes the release a major, whatever the commits say")
 
 
 def run(args: argparse.Namespace) -> int:
     root: Path = args.root
     try:
         sha = args.sha or os.environ.get("GITHUB_SHA") or git(root, "rev-parse", "HEAD").strip()
-        outputs, notes = decide(root, sha, args.remote, args.branch)
+        outputs, notes = decide(root, sha, args.remote, args.branch, args.first_parent, args.fragments)
     except subprocess.CalledProcessError as error:
         print(f"fleet next-version: `{' '.join(map(str, error.cmd))}` failed: {(error.stderr or '').strip()[:300]}",
               file=sys.stderr)
+        return 1
+    except release.ReleaseError as error:
+        print(f"fleet next-version: {error}", file=sys.stderr)
         return 1
     lines = "".join(f"{key}={value}\n" for key, value in outputs.items())
     output = args.output or (Path(os.environ["GITHUB_OUTPUT"]) if os.environ.get("GITHUB_OUTPUT") else None)

@@ -38,6 +38,7 @@ jobs:
         .github/workflows/merge-gate-threads.yml
         .github/workflows/mining-tasks.yml
         .github/workflows/release.yml
+        .github/workflows/release-check.yml
         .github/workflows/review-mining.yml
         .github/workflows/screenshot-diff.yml
         .github/workflows/security.yml
@@ -50,6 +51,8 @@ jobs:
         .claude/**
         plugins/**
         shim/**
+        fleet_tools/next_version.py
+        fleet_tools/release.py
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

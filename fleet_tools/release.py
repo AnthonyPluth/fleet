@@ -15,8 +15,10 @@ from fleet_tools import agents_md, sync, vendor
 HELP = ("fleet's release stamps and changelog: `prepare X.Y.Z` rewrites VERSION, every FLEET_REF, plugin.json, "
         "pyproject.toml, the snippets in docs/ (docs/adopting.md's and the others) and AGENTS.md's markers, folds the "
         "changelog fragments (changelog.d/<name>.md) into the release's notes (changelog.d/released/X.Y.Z.md), and "
-        "re-syncs the fixture consumers and the drifted fixture; `notes X.Y.Z` prints a release's notes; `check --base "
-        "REF` checks that a pull request adds a changelog fragment that parses")
+        "re-syncs the fixture consumers and the drifted fixture; `notes X.Y.Z` prints a release's notes (with `--since "
+        "vW`, from the fragments the tree adds to vW's); `check --base REF` checks that a pull request adds a changelog "
+        "fragment that parses, and with --title that the title agrees with it: breaking exactly when it is `kind: "
+        "breaking`, and `feat:` (or breaking) when it is `kind: added`")
 
 VERSION_FILE = Path("VERSION")
 CHANGELOG = Path("CHANGELOG.md")
@@ -52,6 +54,7 @@ DRIFTED_MARKER = re.compile(r"(<!-- fleet:begin [a-z0-9-]+ )v[0-9]+\.[0-9]+\.[0-
 FLEET_REF_LINE = re.compile(r"^(  FLEET_REF:[ \t]+)(\S+)", re.MULTILINE)
 PLUGIN_VERSION = re.compile(r'^(\s*"version":\s*")([^"]*)(")', re.MULTILINE)
 PYPROJECT_VERSION = re.compile(r'^(version\s*=\s*")([^"]*)(")', re.MULTILINE)
+TITLE_MARKER = re.compile(r"(?:^|[ \t])#(?:major|minor)[ \t]*$")
 
 
 class ReleaseError(Exception):
@@ -231,15 +234,21 @@ def fragments(root: Path) -> tuple[list[Fragment], list[str]]:
     return found, errors
 
 
-def render(version: str, date: str, found: Sequence[Fragment]) -> str:
-    lines = [f"## [{version}] - {date}"]
+def grouped(found: Sequence[Fragment], others: Sequence[str] = ()) -> list[str]:
+    lines: list[str] = []
     ordered = sorted(found, key=lambda fragment: fragment.path.name)
     for heading, kinds in GROUPS:
         entries = [("- " + BREAKING if kind == "breaking" else "- ") + fragment.entry
                    for kind in kinds for fragment in ordered if fragment.kind == kind]
+        if heading == "Changed":
+            entries += [f"- {other}" for other in others]
         if entries:
             lines += ["", f"### {heading}", "", *entries]
-    return "\n".join(lines) + "\n"
+    return lines
+
+
+def render(version: str, date: str, found: Sequence[Fragment], others: Sequence[str] = ()) -> str:
+    return "\n".join([f"## [{version}] - {date}", *grouped(found, others)]) + "\n"
 
 
 def parse_notes(text: str, version: str, name: str) -> Notes:
@@ -581,11 +590,69 @@ class Snapshot:
 
 def git(root: Path, *args: str) -> str:
     try:
-        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True, timeout=60).stdout
+        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=60).stdout
     except subprocess.CalledProcessError as error:
         raise ReleaseError(f"`git {' '.join(args)}` failed: {(error.stderr or '').strip()[:300]}") from error
     except (subprocess.TimeoutExpired, OSError) as error:
         raise ReleaseError(f"`git {' '.join(args)}` failed: {error}") from error
+
+
+def ref_argument(ref: str, flag: str) -> str:
+    if not ref or ref.startswith("-") or any(char.isspace() or char == ":" for char in ref):
+        raise ReleaseError(f"{flag} {ref[:40]!r} isn't a ref")
+    return ref
+
+
+def is_fragment_path(path: str) -> bool:
+    posix = PurePosixPath(path)
+    return posix.parent == PurePosixPath(FRAGMENTS) and FRAGMENT_NAME.fullmatch(posix.name) is not None
+
+
+def added_paths(root: Path, old: str, new: str) -> list[str]:
+    listing = git(root, "diff", "--diff-filter=A", "--no-renames", "--name-only", "-z", old, new, "--", FRAGMENTS.as_posix())
+    return sorted(path for path in listing.split("\0") if path and is_fragment_path(path))
+
+
+def shown(root: Path, ref: str, path: str) -> str:
+    try:
+        data = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=root, check=True, capture_output=True, timeout=60).stdout
+    except subprocess.CalledProcessError as error:
+        raise ReleaseError(f"`git show {ref}:{path}` failed: {error.stderr.decode('utf-8', 'replace').strip()[:300]}") from error
+    except (subprocess.TimeoutExpired, OSError) as error:
+        raise ReleaseError(f"`git show {ref}:{path}` failed: {error}") from error
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ReleaseError(f"{path}: isn't UTF-8 at {ref}") from error
+
+
+def added_fragments(root: Path, old: str, new: str) -> list[Fragment]:
+    return [parse_fragment(Path(path), shown(root, new, path)) for path in added_paths(root, old, new)]
+
+
+def without_fragment(root: Path, since: str, at: str) -> list[str]:
+    subjects = []
+    for line in git(root, "log", "--first-parent", "--reverse", "--format=%H %s", f"{since}..{at}", "--").splitlines():
+        sha, _, subject = line.partition(" ")
+        parents = git(root, "rev-list", "--parents", "-n", "1", sha, "--").split()[1:]
+        if parents:
+            fragments_added = added_paths(root, parents[0], sha)
+        else:
+            listing = git(root, "ls-tree", "-r", "--name-only", "-z", sha, "--", FRAGMENTS.as_posix())
+            fragments_added = [path for path in listing.split("\0") if path and is_fragment_path(path)]
+        if not fragments_added:
+            subjects.append(subject.strip())
+    return subjects
+
+
+def notes_since(root: Path, since: str, at: str) -> str:
+    since, at = ref_argument(since, "--since"), ref_argument(at, "--at")
+    found = added_fragments(root, since, at)
+    others = without_fragment(root, since, at)
+    if not found and not others:
+        raise ReleaseError(f"nothing to release between {since} and {at}: no commit, and no fragment added")
+    return "\n".join(grouped(found, others)).strip("\n") + "\n"
 
 
 def changes(root: Path, base: str) -> tuple[str, list[tuple[str, str]]]:
@@ -596,7 +663,42 @@ def changes(root: Path, base: str) -> tuple[str, list[tuple[str, str]]]:
     return start, list(zip(listing[0::2], listing[1::2], strict=False))
 
 
-def pull_request(root: Path, base: str) -> tuple[list[str], list[str]]:
+def claimed(title: str, body: str) -> str:
+    from fleet_tools import next_version
+
+    text = f"{title}\n\n{body}"
+    if next_version.MAJOR.search(text):
+        return "major"
+    if next_version.MINOR.search(text):
+        return "minor"
+    return "patch"
+
+
+def title_errors(title: str, body: str, added: Sequence[str], kinds: dict[str, str]) -> tuple[list[str], str]:
+    kind = claimed(title, body)
+    errors = []
+    if TITLE_MARKER.search(title):
+        errors.append(f"the title {title[:80]!r} ends with a `#major` or `#minor` marker, which never reaches main: GitHub "
+                      "adds ` (#<number>)` after the title in the merge commit's subject. Say the kind of change with the "
+                      "title's type (`feat: …`, `feat!: …`) instead")
+    breaking = [path for path in added if kinds.get(path) == "breaking"]
+    if breaking and kind != "major":
+        errors.append(f"{', '.join(breaking)}: `kind: breaking`, but the title doesn't mark the pull request breaking: "
+                      "`feat!: …` (a `!` before the colon), or a `BREAKING CHANGE:` line in the description; a breaking "
+                      "change is a major release of its own (docs/release.md)")
+    elif kind == "major" and added and not breaking:
+        errors.append("the title or the description marks this pull request breaking (a `!` before the title's colon, a "
+                      "`BREAKING CHANGE:` line or a `#major` marker), but it adds no `kind: breaking` fragment: a major "
+                      "release's notes say what a consumer has to change (docs/release.md)")
+    additions = [path for path in added if kinds.get(path) == "added"]
+    if additions and claimed(TITLE_MARKER.sub("", title), "") == "patch":
+        errors.append(f"{', '.join(additions)}: `kind: added`, but the title doesn't make the pull request a minor: "
+                      "`feat: …`, in the title itself (the merge commit's subject), not the description, or `feat!: …` "
+                      "with a `kind: breaking` fragment; an addition is a minor release at least (docs/release.md)")
+    return errors, kind
+
+
+def pull_request(root: Path, base: str, title: str | None = None, body: str = "") -> tuple[list[str], list[str], str | None]:
     start, changed = changes(root, base)
     releasing = any(path == VERSION_FILE.as_posix() for _, path in changed)
     added = [path for status, path in changed if status == "A" and PurePosixPath(path).parent == PurePosixPath(FRAGMENTS)
@@ -631,18 +733,22 @@ def pull_request(root: Path, base: str) -> tuple[list[str], list[str]]:
                       "the base after `fleet release prepare` ran), so the release would ship without it in its notes; "
                       "cut the release again from the base: `fleet release prepare X.Y.Z` on a fresh branch")
     kinds = {fragment.path.as_posix(): fragment.kind for fragment in found}
-    return errors, [f"{path} ({kinds[path]})" for path in added if path in kinds]
+    kind = None
+    if title is not None and not releasing:
+        problems, kind = title_errors(title, body, added, kinds)
+        errors += problems
+    return errors, [f"{path} ({kinds[path]})" for path in added if path in kinds], kind
 
 
-def run_check(root: Path, base: str) -> int:
-    errors, added = pull_request(root, base)
+def run_check(root: Path, base: str, title: str | None = None, body: str = "") -> int:
+    errors, added, kind = pull_request(root, base, title, body)
     for error in errors:
         message = f"fleet release check: {error}"
         print(f"::error::{message}" if "GITHUB_ACTIONS" in os.environ else message, file=sys.stderr)
     if errors:
         return 1
     print("fleet release check: ok, " + (f"it adds {', '.join(added)}" if added else "a release pull request, which "
-          "folds the fragments"))
+          "folds the fragments") + (f"; its title makes it a {kind} change" if kind else ""))
     return 0
 
 
@@ -657,13 +763,23 @@ def configure(parser: argparse.ArgumentParser) -> None:
     notes_parser = actions.add_parser("notes", help="print the release notes of X.Y.Z (changelog.d/released/X.Y.Z.md, "
                                       f"or CHANGELOG.md's section up to {FROZEN})")
     notes_parser.add_argument("version", metavar="X.Y.Z")
+    notes_parser.add_argument("--since", metavar="TAG", help="instead, the notes of a release made from the commit --at: "
+                              "the changelog fragments added between TAG's tree and its, then the subject of each "
+                              "first-parent commit since TAG that added none (a Dependabot bump)")
+    notes_parser.add_argument("--at", metavar="REF", default="HEAD", help="with --since, the commit being released "
+                              "(default: HEAD)")
     notes_parser.add_argument("--root", type=Path, default=Path.cwd(), help="fleet's checkout (default: here)")
     check_parser = actions.add_parser("check", help="check that the commits since --base add a changelog fragment "
                                       "(changelog.d/<name>.md), that every fragment parses, and that they add no entry "
                                       "to CHANGELOG.md and change no release's notes; a release pull request (VERSION "
-                                      "changes) adds no fragment")
-    check_parser.add_argument("--base", required=True, metavar="REF", help="the pull request's base (fleet CI passes "
-                              "HEAD^1, the base side of the merge commit it checks out)")
+                                      "changes) adds no fragment. With --title, also that the title and the description "
+                                      "mark the change breaking exactly when its fragment is `kind: breaking`, and that "
+                                      "the title is a `feat:` one (or breaking) when its fragment is `kind: added`")
+    check_parser.add_argument("--base", required=True, metavar="REF", help="the pull request's base (Release check "
+                              "passes HEAD^1, the base side of the merge commit it checks out)")
+    check_parser.add_argument("--title", metavar="TEXT", help="the pull request's title (Release check passes it from the "
+                              "event)")
+    check_parser.add_argument("--body", metavar="TEXT", default="", help="the pull request's description, with --title")
     check_parser.add_argument("--root", type=Path, default=Path.cwd(), help="fleet's checkout (default: here)")
 
 
@@ -671,8 +787,11 @@ def run(args: argparse.Namespace) -> int:
     root: Path = args.root
     try:
         if args.action == "check":
-            return run_check(root, args.base)
+            return run_check(root, args.base, args.title, args.body)
         parse_version(args.version)
+        if args.action == "notes" and args.since is not None:
+            sys.stdout.write(notes_since(root, args.since, args.at))
+            return 0
         if args.action == "notes":
             text = read(root, CHANGELOG)
             if text is None:
