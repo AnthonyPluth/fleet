@@ -13,6 +13,7 @@ from fleet_tools import cli, release, self_check
 
 ROOT = cli.ROOT
 CI = ROOT / ".github" / "workflows" / "ci.yml"
+RELEASE_CHECK = ROOT / ".github" / "workflows" / "release-check.yml"
 FROZEN_CHANGELOG = f"# Changelog\n\n## [{release.FROZEN}] - 2026-11-14\n\n### Added\n\n- The last entry here.\n"
 LATER = "4.1.0"
 Node = dict[str, Any]
@@ -156,12 +157,79 @@ class PullRequestCheckTest(unittest.TestCase):
         commit(self.root, "chore: main")
         git(self.root, "checkout", "-q", "-b", "change")
 
-    def check(self, base: str = "main", root: Path | None = None, actions: bool = False) -> tuple[int, str, str]:
+    def check(self, base: str = "main", root: Path | None = None, actions: bool = False,
+              title: str | None = None, body: str | None = None) -> tuple[int, str, str]:
         environment = {key: value for key, value in os.environ.items() if key != "GITHUB_ACTIONS"}
         if actions:
             environment["GITHUB_ACTIONS"] = "true"
+        described = ([f"--title={title}"] if title is not None else []) + ([f"--body={body}"] if body is not None else [])
         with mock.patch.dict(os.environ, environment, clear=True):
-            return run("release", "check", f"--base={base}", "--root", str(root or self.root))
+            return run("release", "check", f"--base={base}", "--root", str(root or self.root), *described)
+
+    def titled(self, kind: str, title: str, body: str = "") -> tuple[int, str, str]:
+        write(self.root, "changelog.d/change.md", fragment_text(kind, "A change."))
+        commit(self.root, title)
+        return self.check(title=title, body=body)
+
+    def test_the_title_and_the_fragment_agree_on_a_breaking_change(self) -> None:
+        for title, body in (("feat!: an input is gone", ""), ("fix(sync)!: the body", ""),
+                            ("feat: an input is gone", "Why.\n\nBREAKING CHANGE: the input is gone\n")):
+            with self.subTest(title=title, body=body):
+                git(self.root, "checkout", "-q", "-B", "change", "main")
+                self.assertEqual(self.titled("breaking", title, body),
+                                 (0, "fleet release check: ok, it adds changelog.d/change.md (breaking); its title makes "
+                                     "it a major change\n", ""))
+
+    def test_a_breaking_fragment_under_a_title_that_doesnt_say_so_fails(self) -> None:
+        for title, body in (("feat: an input is gone", ""), ("fix: an input is gone", "It explains what BREAKING CHANGE: means.\n"),
+                            ("chore: an input is gone", "")):
+            with self.subTest(title=title):
+                git(self.root, "checkout", "-q", "-B", "change", "main")
+                code, out, err = self.titled("breaking", title, body)
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(err, "fleet release check: changelog.d/change.md: `kind: breaking`, but the title doesn't "
+                                      "mark the pull request breaking: `feat!: …` (a `!` before the colon), or a `BREAKING "
+                                      "CHANGE:` line in the description; a breaking change is a major release of its own "
+                                      "(docs/release.md)\n")
+
+    def test_a_title_that_says_breaking_without_a_breaking_fragment_fails(self) -> None:
+        for title, body in (("feat!: an input is gone", ""), ("feat: x", "BREAKING CHANGE: the input is gone\n"),
+                            ("feat: x", "Released as a major.\n#major\n")):
+            with self.subTest(title=title, body=body):
+                git(self.root, "checkout", "-q", "-B", "change", "main")
+                code, out, err = self.titled("added", title, body)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("fleet release check: the title or the description marks this pull request breaking", err)
+                self.assertIn("but it adds no `kind: breaking` fragment", err)
+
+    def test_the_title_gives_a_minor_or_a_patch(self) -> None:
+        for kind, title, step in (("added", "feat: a new input", "minor"), ("added", "feat(sync): a new input", "minor"),
+                                  ("fixed", "fix: a message", "patch"), ("changed", "docs: a sentence", "patch"),
+                                  ("fixed", "fix: explain what feat: and #minor mean", "patch")):
+            with self.subTest(title=title):
+                git(self.root, "checkout", "-q", "-B", "change", "main")
+                self.assertEqual(self.titled(kind, title),
+                                 (0, f"fleet release check: ok, it adds changelog.d/change.md ({kind}); its title makes it "
+                                     f"a {step} change\n", ""))
+
+    def test_a_marker_at_the_end_of_the_title_never_reaches_main(self) -> None:
+        for title in ("fix: a thing #minor", "feat: a thing #major", "#minor"):
+            with self.subTest(title=title):
+                git(self.root, "checkout", "-q", "-B", "change", "main")
+                code, out, err = self.titled("added", title)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("ends with a `#major` or `#minor` marker, which never reaches main: GitHub adds ` (#<number>)` "
+                              "after the title in the merge commit's subject", err)
+
+    def test_without_a_title_the_check_is_the_fragments_alone(self) -> None:
+        write(self.root, "changelog.d/change.md", fragment_text("breaking", "A change."))
+        commit(self.root, "fix: an input is gone")
+        self.assertEqual(self.check(), (0, "fleet release check: ok, it adds changelog.d/change.md (breaking)\n", ""))
+
+    def test_a_release_pull_request_is_no_change_of_its_own(self) -> None:
+        self.release_on_main()
+        self.assertEqual(self.check(title=f"chore: release v{LATER}", body="Notes.\n"),
+                         (0, "fleet release check: ok, a release pull request, which folds the fragments\n", ""))
 
     def test_a_pull_request_that_adds_a_fragment_passes(self) -> None:
         write(self.root, "README.md", "fleet, changed\n")
@@ -354,28 +422,109 @@ class PullRequestCheckTest(unittest.TestCase):
         self.assertFalse((self.root / "x").exists())
 
 
-class CiTest(unittest.TestCase):
+class NotesBetweenTreesTest(unittest.TestCase):
     def setUp(self) -> None:
-        workflow = mapping(self_check.parse(CI.read_text(encoding="utf-8")))
-        job = mapping(mapping(workflow["jobs"])["check"])
-        self.permissions = mapping(job["permissions"])
-        steps = job["steps"]
+        self.root = temporary(self) / "fleet"
+        write(self.root, "README.md", "fleet\n")
+        write(self.root, "changelog.d/released/5.0.0.md", "## [5.0.0] - 2026-11-15\n\n### Fixed\n\n- Folded.\n")
+        write(self.root, "changelog.d/already.md", fragment_text("added", "In the last release."))
+        git(self.root, "init", "-q", "-b", "main")
+        commit(self.root, "chore: release v5.0.0")
+        git(self.root, "tag", "v5.0.0")
+
+    def land(self, title: str, files: dict[str, str]) -> str:
+        git(self.root, "checkout", "-q", "-b", "change")
+        for path, text in files.items():
+            write(self.root, path, text)
+        commit(self.root, f"wip: {title}")
+        git(self.root, "checkout", "-q", "main")
+        git(self.root, "merge", "-q", "--no-ff", "-m", title, "change")
+        git(self.root, "branch", "-q", "-D", "change")
+        return git(self.root, "rev-parse", "HEAD").strip()
+
+    def notes(self, *argv: str) -> tuple[int, str, str]:
+        return run("release", "notes", "6.0.0", "--root", str(self.root), *argv)
+
+    def test_the_notes_are_the_fragments_two_trees_differ_by(self) -> None:
+        self.land("feat!: an input is gone (#140)", {"changelog.d/input-gone.md": fragment_text("breaking", "An input is gone (#140).")})
+        self.land("fix: a message (#141)", {"changelog.d/message.md": fragment_text("fixed", "A message (#141)."),
+                                            "changelog.d/released/5.0.0.md": "## [5.0.0] - 2026-11-15\n\n- Rewritten.\n"})
+        self.land("feat: a new input (#142)", {"changelog.d/new-input.md": fragment_text("added", "A new input (#142).")})
+        self.assertEqual(self.notes("--since", "v5.0.0"), (0, "### Added\n\n- A new input (#142).\n\n### Changed\n\n"
+                                                              "- **Breaking:** An input is gone (#140).\n\n### Fixed\n\n"
+                                                              "- A message (#141).\n", ""))
+        found = release.added_fragments(self.root, "v5.0.0", "HEAD")
+        self.assertEqual([fragment.path.as_posix() for fragment in found],
+                         ["changelog.d/input-gone.md", "changelog.d/message.md", "changelog.d/new-input.md"])
+
+    def test_a_merge_without_a_fragment_is_listed_by_its_subject(self) -> None:
+        self.land("deps: bump the python group with 3 updates (#143)", {"poetry.lock": "new\n"})
+        self.land("fix: a message (#144)", {"changelog.d/message.md": fragment_text("fixed", "A message (#144).")})
+        self.assertEqual(self.notes("--since", "v5.0.0"), (0, "### Changed\n\n- deps: bump the python group with 3 updates "
+                                                              "(#143)\n\n### Fixed\n\n- A message (#144).\n", ""))
+
+    def test_the_notes_of_a_commit_before_the_newest(self) -> None:
+        first = self.land("fix: a message (#145)", {"changelog.d/message.md": fragment_text("fixed", "A message (#145).")})
+        self.land("fix: another (#146)", {"changelog.d/another.md": fragment_text("fixed", "Another (#146).")})
+        self.assertEqual(self.notes("--since", "v5.0.0", "--at", first), (0, "### Fixed\n\n- A message (#145).\n", ""))
+
+    def test_nothing_to_release_or_a_fragment_that_doesnt_parse_fails(self) -> None:
+        code, out, err = self.notes("--since", "v5.0.0")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "fleet release: nothing to release between v5.0.0 and HEAD: no commit, and no fragment added\n")
+        self.land("fix: x (#147)", {"changelog.d/bad.md": "---\nkind: feature\n---\nX.\n"})
+        code, out, err = self.notes("--since", "v5.0.0")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "fleet release: changelog.d/bad.md: kind 'feature' isn't one of breaking, added, changed, fixed\n")
+
+    def test_a_ref_that_isnt_one_fails(self) -> None:
+        for argv, needle in ((("--since=--output=x",), "--since '--output=x' isn't a ref"),
+                             (("--since", "v5.0.0", "--at", "HEAD:README.md"), "--at 'HEAD:README.md' isn't a ref"),
+                             (("--since", "v9.9.9"), "`git diff --diff-filter=A")):
+            with self.subTest(argv=argv):
+                code, out, err = self.notes(*argv)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn(f"fleet release: {needle}", err)
+
+    def test_the_released_folder_is_left_out_and_only_additions_count(self) -> None:
+        self.land("docs: rewrite the folded notes (#148)", {"changelog.d/released/5.1.0.md": "## [5.1.0] - 2026-11-16\n\n- X.\n",
+                                                             "changelog.d/already.md": fragment_text("added", "Reworded.")})
+        self.assertEqual(release.added_fragments(self.root, "v5.0.0", "HEAD"), [])
+        self.assertEqual(self.notes("--since", "v5.0.0"), (0, "### Changed\n\n- docs: rewrite the folded notes (#148)\n", ""))
+
+
+class ReleaseCheckWorkflowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = mapping(self_check.parse(RELEASE_CHECK.read_text(encoding="utf-8")))
+        self.job = mapping(mapping(self.workflow["jobs"])["check"])
+        steps = self.job["steps"]
         assert isinstance(steps, list)
         self.steps = [mapping(step) for step in steps]
 
-    def test_fleet_ci_checks_each_pull_requests_fragment_except_dependabots(self) -> None:
-        names = [step.get("name") for step in self.steps]
-        self.assertLess(names.index("make check"), names.index("Changelog fragment"))
-        step = self.steps[names.index("Changelog fragment")]
-        self.assertEqual(step["if"], "github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'")
-        self.assertEqual(step["run"], "poetry run fleet release check --base 'HEAD^1'")
-        self.assertNotIn("env", step)
-        self.assertEqual(self.permissions, {"contents": "read"})
+    def test_it_runs_on_each_pull_request_and_again_when_one_is_edited(self) -> None:
+        self.assertEqual(mapping(mapping(self.workflow["on"])["pull_request"]), {"types": "[opened, synchronize, reopened, edited]"})
+        self.assertEqual(self.workflow["permissions"], "{}")
+        self.assertEqual(mapping(self.workflow["concurrency"]),
+                         {"group": "release-check-${{ github.event.pull_request.number }}", "cancel-in-progress": "true"})
+
+    def test_it_checks_each_pull_requests_fragment_and_title_except_dependabots(self) -> None:
+        self.assertEqual(self.job["if"], "github.event.pull_request.user.login != 'dependabot[bot]'")
+        self.assertEqual(mapping(self.job["permissions"]), {"contents": "read"})
+        step = self.steps[-1]
+        self.assertEqual(step["run"], "/usr/bin/python3 -E -s -m fleet_tools.cli release check --base 'HEAD^1' "
+                                      "--title=\"$TITLE\" --body=\"$BODY\"")
+        self.assertEqual(mapping(step["env"]), {"TITLE": "${{ github.event.pull_request.title }}",
+                                                "BODY": "${{ github.event.pull_request.body }}"})
 
     def test_the_checkout_holds_the_merge_commits_base(self) -> None:
         checkout = self.steps[0]
         self.assertTrue(str(checkout["uses"]).startswith("actions/checkout@"))
         self.assertEqual(mapping(checkout["with"]), {"persist-credentials": "false", "fetch-depth": "2"})
+
+    def test_fleet_ci_leaves_the_fragment_to_it(self) -> None:
+        text = CI.read_text(encoding="utf-8")
+        self.assertNotIn("release check", text)
+        self.assertIn("release-check.yml", text)
 
 
 class DocsTest(unittest.TestCase):

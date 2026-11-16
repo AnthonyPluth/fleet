@@ -147,13 +147,17 @@ jobs:
       # pins name (it refuses any other), and the CHANGELOG there lists what changed. A plain clone of the public
       # repository at the commit the pins name (validated by the planner, read from the caller's own workflows on its
       # default branch), no token; the clone must be the tag the pins' comment names, so a tag moved off that commit
-      # fails here. The one checkout of fleet by the action stays at this workflow's pinned ref. The self-test has no
-      # such tag; its fixture pins this fleet's own commit, so it takes a copy of this fleet's checkout.
+      # fails here. The one checkout of fleet by the action stays at this workflow's pinned ref. The content's tag is
+      # fetched beside it, one commit deep too, so the body can list the changelog fragments the pins' tree adds to the
+      # content's (fleet_tools/sync_workflow.py); without it the body says they couldn't be read, and the sync goes on.
+      # The self-test has no such tags; its fixture pins this fleet's own commit, so it takes a copy of this fleet's
+      # checkout.
       - name: fleet at the pins' version
         if: steps.plan.outputs.action != 'none'
         env:
           PIN: ${{ steps.plan.outputs.pin }}
           COMMIT: ${{ steps.plan.outputs.commit }}
+          CONTENT: ${{ steps.plan.outputs.content }}
           FIXTURE: ${{ inputs.fixture }}
         run: |
           if ! [[ "$PIN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -167,11 +171,18 @@ jobs:
           if [ -n "$FIXTURE" ]; then
             cp -a .fleet .fleet-pin
           else
+            if ! [[ "$CONTENT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::The planned content version '${CONTENT:0:40}' isn't a version"
+              exit 1
+            fi
             git clone --quiet --depth 1 --branch "$PIN" -- https://github.com/AnthonyPluth/fleet .fleet-pin
             head=$(git -C .fleet-pin rev-parse HEAD)
             if [ "$head" != "$COMMIT" ]; then
               echo "::error::The tag $PIN is at $head, but the workflow pins name $COMMIT; a release tag is never moved"
               exit 1
+            fi
+            if ! git -C .fleet-pin fetch --quiet --depth 1 origin "refs/tags/$CONTENT:refs/tags/$CONTENT"; then
+              echo "::warning::Couldn't fetch fleet's tag $CONTENT, so the body can't list the changelog fragments since it"
             fi
           fi
           echo "fleet $PIN at $(git -C .fleet-pin rev-parse HEAD) in .fleet-pin"

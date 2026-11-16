@@ -2,7 +2,7 @@ name: fleet CI
 
 # `make check` on every pull request and every push to main: ruff, mypy, the tests, fleet self-check, actionlint and
 # zizmor over the workflows, and `claude plugin validate` (the Claude Code .github/agent-review/ locks), at the versions
-# pyproject.toml and the Makefile pin. On a pull request, `fleet release check` then checks its changelog fragment.
+# pyproject.toml and the Makefile pin. A pull request's changelog fragment and title are release-check.yml's.
 on:
   pull_request:
   push:
@@ -28,12 +28,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Two commits deep: on a pull request HEAD is the pull request merged into its base, and HEAD^1 is that base,
-      # which the changelog check diffs against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
       # The oldest Python fleet_tools supports (pyproject.toml's requires-python), so nothing newer slips in.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
         id: python
@@ -50,12 +47,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: make check
-      # The pull request adds its changelog fragment (changelog.d/<name>.md, docs/release.md), every fragment parses,
-      # and it adds no entry to the frozen CHANGELOG.md and changes no release's notes. Dependabot's bumps carry no
-      # fragment; a release pull request (it changes VERSION) folds them and adds none.
-      - name: Changelog fragment
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
-        run: poetry run fleet release check --base 'HEAD^1'
 
   system-python:
     name: fleet checks on the system Python
