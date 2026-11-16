@@ -1,0 +1,241 @@
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+from fleet_tools import cli, self_check
+
+SECURITY = cli.ROOT / ".github" / "workflows" / "security.yml"
+SELF_TEST = cli.ROOT / ".github" / "workflows" / "self-test.yml"
+SCRIPT = cli.ROOT / ".github" / "scripts" / "security-trivy-settings.sh"
+STEP = "Keep the checkout's own Trivy settings out of the scan"
+NAMES = ("trivy.yaml", ".trivyignore", "trivy-secret.yaml")
+SETTINGS = "${{ runner.temp }}/trivy-settings"
+SCAN_ENV = {"TRIVY_CONFIG": f"{SETTINGS}/trivy.yaml", "TRIVY_IGNOREFILE": f"{SETTINGS}/trivyignore",
+            "TRIVY_SECRET_CONFIG": f"{SETTINGS}/trivy-secret.yaml"}
+SCANS = {"trivy": "Scan the repository", "image": "Scan the image"}
+Node = dict[str, Any]
+
+
+def workflow(path: Path = SECURITY) -> Node:
+    parsed = self_check.parse(path.read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def steps(job: str) -> list[Node]:
+    found = workflow()["jobs"][job]["steps"]
+    assert isinstance(found, list)
+    return found
+
+
+def index_of(job_steps: list[Node], match: str) -> int:
+    hits = [i for i, step in enumerate(job_steps) if match in str(step)]
+    assert len(hits) == 1, (match, hits)
+    return hits[0]
+
+
+class WorkflowTest(unittest.TestCase):
+    def test_both_trivy_jobs_run_the_step_on_every_event_whatever_the_inputs(self) -> None:
+        for job in SCANS:
+            step = steps(job)[index_of(steps(job), STEP)]
+            self.assertEqual(step, {"name": STEP, "env": {"TRIVY_SETTINGS": SETTINGS},
+                                    "run": ".fleet/.github/scripts/security-trivy-settings.sh"}, job)
+
+    def test_the_step_runs_while_fleets_scripts_are_there_and_before_the_scan(self) -> None:
+        for job, scan in SCANS.items():
+            job_steps = steps(job)
+            step = index_of(job_steps, STEP)
+            self.assertGreater(step, index_of(job_steps, "security-trivy-install.sh"), job)
+            self.assertLess(step, index_of(job_steps, "rm -rf .fleet"), job)
+            self.assertLess(step, index_of(job_steps, scan), job)
+
+    def test_the_image_is_built_before_the_checkouts_files_go(self) -> None:
+        job_steps = steps("image")
+        self.assertGreater(index_of(job_steps, STEP), index_of(job_steps, "Build the image"))
+
+    def test_each_scan_names_the_empty_settings_outside_the_workspace(self) -> None:
+        for job, scan in SCANS.items():
+            step = steps(job)[index_of(steps(job), scan)]
+            self.assertEqual(step["env"], SCAN_ENV, job)
+            self.assertTrue(step["uses"].startswith("aquasecurity/trivy-action@"), job)
+            self.assertNotIn("trivy-config", step["with"], job)
+            self.assertNotIn("if", step, job)
+
+    def test_no_step_between_the_settings_and_the_scan_runs_the_checkouts_code(self) -> None:
+        for job, scan in SCANS.items():
+            job_steps = steps(job)
+            between = job_steps[index_of(job_steps, STEP) + 1:index_of(job_steps, scan)]
+            self.assertEqual([step["run"] for step in between], ["rm -rf .fleet"], job)
+
+    def test_nothing_else_in_the_workflow_sets_trivys_settings(self) -> None:
+        text = SECURITY.read_text(encoding="utf-8")
+        code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        for name in SCAN_ENV:
+            self.assertEqual(code.count(name), 2, name)
+        self.assertEqual(code.count("security-trivy-settings.sh"), 2)
+        self.assertNotIn("rm -f trivy.yaml", code)
+        self.assertNotIn("inputs.trivy-config", code)
+
+    def test_the_header_says_what_the_scans_no_longer_read(self) -> None:
+        header = " ".join(SECURITY.read_text(encoding="utf-8").split("\non:\n", 1)[0].replace("#", " ").split())
+        self.assertIn("Neither Trivy job reads Trivy's settings from the caller's checkout", header)
+        for name in NAMES:
+            self.assertIn(f"./{name}", header)
+
+
+class SelfTestTest(unittest.TestCase):
+    def job(self) -> Node:
+        found = workflow(SELF_TEST)["jobs"]["checkout-trivy-settings"]
+        assert isinstance(found, dict)
+        return found
+
+    def test_it_scans_with_the_pinned_trivy_and_action(self) -> None:
+        job = self.job()
+        pins = workflow()["env"]
+        for name in ("TRIVY_VERSION", "TRIVY_SHA256_X64", "TRIVY_SHA256_ARM64"):
+            self.assertEqual(job["env"][name], pins[name], name)
+        shipped = steps("trivy")[index_of(steps("trivy"), SCANS["trivy"])]
+        scans = [step for step in job["steps"] if step.get("uses", "").startswith("aquasecurity/trivy-action@")]
+        self.assertEqual(len(scans), 3)
+        for step in scans:
+            self.assertEqual(step["uses"], shipped["uses"])
+            for same in ("skip-setup-trivy", "version", "scan-type", "severity"):
+                self.assertEqual(step["with"][same], shipped["with"][same], same)
+            self.assertEqual(step["with"]["scanners"], "vuln,secret")
+            self.assertNotIn("trivyignores", step["with"])
+            self.assertNotIn("trivy-config", step["with"])
+
+    def test_the_first_scan_is_unprotected_and_the_others_take_the_shipped_environment(self) -> None:
+        scans = [step for step in self.job()["steps"] if step.get("uses", "").startswith("aquasecurity/trivy-action@")]
+        self.assertNotIn("env", scans[0])
+        self.assertEqual([step["env"] for step in scans[1:]], [SCAN_ENV, SCAN_ENV])
+        self.assertEqual([step["with"]["output"].rsplit("/", 1)[1] for step in scans],
+                         ["unprotected.json", "protected.json", "environment-only.json"])
+
+    def test_it_runs_the_shipped_script_between_the_first_two_scans(self) -> None:
+        job_steps = self.job()["steps"]
+        step = index_of(job_steps, STEP)
+        self.assertEqual(job_steps[step]["env"], {"TRIVY_SETTINGS": SETTINGS})
+        self.assertGreater(step, index_of(job_steps, "unprotected.json"))
+        self.assertLess(step, index_of(job_steps, "/protected.json"))
+        back = index_of(job_steps, "Put the settings files back")
+        self.assertGreater(back, index_of(job_steps, "/protected.json"))
+        self.assertLess(back, index_of(job_steps, "environment-only.json"))
+
+    def test_each_planted_file_drops_one_finding_and_every_scan_is_checked(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8").split("  checkout-trivy-settings:\n", 1)[1].split("\n  deep-scan-due:\n", 1)[0]
+        for plant in ("printf 'CVE-2018-18074\\n' > \"$WORK/settings/.trivyignore\"",
+                      "printf 'disable-rules:\\n  - github-pat\\n' > \"$WORK/settings/trivy-secret.yaml\"",
+                      "printf 'scan:\\n  skip-files:\\n    - \"**/cloud.py\"\\n' > \"$WORK/settings/trivy.yaml\"",
+                      ".github/scripts/security-trivy-settings.sh > ",
+                      "for id in CVE-2018-18074 github-pat aws-access-key-id; do",
+                      'if reported unprotected "$id"; then', 'reported protected "$id" ||', 'reported environment-only "$id" ||'):
+            self.assertIn(plant, text)
+        self.assertEqual(text.count('cp "$WORK/settings/.trivyignore" "$WORK/settings/trivy-secret.yaml" "$WORK/settings/trivy.yaml" .'), 2)
+        self.assertNotRegex(text, r"ghp_[0-9A-Za-z]{36}|AKIA[0-9A-Z]{16}")
+
+
+class ScriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        self.settings = self.root / "temp" / "trivy-settings"
+
+    def run_script(self, settings: str | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        env = {"PATH": os.environ["PATH"], "TRIVY_SETTINGS": str(self.settings) if settings is None else settings}
+        return subprocess.run(["bash", str(SCRIPT)], cwd=cwd or self.checkout, env=env, capture_output=True, text=True, check=False)
+
+    def warnings(self, result: subprocess.CompletedProcess[str]) -> list[str]:
+        return [line for line in result.stdout.splitlines() if line.startswith("::")]
+
+    def test_a_checkout_with_none_of_the_files_gets_the_empty_settings_and_no_warning(self) -> None:
+        (self.checkout / "app.py").write_text("x = 1\n", encoding="utf-8")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.warnings(result), [])
+        self.assertEqual(sorted(path.name for path in self.checkout.iterdir()), ["app.py"])
+        self.assertEqual({path.name: path.read_text(encoding="utf-8") for path in self.settings.iterdir()},
+                         {"trivy.yaml": "{}\n", "trivyignore": "", "trivy-secret.yaml": "{}\n"})
+        self.assertIn(f"Trivy reads its settings from {self.settings} (empty), not from the checkout.", result.stdout)
+
+    def test_each_of_the_three_is_removed_with_a_warning_that_names_it(self) -> None:
+        for name in NAMES:
+            (self.checkout / name).write_text("CVE-2018-18074\n", encoding="utf-8")
+        (self.checkout / ".trivyignore.yaml").write_text("vulnerabilities: []\n", encoding="utf-8")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(path.name for path in self.checkout.iterdir()), [".trivyignore.yaml"])
+        found = self.warnings(result)
+        self.assertEqual(len(found), 3)
+        for name, line in zip(NAMES, found, strict=True):
+            self.assertTrue(line.startswith(f"::warning title=Trivy settings not read::This checkout has {name}. "), line)
+            self.assertIn("trivy-image-ignore-file", line)
+            self.assertIn("delete it", line)
+
+    def test_only_the_file_that_is_there_is_named(self) -> None:
+        (self.checkout / ".trivyignore").write_text("CVE-2018-18074\n", encoding="utf-8")
+        found = self.warnings(self.run_script())
+        self.assertEqual(len(found), 1)
+        self.assertIn("This checkout has .trivyignore. ", found[0])
+
+    def test_a_link_or_a_directory_of_that_name_goes_and_a_links_target_stays(self) -> None:
+        outside = self.root / "outside.yaml"
+        outside.write_text("scan:\n  skip-files:\n    - '**'\n", encoding="utf-8")
+        (self.checkout / "trivy.yaml").symlink_to(outside)
+        (self.checkout / ".trivyignore").symlink_to(self.root / "nowhere")
+        (self.checkout / "trivy-secret.yaml").mkdir()
+        (self.checkout / "trivy-secret.yaml" / "inner").write_text("x\n", encoding="utf-8")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(self.checkout.iterdir()), [])
+        self.assertEqual(len(self.warnings(result)), 3)
+        self.assertTrue(outside.is_file())
+
+    def test_files_in_a_subdirectory_are_not_the_working_directorys(self) -> None:
+        (self.checkout / "sub").mkdir()
+        (self.checkout / "sub" / ".trivyignore").write_text("CVE-2018-18074\n", encoding="utf-8")
+        result = self.run_script()
+        self.assertEqual(self.warnings(result), [])
+        self.assertTrue((self.checkout / "sub" / ".trivyignore").is_file())
+
+    def test_settings_left_by_an_earlier_run_are_replaced(self) -> None:
+        self.settings.mkdir(parents=True)
+        (self.settings / "trivyignore").write_text("CVE-2018-18074\n", encoding="utf-8")
+        (self.settings / "extra").write_text("x\n", encoding="utf-8")
+        self.assertEqual(self.run_script().returncode, 0)
+        self.assertEqual(sorted(path.name for path in self.settings.iterdir()), ["trivy-secret.yaml", "trivy.yaml", "trivyignore"])
+        self.assertEqual((self.settings / "trivyignore").read_text(encoding="utf-8"), "")
+
+    def test_the_settings_directory_is_absolute_and_outside_the_checkout(self) -> None:
+        (self.checkout / ".trivyignore").write_text("CVE-2018-18074\n", encoding="utf-8")
+        link = self.root / "link"
+        link.symlink_to(self.checkout)
+        for settings, reason in (("", "should be an absolute directory"), ("trivy-settings", "should be an absolute directory"),
+                                 (str(self.checkout / "settings"), "inside the working directory"),
+                                 (str(self.checkout), "inside the working directory"),
+                                 (str(link / "settings"), "inside the working directory")):
+            result = self.run_script(settings)
+            self.assertEqual(result.returncode, 1, settings)
+            self.assertIn("::error::TRIVY_SETTINGS ", result.stderr, settings)
+            self.assertIn(reason, result.stderr, settings)
+            self.assertTrue((self.checkout / ".trivyignore").is_file(), settings)
+            self.assertFalse((self.checkout / "settings").exists(), settings)
+
+
+class DocsTest(unittest.TestCase):
+    def test_adopting_says_which_files_are_not_read_and_what_to_do_instead(self) -> None:
+        adopting = (cli.ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
+        section = adopting.split("### Trivy's settings files in the checkout\n", 1)[1].split("\n### ", 1)[0]
+        for words in ("`trivy.yaml`", "`.trivyignore`", "`trivy-secret.yaml`", "on every event", "`TRIVY_CONFIG`",
+                      "`TRIVY_IGNOREFILE`", "`TRIVY_SECRET_CONFIG`", "`trivy-image-ignore-file`", "skip", "warning"):
+            self.assertIn(words, section, words)
+
+
+if __name__ == "__main__":
+    unittest.main()
