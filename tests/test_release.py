@@ -675,6 +675,51 @@ class ReleaseScriptsTest(unittest.TestCase):
         self.assertEqual(output.read_text(encoding="utf-8"), "tag=v1.0.0\n")
         self.assertEqual((self.directory / "notes.md").read_text(encoding="utf-8"), "- First.\n")
 
+    def pending_step(self, root: Path) -> subprocess.CompletedProcess[str]:
+        return self.run_step("Check that no fragment is pending", cwd=root)
+
+    def release_commit(self, *late: str) -> Path:
+        work = self.directory / "work"
+        (work / release.RELEASE_NOTES).mkdir(parents=True)
+        (work / "fleet_tools").symlink_to(ROOT / "fleet_tools")
+        (work / release.RELEASE_NOTES / "4.1.0.md").write_text("## [4.1.0] - 2026-11-20\n\n### Fixed\n\n- Folded.\n",
+                                                                encoding="utf-8")
+        for name in late:
+            fragment(work, name, "breaking", "Merged after prepare ran.")
+        return work
+
+    def test_a_fragment_pending_at_the_release_commit_stops_the_release(self) -> None:
+        result = self.pending_step(self.release_commit("late-change", "later-change"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("::error::Pending at the release commit: changelog.d/late-change.md changelog.d/later-change.md.",
+                      result.stdout)
+        self.assertIn("Not tagging", result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_release_commit_with_every_fragment_folded_passes(self) -> None:
+        result = self.pending_step(self.release_commit())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No changelog fragment is pending", result.stdout)
+
+    def test_nothing_is_tagged_or_published_before_the_pending_check(self) -> None:
+        steps = re.findall(r"^      - name: (.+)$", self.text, re.MULTILINE)
+        self.assertLess(steps.index("Check that no fragment is pending"), steps.index("Tag the commit"))
+        self.assertLess(steps.index("Check that no fragment is pending"), steps.index("Publish the release"))
+
+    def test_the_pending_check_passes_what_prepare_leaves_and_refuses_a_fragment_merged_after_it(self) -> None:
+        root = copy(self)
+        ensure_a_fragment(root)
+        self.assertEqual(self.pending_step(root).returncode, 1)
+        code, _, err = run("release", "prepare", NEXT, "--date", "2026-11-02", "--root", str(root))
+        self.assertEqual(code, 0, err)
+        folded = self.pending_step(root)
+        self.assertEqual(folded.returncode, 0, folded.stdout + folded.stderr)
+        fragment(root, "merged-after-prepare", "breaking", "Merged to main after prepare ran.")
+        self.assertEqual(self_check.check(root), [])
+        late = self.pending_step(root)
+        self.assertEqual(late.returncode, 1)
+        self.assertIn("::error::Pending at the release commit: changelog.d/merged-after-prepare.md.", late.stdout)
+
     def test_the_version_step_reads_a_later_releases_notes_from_its_file(self) -> None:
         work = self.directory / "work"
         (work / release.RELEASE_NOTES).mkdir(parents=True)
