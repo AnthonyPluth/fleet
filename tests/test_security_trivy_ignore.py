@@ -136,7 +136,8 @@ class WorkflowTest(unittest.TestCase):
         scans = [step for step in job["steps"] if "trivyignores" in step.get("with", {})]
         self.assertEqual([step["with"]["trivyignores"] for step in scans],
                          [f"${{{{ runner.temp }}}}/accepted/{name}.accepted.yaml"
-                          for name in ("none", "paths", "accepted", "elsewhere", "expired")])
+                          for name in ("none", "paths", "accepted", "elsewhere", "expired", "refused")])
+        self.assertEqual([step.get("id") for step in scans if step.get("continue-on-error")], ["refused"])
         for step in scans:
             self.assertEqual(step["uses"], shipped["uses"])
             for same in ("skip-setup-trivy", "version", "severity", "ignore-unfixed"):
@@ -156,6 +157,19 @@ class WorkflowTest(unittest.TestCase):
                      "for list in none paths accepted elsewhere expired; do\n            python3",
                      "if grep -q 'purls:' paths.accepted.yaml; then", "grep -q '\"pkg:pypi/requests\"' accepted.accepted.yaml ||",
                      "-eq \"$(( $(wc -l < \"$purls\") + 1 ))\""):
+            self.assertIn(line, text)
+
+    def test_the_self_test_fails_unless_trivy_refuses_a_list_over_one_purl_on_an_entry_that_matches_nothing(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8")
+        control = "pkg:swift/name"
+        self.assertIsNotNone(script_module().refusal(control))
+        self.assertNotIn(control, PURLS.read_text(encoding="utf-8").splitlines())
+        for line in ("cat paths.accepted.yaml\n            printf '  - id: \"CVE-2026-0001\"\\n",
+                     f'purls:\\n      - "{control}"\\n\'', "} > refused.accepted.yaml",
+                     'if python3 -I "$scripts/trivy_ignore.py" --file=refused.accepted.yaml --out=/dev/null > /dev/null; then',
+                     "REFUSED: ${{ steps.refused.outcome }}", 'if [ "$REFUSED" != failure ]; then',
+                     "--ignorefile refused.accepted.yaml app > refused.log 2>&1; then",
+                     f"grep -qF 'purl error in the ignore file: failed to parse purl({control})' refused.log"):
             self.assertIn(line, text)
 
     def test_a_trivy_bump_proves_the_purl_rules_again(self) -> None:
@@ -391,13 +405,19 @@ class EntriesTest(unittest.TestCase):
         purls = PURLS.read_text(encoding="utf-8").splitlines()
         self.assertEqual(purls, sorted(set(purls)))
         self.assertEqual([purl for purl in purls if module.refusal(purl)], [])
-        types = {purl.split("/")[0][4:] for purl in purls}
-        self.assertGreaterEqual(len(types), 79)
+        types = {purl.split("/")[0][4:] for purl in purls} | set(module.PURL_TYPE_RULES)
+        self.assertGreaterEqual(len(types), 80)
+        forms = {kind: [f"pkg:{kind}/name", f"pkg:{kind}/name@1.0", f"pkg:{kind}/NAMESPACE/name", f"pkg:{kind}/NAMESPACE/name@1.0"]
+                 for kind in types}
+        self.assertEqual(purls, sorted(form for kind in types for form in forms[kind] if not module.refusal(form)), (
+            "tests/fixtures/security/purls.txt holds every form the script accepts of every type, and nothing else: the "
+            "Self-test hands them to the real Trivy"))
+        with_namespace = {"capitals": [False, False, True, True], "never": [False] * 4, "none": [True, True, False, False],
+                          "some": [False, False, True, True]}
         for kind, (rule, _) in module.PURL_TYPE_RULES.items():
-            self.assertEqual(kind in types, rule != "never", kind)
-        for purl in ("pkg:cran/name", "pkg:conan/NAMESPACE/name@1.0", "pkg:cpan/NAMESPACE/name@1.0", "pkg:otp/name",
-                     "pkg:swift/NAMESPACE/name@1.0", "pkg:vscode-extension/NAMESPACE/name@1.0", "pkg:golang/name", "pkg:deb/NAMESPACE/name@1.0"):
-            self.assertIn(purl, purls)
+            self.assertEqual([form in purls for form in forms[kind]], with_namespace[rule], kind)
+        for kind in ("cran", "conan", "golang", "deb"):
+            self.assertEqual([form in purls for form in forms[kind]], [True] * 4, kind)
         script = Script(self)
         result = script.local(listed(entry(extra="    purls:\n" + "".join(f"      - {purl}\n" for purl in purls))))
         self.assertEqual(result.returncode, 0, result.stdout)

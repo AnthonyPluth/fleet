@@ -85,8 +85,11 @@ jobs:
   # pinned trivy-action and the same `trivyignores` input the image job uses, at security.yml's pinned Trivy. Trivy must
   # honour the list for the entry's own path, in both forms an entry takes (`paths` alone, and `paths` narrowed by
   # `purls`), and report the finding for any other path and once the entry has expired. The purls list also carries
-  # every purl of tests/fixtures/security/purls.txt, each known type in the forms the script accepts: Trivy refuses a
-  # whole list over one purl its parser refuses, so a Trivy whose parser's rules moved fails that scan.
+  # every purl of tests/fixtures/security/purls.txt, on an entry that matches no finding: each known type in every form
+  # the script accepts (with and without a namespace, with and without a version). Trivy refuses a whole list over one
+  # purl its parser refuses, so a Trivy whose parser's rules moved fails that scan. The control proves Trivy parses
+  # the purls of such an entry at all: a list written without the script, the path-only one plus an entry that matches
+  # no finding and holds one purl the parser refuses (and the script too), must fail its scan, and for that purl.
   # The vulnerable pin is written at run time, outside the workspace, so no scan of fleet sees it.
   accepted-finding:
     name: Trivy honours an accepted finding for its path only, until it expires
@@ -136,6 +139,15 @@ jobs:
           for list in none paths accepted elsewhere expired; do
             python3 -I "$scripts/trivy_ignore.py" --file="$list.yaml" --out="$list.accepted.yaml"
           done
+          {
+            cat paths.accepted.yaml
+            printf '  - id: "CVE-2026-0001"\n    paths:\n      - "requirements.txt"\n    purls:\n      - "pkg:swift/name"\n'
+            printf '    statement: "A made-up finding, with a purl Trivy refuses"\n    expired_at: %s\n' "$soon"
+          } > refused.accepted.yaml
+          if python3 -I "$scripts/trivy_ignore.py" --file=refused.accepted.yaml --out=/dev/null > /dev/null; then
+            echo "::error::The script accepts the purl the control expects Trivy to refuse"
+            exit 1
+          fi
           if grep -q 'purls:' paths.accepted.yaml; then echo "::error::The path-only list carries purls"; exit 1; fi
           grep -q '"pkg:pypi/requests"' accepted.accepted.yaml || { echo "::error::The purls list carries no purl"; exit 1; }
           [ -s "$purls" ] && [ "$(grep -c '"pkg:' accepted.accepted.yaml)" -eq "$(( $(wc -l < "$purls") + 1 ))" ] \
@@ -210,11 +222,38 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           trivyignores: ${{ runner.temp }}/accepted/expired.accepted.yaml
-      - name: The finding is dropped only for its own path, and not once expired
+      - name: Scan with a purl Trivy's parser refuses, on an entry that matches no finding
+        id: refused
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/accepted/app
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/accepted/refused.json
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: ${{ runner.temp }}/accepted/refused.accepted.yaml
+      - name: The finding is dropped only for its own path, and not once expired, and a refused purl fails the scan
         env:
           WORK: ${{ runner.temp }}/accepted
+          REFUSED: ${{ steps.refused.outcome }}
         run: |
           cd "$WORK"
+          if [ "$REFUSED" != failure ]; then
+            echo "::error::Trivy scanned with a purl its parser refuses ($REFUSED): the fixture purls' scan proves nothing"
+            exit 1
+          fi
+          if trivy fs --scanners secret --format json --output refused.secret.json --ignorefile refused.accepted.yaml app > refused.log 2>&1; then
+            echo "::error::Trivy took a list with a purl its parser refuses: the fixture purls' scan proves nothing"
+            exit 1
+          fi
+          grep -qF 'purl error in the ignore file: failed to parse purl(pkg:swift/name)' refused.log \
+            || { cat refused.log; echo "::error::Trivy failed on the control list, but not over its purl"; exit 1; }
           reported() {
             jq -e '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | index("CVE-2018-18074") != null' "$1.json" > /dev/null
           }
@@ -224,7 +263,7 @@ jobs:
           if reported accepted; then echo "::error::Trivy reported a finding accepted for its path and its purl"; exit 1; fi
           reported elsewhere || { echo "::error::An entry for another path silenced the finding"; exit 1; }
           reported expired || { echo "::error::An expired entry silenced the finding"; exit 1; }
-          echo "Trivy honoured the accepted finding for its path only, and not once expired, as it should."
+          echo "Trivy honoured the accepted finding for its path only, and not once expired, and refused a list over one purl, as it should."
 
   # The deep-scan reminder in dry run on fleet itself: it reads fleet's issues and prints the issue it would open (or
   # that one is open) without opening anything. The called job asks for `issues: write` and `contents: read` (the
