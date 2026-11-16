@@ -314,9 +314,22 @@ class EntriesTest(unittest.TestCase):
         self.refused("vulnerabilities:\n  - id: CVE-2026-0001\n    paths:\n    statement: why\n    expired_at: 2027-01-31\n", "needs `paths`")
         for path in ('"**"', "usr/**/syncthing", "'usr/local/bin/*'", "usr/bin/sync?hing", "'usr/[a-z]in/x'", "'{a,b}'", "'a\\b'"):
             self.refused(listed(entry(path=path)), "an exact path, without wildcards")
-        self.refused(listed(entry(extra="    purls:\n      - golang.org/x/net\n")), "a purl starts with pkg:")
         self.refused(listed(entry(extra="    purls:\n")), "`purls` is empty")
 
+    def test_a_purl_is_one_trivy_can_parse(self) -> None:
+        for purl in ("pkg:golang/golang.org/x/net", "pkg:golang/golang.org/x/net@v0.60.0", "pkg:deb/debian/libssl3@3.0.11-1~deb12u2",
+                     "pkg:pypi/requests@2.19.0", "pkg:npm/lodash", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+                     "pkg:rpm/redhat/openssl@1.1.1k-7.el8_6", "pkg:gem/rack"):
+            script = Script(self)
+            result = script.local(listed(entry(extra=f'    purls:\n      - "{purl}"\n')))
+            self.assertEqual(result.returncode, 0, (purl, result.stdout))
+            self.assertIn(f'      - "{purl}"\n', script.written(), purl)
+        for purl in ("pkg:", "pkg:golang", "pkg:golang/", "pkg:/net", "pkg://golang/net", "pkg:golang//net", "pkg:golang/net@",
+                     "pkg:golang/@v1", "pkg:npm/@babel/core", "pkg:Golang/net", "pkg:1type/name", "pkg:go_lang/net", "golang.org/x/net",
+                     "PKG:golang/net", "pkg:golang/net?arch=amd64", "pkg:golang/net#sub/path", "pkg:golang/x%2Fnet", "pkg:golang/x%zz",
+                     "pkg:golang/a b", "pkg:golang/net@1@2", "pkg:golang/net;x", "pkg:deb/debian/x@1:2.0", "pkg:cpan/name",
+                     "pkg:julia/Flux", "pkg:otp/ns/name", "pkg:swift/name", "pkg:vscode-extension/name", "pkg:golang/net/"):
+            self.refused(listed(entry(extra=f'    purls:\n      - "{purl}"\n')), "a purl is pkg:<type>/<name>")
     def test_only_vulnerabilities_are_accepted(self) -> None:
         for section in ("misconfigurations", "secrets", "licenses"):
             self.refused(f"{section}:\n  - id: AVD-DS-0001\n", f"only `vulnerabilities:` is accepted; `{section}:` isn't")

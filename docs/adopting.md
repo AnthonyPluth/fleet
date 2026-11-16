@@ -112,7 +112,7 @@ vulnerabilities:
 Every entry needs all four:
 
 - `id`: the finding's id as Trivy reports it.
-- `paths`: the exact targets it is accepted for, as Trivy's report names them (`usr/local/bin/example`, no leading slash), one per line. No wildcards: the same CVE anywhere else in the image is still reported. `purls` (`pkg:golang/golang.org/x/net`) may narrow an entry further; it can't replace `paths`.
+- `paths`: the exact targets it is accepted for, as Trivy's report names them (`usr/local/bin/example`, no leading slash), one per line. No wildcards: the same CVE anywhere else in the image is still reported. `purls` may narrow an entry further and can't replace `paths`; each is `pkg:<type>/<name>` with an optional namespace and `@<version>` (`pkg:golang/golang.org/x/net`), without qualifiers, a subpath or percent-encoding, since Trivy refuses the whole list over one purl it can't parse.
 - `statement`: why it is accepted, on one line.
 - `expired_at`: `YYYY-MM-DD`, at most 180 days away. From that day (UTC) the entry stops counting and the finding is reported again, with a warning naming the entry; renewing it is a new decision and a new pull request.
 

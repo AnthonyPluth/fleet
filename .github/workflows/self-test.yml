@@ -114,7 +114,7 @@ jobs:
           cd "$WORK"
           printf 'requests==2.19.0\n' > app/requirements.txt
           entry() {
-            printf 'vulnerabilities:\n  - id: CVE-2018-18074\n    paths:\n      - %s\n    statement: A made-up reason, for the self-test\n    expired_at: %s\n' "$1" "$2"
+            printf 'vulnerabilities:\n  - id: CVE-2018-18074\n    paths:\n      - %s\n    purls:\n      - pkg:pypi/requests\n    statement: A made-up reason, for the self-test\n    expired_at: %s\n' "$1" "$2"
           }
           soon=$(date -u -d '+30 days' +%F)
           printf 'vulnerabilities: []\n' > none.yaml

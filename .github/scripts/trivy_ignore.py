@@ -18,6 +18,8 @@ FILE_PATH = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\.ya?ml")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 FINDING_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,63}")
+PURL = re.compile(r"pkg:([a-z][a-z0-9.+-]*)(?:/[A-Za-z0-9._~+-]+)+(?:@[A-Za-z0-9._~+-]+)?")
+PURL_TYPES_WITH_RULES = ("cpan", "julia", "otp", "swift", "vscode-extension")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 KEY_LINE = re.compile(r"([a-z_]+):(?:[ ]+(.*))?")
 PLAIN_START = set("-?:,[]{}#&*!|>'\"%@`")
@@ -203,8 +205,10 @@ def checked(entries: list[Entry], today: datetime.date) -> tuple[list[Entry], li
             if GLOB & set(path):
                 raise Invalid(f"{at}: a path is an exact path, without wildcards or backslashes")
         for purl in entry.get("purls", []):
-            if not purl.startswith("pkg:") or " " in purl:
-                raise Invalid(f"{at}: a purl starts with pkg: and has no space")
+            form = PURL.fullmatch(purl)
+            if not form or form.group(1) in PURL_TYPES_WITH_RULES:
+                raise Invalid(f"{at}: a purl is pkg:<type>/<name>, with an optional namespace and @<version>, such as "
+                              "pkg:golang/golang.org/x/net, without qualifiers, a subpath or percent-encoding")
         if "purls" in entry and not entry["purls"]:
             raise Invalid(f"{at}: `purls` is empty")
         if "statement" not in entry:
