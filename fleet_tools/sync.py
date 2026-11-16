@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fleet_tools import agents_md, config, drift, identity, marketplace, vendor
+from fleet_tools import agents_md, config, drift, identity, marketplace, release, vendor
 
 HELP = ("sync fleet's content into the consumer at this fleet's commit: AGENTS.md's fleet blocks (replaced, or "
         "inserted under their heading; nothing outside the markers changes), the vendored plugin files (.claude/skills/"
@@ -12,7 +12,7 @@ HELP = ("sync fleet's content into the consumer at this fleet's commit: AGENTS.m
         "(the version, and the commit its tag points at, which tools/fleet runs fleet at: taken from the workflow pins at "
         "that version, else from `git ls-remote` of the tag, or given as --commit). That commit must be this fleet's "
         "own; --to gives the version the markers, the notes and .fleet/version carry. --self syncs fleet's own "
-        "checkout instead")
+        "checkout instead: its AGENTS.md blocks, whose markers carry no version, and its fixture consumers")
 REPOSITORY = "https://github.com/AnthonyPluth/fleet"
 INSTALL = 'uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet'
 
@@ -91,22 +91,12 @@ def sync(root: Path, version: str, fleet: Path | None = None, commit: str | None
     return report
 
 
-def marker_version(text: str) -> str:
-    versions = sorted({block.version for block in agents_md.blocks(text)}, key=agents_md.version_key)
-    if len(versions) != 1:
-        raise SyncError(f"{agents_md.AGENTS}: its fleet markers carry {', '.join(versions) or 'no version'}, not one "
-                        "version (fleet release prepare stamps them; fleet self-check names the one)")
-    return versions[0]
-
-
 def sync_self(root: Path) -> list[str]:
-    from fleet_tools import release
-
     path = root / agents_md.AGENTS
     if not path.is_file() or not (root / agents_md.SECTIONS).is_dir():
         raise SyncError(f"{root} isn't fleet's checkout (it needs {agents_md.AGENTS} and {agents_md.SECTIONS.as_posix()}/)")
     text = path.read_text(encoding="utf-8")
-    synced, changes = agents_md.sync(text, agents_md.sections(root), marker_version(text))
+    synced, changes = agents_md.sync(text, agents_md.sections(root), None)
     report = [f"{agents_md.AGENTS}: {change}" for change in changes]
     consumers = release.consumers(root)
     labels = {}
@@ -141,8 +131,9 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--commit", metavar="SHA", help="the commit the tag --to points at, for .fleet/version (default: the "
                         "workflow pins' at that version, else the tag's from `git ls-remote`)")
     parser.add_argument("--self", action="store_true", help="fleet's own checkout instead of a consumer: its AGENTS.md "
-                        "blocks and its fixture consumers (tests/fixtures/consumer-*) from its own tree, each at the "
-                        "version its markers and .fleet/version already carry (fleet release prepare moves those)")
+                        "blocks, with no version in their markers, and its fixture consumers (tests/fixtures/consumer-*) "
+                        "from its own tree, each at the version its markers and .fleet/version already carry (the "
+                        f"fixtures' is frozen at {release.FIXTURE_VERSION})")
 
 
 def run(args: argparse.Namespace) -> int:

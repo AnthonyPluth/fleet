@@ -14,6 +14,7 @@ VERSION = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 COMMIT = identity.COMMIT
 LAST_WITHOUT_COMMIT = "v1.0.0"
 BEGIN = re.compile(r"<!-- fleet:begin (?P<name>[a-z0-9-]+) (?P<version>v\d+\.\d+\.\d+) -->")
+OWN_BEGIN = re.compile(r"<!-- fleet:begin (?P<name>[a-z0-9-]+)(?: (?P<version>v\d+\.\d+\.\d+))? -->")
 END = re.compile(r"<!-- fleet:end (?P<name>[a-z0-9-]+) -->")
 MARKER = re.compile(r"<!-- fleet:(?:begin|end)\b")
 FRONT_MATTER = re.compile(r"\A---\n(?P<fields>(?:[a-z-]+: .*\n)+)---\n\n?")
@@ -123,8 +124,9 @@ def sections_at(version: str, own: bool, root: Path | None = None) -> dict[str, 
     return sections(root) if own else tagged_sections(version, root)
 
 
-def render(section: Section, version: str) -> str:
-    return f"<!-- fleet:begin {section.name} {version} -->\n{section.body}<!-- fleet:end {section.name} -->"
+def render(section: Section, version: str | None) -> str:
+    label = "" if version is None else f" {version}"
+    return f"<!-- fleet:begin {section.name}{label} -->\n{section.body}<!-- fleet:end {section.name} -->"
 
 
 def lines_with_offsets(text: str) -> list[tuple[int, str]]:
@@ -135,18 +137,18 @@ def lines_with_offsets(text: str) -> list[tuple[int, str]]:
     return offsets
 
 
-def blocks(text: str) -> list[Block]:
+def blocks(text: str, own: bool = False) -> list[Block]:
     found: list[Block] = []
     open_block: tuple[str, str, int, int] | None = None
     for offset, line in lines_with_offsets(text):
         content = line.rstrip("\n")
-        begin, end = BEGIN.fullmatch(content), END.fullmatch(content)
+        begin, end = (OWN_BEGIN if own else BEGIN).fullmatch(content), END.fullmatch(content)
         if begin:
             if open_block:
                 raise MarkerError(f"{AGENTS}: `{content}` opens a block inside `{open_block[0]}`")
             if any(block.name == begin.group("name") for block in found):
                 raise MarkerError(f"{AGENTS}: the {begin.group('name')} block appears twice")
-            open_block = (begin.group("name"), begin.group("version"), offset, offset + len(line))
+            open_block = (begin.group("name"), begin.group("version") or "", offset, offset + len(line))
         elif end:
             if not open_block or open_block[0] != end.group("name"):
                 raise MarkerError(f"{AGENTS}: `{content}` closes no open {end.group('name')} block")
@@ -160,9 +162,9 @@ def blocks(text: str) -> list[Block]:
     return found
 
 
-def outside(text: str) -> str:
+def outside(text: str, own: bool = False) -> str:
     pieces, position = [], 0
-    for block in blocks(text):
+    for block in blocks(text, own):
         pieces += [text[position:block.start], f"<!-- fleet block {block.name} -->"]
         position = block.end
     return "".join([*pieces, text[position:]])
@@ -194,7 +196,7 @@ def heading_end(text: str, heading: str) -> int | None:
     return last if inside else None
 
 
-def insert(text: str, section: Section, version: str) -> str:
+def insert(text: str, section: Section, version: str | None) -> str:
     block = render(section, version)
     position = heading_end(text, section.heading)
     if position is None:
@@ -206,11 +208,12 @@ def insert(text: str, section: Section, version: str) -> str:
     return f"{before}\n{block}\n{after}"
 
 
-def sync(text: str, shipped: dict[str, Section], version: str) -> tuple[str, list[str]]:
-    found = blocks(text)
+def sync(text: str, shipped: dict[str, Section], version: str | None) -> tuple[str, list[str]]:
+    found = blocks(text, own=version is None)
     unknown = [block.name for block in found if block.name not in shipped]
     if unknown:
-        raise MarkerError(f"{AGENTS}: fleet {version} ships no {', '.join(unknown)} block; remove it (see CHANGELOG.md)")
+        fleet = "fleet" if version is None else f"fleet {version}"
+        raise MarkerError(f"{AGENTS}: {fleet} ships no {', '.join(unknown)} block; remove it (see CHANGELOG.md)")
     changes = []
     for block in reversed(found):
         rendered = render(shipped[block.name], version)

@@ -2,7 +2,7 @@
 
 How an app calls fleet's reusable workflows, configures `[tool.fleet]` in its `pyproject.toml` and syncs fleet's content. The steps below take an app from nothing to every piece; the sections after them hold each piece's caller and inputs.
 
-The snippets name the release as `vX.Y.Z` until fleet's first release, and each release stamps them with its own version (`fleet release prepare`, [release.md](release.md)); `fleet self-check` fails when a snippet's version and `VERSION` disagree. `<commit>` is the full SHA the tag points at (`git ls-remote https://github.com/AnthonyPluth/fleet vX.Y.Z`); Dependabot moves it from then on. What a version number promises is in [release.md](release.md#what-a-version-number-promises).
+The snippets name the release as `vX.Y.Z`: every merge to fleet's `main` is a release ([release.md](release.md)), so nothing in fleet names a version, and `fleet self-check` fails on a snippet that names any but that placeholder. Take the newest release from [fleet's releases](https://github.com/AnthonyPluth/fleet/releases). `<commit>` is the full SHA its tag points at (`git ls-remote https://github.com/AnthonyPluth/fleet vX.Y.Z`); Dependabot moves both from then on. What a version number promises is in [release.md](release.md#what-a-version-number-promises).
 
 ## Adopting, step by step
 
@@ -12,7 +12,7 @@ The snippets name the release as `vX.Y.Z` until fleet's first release, and each 
 4. **Sync fleet's content** once by hand, from fleet at the pins' commit: `fleet sync` writes the `AGENTS.md` blocks, the vendored `.claude/` files, the shim `tools/fleet` and `.fleet/version` (the release on line 1, and on line 2 the commit the pins name, which `tools/fleet` runs fleet at, so a moved tag can't change what runs). Put the empty markers in `AGENTS.md` first ([AGENTS.md blocks](#agentsmd-blocks)); from then on `sync.yml` opens the sync pull requests.
 
    ```sh
-   uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to v5.0.0
+   uvx --from "git+https://github.com/AnthonyPluth/fleet@<commit>" fleet sync --to vX.Y.Z
    tools/fleet drift
    git add .fleet/version tools/fleet AGENTS.md .claude/
    ```
@@ -67,7 +67,7 @@ jobs:
       security-events: write   # the SARIF uploads
       actions: read            # Scorecard
       id-token: write          # Scorecard publishes its results
-    uses: AnthonyPluth/fleet/.github/workflows/security.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/security.yml@<commit>   # vX.Y.Z
     with:
       code-paths: ^(waypoint|frontend/src|\.semgrep)/
       semgrep-paths: waypoint run.py frontend/src
@@ -171,7 +171,7 @@ jobs:
     permissions:
       contents: read   # count the commits since the last scan
       issues: write    # read the earlier issues and open the reminder
-    uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/deep-scan-due.yml@<commit>   # vX.Y.Z
 ```
 
 Inputs: `dry-run` (default `false`; print the issue instead of opening it) and `fleet-ref`.
@@ -202,7 +202,7 @@ jobs:
       pull-requests: write     # the comment
       statuses: write          # the "Second review" status ("Agent review" too, with first-review: true)
       actions: write           # start the merge gate, and look up the runs that set "Second review"
-    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/agent-review.yml@<commit>   # vX.Y.Z
     with:
       generated: |
         docs/openapi.json
@@ -234,7 +234,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | `max-turns` | `60` | The most round trips to the model a review may take |
 | `second-review-labels` | `safety-critical,security` | Labels that make a pull request risky, comma-separated |
 | `second-review-paths` | none | Changed paths that make a pull request risky, one glob per line (`**` spans directories; `!` starts an exception within this list), on top of `second-review-always`'s. Setting it requires `.github/agent-review/invariants.md` |
-| `second-review-always` | `.github/**`, `.claude/**`, `.mcp.json` and `!.claude/skills/*/references/**/*.md` | Changed paths that always make a pull request risky, one glob per line, matched whatever their case; a line starting with `!` is an exception, matched exactly ([Which paths are always risky](#which-paths-are-always-risky)). The default is everything under `.github/` and `.claude/` but a skill's reference documents, and the root `.mcp.json`. A caller that wants the second review on fewer paths lists them; fleet's own caller lists every reusable workflow, `release.yml` and `release-check.yml`, the release tools (`fleet_tools/release.py`, `fleet_tools/next_version.py`), the scripts and agent-review files, CODEOWNERS, `.claude/**` (with no exception), `plugins/**` and `shim/**` (tests keep new reusable workflows and the release's files in the list) |
+| `second-review-always` | `.github/**`, `.claude/**`, `.mcp.json` and `!.claude/skills/*/references/**/*.md` | Changed paths that always make a pull request risky, one glob per line, matched whatever their case; a line starting with `!` is an exception, matched exactly ([Which paths are always risky](#which-paths-are-always-risky)). The default is everything under `.github/` and `.claude/` but a skill's reference documents, and the root `.mcp.json`. A caller that wants the second review on fewer paths lists them; fleet's own caller lists every reusable workflow, `release.yml` and `release-check.yml`, the release tools (`fleet_tools/release.py`, `fleet_tools/next_version.py` and `fleet_tools/cli.py`, which `release.yml` runs), the scripts and agent-review files, CODEOWNERS, `.claude/**` (with no exception), `plugins/**` and `shim/**` (tests keep new reusable workflows and the release's files in the list) |
 | `second-review-budget-usd` | `10` | The most the second review may spend, in US dollars |
 | `second-review-max-turns` | `120` | The most round trips to the model the second review may take |
 | `environment` | none | The GitHub environment that holds the secrets: the `review` and `second-review` jobs run in it, for a pull request from the repository's own branches only ([below](#the-review-secrets-in-an-environment)). Empty runs them in none, as before |
@@ -293,7 +293,7 @@ jobs:
       contents: read           # AGENTS.md, and the default branch's commits for the loop stats
       issues: write            # the one issue
       pull-requests: read      # the pull requests in the window
-    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/review-mining.yml@<commit>   # vX.Y.Z
 ```
 
 | Input | Default | What |
@@ -320,7 +320,7 @@ jobs:
   tasks:
     permissions:
       issues: write            # open the task issues and link the report's rows
-    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/mining-tasks.yml@<commit>   # vX.Y.Z
 ```
 
 | Input | Default | What |
@@ -451,7 +451,7 @@ jobs:
       statuses: write          # the "Merge gate" status
       actions: write           # read the pull request's workflow runs, and start main's release after a merge
       checks: read             # other apps' check runs
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate.yml@<commit>   # vX.Y.Z
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       pr: ${{ inputs.pr }}
@@ -509,7 +509,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # vX.Y.Z
     with:
       pr: ${{ github.event.pull_request.number }}
 ```
@@ -536,14 +536,14 @@ jobs:
     if: github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # vX.Y.Z
     with:
       pr: ${{ github.event.pull_request.number }}
   codex-comment:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
     permissions:
       actions: write   # start the merge gate
-    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/merge-gate-threads.yml@<commit>   # vX.Y.Z
     with:
       pr: ${{ github.event.issue.number }}
 ```
@@ -559,7 +559,7 @@ fleet ships the parts of `AGENTS.md` the apps share as blocks, one file each in 
 ```md
 ## Mistakes that keep coming back
 
-<!-- fleet:begin mistakes v5.0.0 -->
+<!-- fleet:begin mistakes vX.Y.Z -->
 …fleet's text, verbatim…
 <!-- fleet:end mistakes -->
 
@@ -625,7 +625,7 @@ NODE_CHECK="esrap/types/public.d.ts eslint-plugin-svelte"
     ]
   },
   "extraKnownMarketplaces": {
-    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "v5.0.0"}}
+    "fleet": {"source": {"source": "github", "repo": "AnthonyPluth/fleet", "ref": "vX.Y.Z"}}
   }
 }
 ```
@@ -634,7 +634,7 @@ The plugin isn't enabled: the vendored copies already give every session the ski
 
 ## Checks
 
-`.github/workflows/checks.yml` (`workflow_call`) replaces the app's own `fleet-checks` job: it checks out the app with its history (into `app/`, beside fleet's `.fleet/`, so the app's own `.fleet/version` is never in the fleet checkout's way), then runs `fleet checks` (with `--commits <base>..<head>` and `--pr-event "$GITHUB_EVENT_PATH"` on a pull request, plain on `main`; the description is read from the payload file, never from an expression) and `fleet drift`, both from fleet at the workflow's own pinned ref (the FLEET_REF convention, so a pull request can't choose which fleet checks it). `fleet drift` reads the blocks and vendored files from that checkout when `.fleet/version` names its commit, and those of another version from fleet's history (the checkout brings the tags), so the content may trail the workflow pins within one major while a sync pull request is open. `contents: read` only, no secrets. The caller keeps the triggers and the concurrency group and passes its runner.
+`.github/workflows/checks.yml` (`workflow_call`) replaces the app's own `fleet-checks` job: it checks out the app with its history (into `app/`, beside fleet's `.fleet/`, so the app's own `.fleet/version` is never in the fleet checkout's way), then runs `fleet checks` (with `--commits <base>..<head>` and `--pr-event "$GITHUB_EVENT_PATH"` on a pull request, plain on `main`; the description is read from the payload file, never from an expression) and `fleet drift`, both from fleet at the workflow's own pinned ref (the fleet-ref convention, so a pull request can't choose which fleet checks it). `fleet drift` reads the blocks and vendored files from that checkout when `.fleet/version` names its commit, and those of another version from fleet's history (the checkout brings the tags), so the content may trail the workflow pins within one major while a sync pull request is open. `contents: read` only, no secrets. The caller keeps the triggers and the concurrency group and passes its runner.
 
 ```yaml
 name: fleet checks
@@ -656,7 +656,7 @@ jobs:
   checks:
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/checks.yml@<commit>   # vX.Y.Z
     with:
       runs-on: ${{ vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '"ubuntu-latest"' }}
 ```
@@ -789,7 +789,7 @@ jobs:
     permissions:
       contents: read           # the checkout; the pull request is pushed with the App token
       issues: write            # the migration issue
-    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/sync.yml@<commit>   # vX.Y.Z
     with:
       app-id: ${{ vars.FLEET_BOT_APP_ID }}
       dry-run: ${{ inputs.dry-run || false }}
@@ -833,7 +833,7 @@ jobs:
     name: Control smoke
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # vX.Y.Z
     with:
       make-target: control-smoke
       timeout-minutes: 20
@@ -850,7 +850,7 @@ jobs:
     name: Control smoke
     permissions:
       contents: read
-    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/verify.yml@<commit>   # vX.Y.Z
     with:
       make-target: control-smoke
       timeout-minutes: 20
@@ -902,7 +902,7 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    uses: AnthonyPluth/fleet/.github/workflows/docs.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/docs.yml@<commit>   # vX.Y.Z
 ```
 
 That is Runway's caller as it is: the defaults are its build. Waypoint keeps its own paths (`demo/**`, `frontend/**`, the fonts and the logo), passes its `vars.RUNS_ON` expression as `runs-on`, and moves its demo steps into a Makefile target (`make docs-site`: `npm run build:demo` in `frontend/`, `node demo/verify.mjs`, `make docs-build`, then the copy of `frontend/demo-dist/` into `docs/dist/demo/`, in that order, since the site build empties `docs/dist`):
@@ -954,7 +954,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/screenshot-diff.yml@<commit>   # vX.Y.Z
     with:
       dir: screenshots/
 ```
@@ -985,7 +985,7 @@ permissions: {}
 
 jobs:
   cancel:
-    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/cancel-on-close.yml@<commit>   # vX.Y.Z
     with:
       groups: '["docker-image-refs/pull/{0}/merge", "security-refs/pull/{0}/merge", "verify-{0}"]'
 ```
@@ -1011,7 +1011,7 @@ jobs:
     permissions:
       contents: write          # the ceiling every job of the called workflow is checked against; the build job takes contents: read
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # vX.Y.Z
     with:
       image: runway
       smoke-env: |
@@ -1024,7 +1024,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # vX.Y.Z
     with:
       image: runway
       publish: true
@@ -1043,7 +1043,7 @@ jobs:
     permissions:
       contents: write          # the ceiling every job of the called workflow is checked against; the build job takes contents: read
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # vX.Y.Z
     with:
       image: darkroom
       smoke-port: 8000
@@ -1063,7 +1063,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/docker.yml@<commit>   # vX.Y.Z
     with:
       image: darkroom
       second-image: darkroom-browser
@@ -1131,7 +1131,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # v5.0.0
+    uses: AnthonyPluth/fleet/.github/workflows/tidy-releases.yml@<commit>   # vX.Y.Z
     with:
       image: waypoint
       versions: ${{ inputs.versions }}

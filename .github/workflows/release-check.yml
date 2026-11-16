@@ -1,11 +1,14 @@
 name: Release check
 
 # `fleet release check` on every pull request but Dependabot's (docs/release.md): it adds its changelog fragment
-# (changelog.d/<name>.md), every fragment parses, it adds no entry to the frozen CHANGELOG.md and changes no release's
-# notes, and its title and description mark it breaking exactly when its fragment is `kind: breaking`, so a breaking
-# change can't be titled a minor or a patch, nor a major lack the entry that says what a consumer has to change; a
-# `kind: added` fragment needs a `feat:` title (or a breaking one), so an addition can't be titled a patch.
-# Dependabot's bumps carry no fragment; a release pull request (it changes VERSION) folds them and adds none.
+# (changelog.d/<name>.md), every fragment parses, it changes or deletes no merged fragment (each release's notes are the
+# fragments its tree adds to the previous tag's), it adds no entry to the frozen CHANGELOG.md and changes nothing in the
+# frozen changelog.d/released/, and its title and description mark it breaking exactly when its fragment is `kind:
+# breaking`, so a breaking change can't be titled a minor or a patch, nor a major lack the entry that says what a
+# consumer has to change; a `kind: added` fragment needs a `feat:` title (or a breaking one), so an addition can't be
+# titled a patch. The title matters because merging the pull request releases it (release.yml): the merge commit's
+# subject is the title, and the planner reads it. Dependabot's bumps carry no fragment; their release notes list them by
+# their subject.
 #
 # It runs again when the pull request is edited, so a new title or description is checked too, and apart from fleet
 # CI, whose `make check` an edit doesn't start again. It reads the pull request's own tree with a read-only token and

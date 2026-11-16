@@ -24,7 +24,7 @@ name: Docker image
 # (`${VAR:?}`) is unset, with compose-env's variables added to the job's environment.
 #
 # Versions: `fleet next-version` from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the
-# FLEET_REF convention), never from a ref the pull request names: the step from the highest version ever tagged by the
+# fleet-ref convention), never from a ref the pull request names: the step from the highest version ever tagged by the
 # commits since the last one in this history (feat: a minor, a ! or BREAKING CHANGE: a major, else a patch), and skip
 # when the commit isn't main's newest any more, so re-running an old build never moves :latest back to it. On a pull
 # request it doesn't run: the image is built and its start checked (for a caller that builds pull requests), and nothing
@@ -131,9 +131,6 @@ on:
       skip:
         description: '"true" when the commit isn''t main''s newest any more and nothing is released; the publish call is skipped on it.'
         value: ${{ jobs.build.outputs.skip }}
-
-env:
-  FLEET_REF: v5.0.0   # stamped by the release
 
 permissions: {}
 

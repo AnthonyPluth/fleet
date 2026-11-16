@@ -5,7 +5,7 @@ import unittest
 from typing import Any
 
 from fleet_tools import agent_review as ar
-from fleet_tools import cli, release, self_check
+from fleet_tools import cli, self_check
 
 WORKFLOWS = cli.ROOT / ".github" / "workflows"
 REVIEW = WORKFLOWS / "agent-review.yml"
@@ -83,7 +83,7 @@ class ReusableWorkflowTest(unittest.TestCase):
         self.assertEqual(mapping(outputs["verdict"])["value"], "${{ jobs.review.outputs.verdict }}")
         self.assertEqual(mapping(outputs["record"])["value"], "${{ jobs.review.outputs.record }}")
         self.assertEqual(mapping(mapping(mapping(self.workflow["jobs"])["review"])["outputs"])["record"], "${{ steps.plan.outputs.record }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(cli.ROOT))})
+        self.assertNotIn("env", self.workflow)
         self.assertEqual(self.workflow["permissions"], "{}")
         self.assertNotIn("concurrency", self.workflow)
 
@@ -681,7 +681,8 @@ class FleetsOwnSecondReviewScopeTest(unittest.TestCase):
 
     def test_the_release_check_and_the_release_tools_are_covered(self) -> None:
         listed = always_risky_in_caller()
-        for path in (".github/workflows/release-check.yml", "fleet_tools/release.py", "fleet_tools/next_version.py"):
+        for path in (".github/workflows/release-check.yml", "fleet_tools/release.py", "fleet_tools/next_version.py",
+                     "fleet_tools/cli.py"):
             with self.subTest(path=path):
                 self.assertIn(path, listed)
                 self.assertTrue(any(ar.matches(path, pattern) for pattern in listed))

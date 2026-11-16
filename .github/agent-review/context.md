@@ -1,6 +1,6 @@
 ## fleet
 
-fleet is the shared agent build safeguards of three apps (Darkroom, Waypoint and Runway): reusable GitHub Actions workflows, the `fleet` command (`fleet_tools/`, standard library only), the Claude Code plugin and the shared `AGENTS.md` blocks. The apps call it by pinned reference, so every change here is a change to three repositories' CI, and a workflow or script change is the riskiest kind: read `AGENTS.md`'s "Rules" closely, "The FLEET_REF convention" and "fleet follows the stricter convention" above all.
+fleet is the shared agent build safeguards of three apps (Darkroom, Waypoint and Runway): reusable GitHub Actions workflows, the `fleet` command (`fleet_tools/`, standard library only), the Claude Code plugin and the shared `AGENTS.md` blocks. The apps call it by pinned reference, so every change here is a change to three repositories' CI, and a workflow or script change is the riskiest kind: read `AGENTS.md`'s "Rules" closely, "The fleet-ref convention" and "fleet follows the stricter convention" above all.
 
 ## Private data here
 
@@ -12,4 +12,4 @@ None: fleet has no generated files, and `omitted.txt` lists only lockfiles (`poe
 
 ## Where things are
 
-`fleet_tools/` is the command, with `checks/` one module per check; `.github/workflows/` the reusable workflows beside fleet's own CI and self-test; `.github/scripts/` and `.github/agent-review/` what those workflows run; `tests/` the `unittest` suite. A change to a reusable workflow's inputs, a status name or an `AGENTS.md` block is a breaking change unless the old behaviour stays the default, and every change adds a changelog fragment, `changelog.d/<name>.md` (`CHANGELOG.md` is frozen at 4.0.0; `fleet release prepare` folds the fragments into `changelog.d/released/X.Y.Z.md`).
+`fleet_tools/` is the command, with `checks/` one module per check; `.github/workflows/` the reusable workflows beside fleet's own CI and self-test; `.github/scripts/` and `.github/agent-review/` what those workflows run; `tests/` the `unittest` suite. A change to a reusable workflow's inputs, a status name or an `AGENTS.md` block is a breaking change unless the old behaviour stays the default, and every change adds a changelog fragment, `changelog.d/<name>.md` (`CHANGELOG.md` is frozen at 4.0.0 and `changelog.d/released/` at 5.0.0). Every merge to `main` is a release (`.github/workflows/release.yml`, `docs/release.md`): its title says the kind of change, and its fragment is that release's notes, so a pull request's title and fragment are part of the release it makes.

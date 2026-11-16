@@ -2,7 +2,7 @@
 
 Every change to fleet is a change to three repositories' CI, so each one is listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and fleet uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html): a removed or renamed input, a renamed status or a removed `AGENTS.md` block is a major change unless the old behaviour stays the default.
 
-This file is frozen at 4.0.0. Each pull request since adds its entry as a fragment in `changelog.d/`, and `fleet release prepare` folds a release's fragments into its notes, `changelog.d/released/X.Y.Z.md` (`fleet release notes X.Y.Z` prints them): see [Changelog fragments](docs/release.md#changelog-fragments).
+This file is frozen at 4.0.0. Each pull request since adds its entry as a fragment in `changelog.d/`. The releases 4.1.0 and 5.0.0 folded theirs into their notes, `changelog.d/released/X.Y.Z.md`; since then every merge to `main` is a release, whose notes are the fragments it adds (its GitHub Release, and `fleet release notes X.Y.Z --since vW`): see [Changelog fragments](docs/release.md#changelog-fragments).
 
 ## [4.0.0] - 2026-11-14
 

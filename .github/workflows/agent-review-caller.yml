@@ -51,6 +51,7 @@ jobs:
         .claude/**
         plugins/**
         shim/**
+        fleet_tools/cli.py
         fleet_tools/next_version.py
         fleet_tools/release.py
     secrets:

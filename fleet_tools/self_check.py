@@ -7,12 +7,13 @@ from typing import TypeAlias
 
 from fleet_tools import release
 
-HELP = ("check fleet's own conventions (the FLEET_REF stamp on every reusable workflow, fleet's checkouts at the "
-        "workflow's own commit behind their guard step, the self-test's calls, the agent review's environment on its "
-        "two review jobs only, "
-        f"VERSION agreeing with the newest release's notes (changelog.d/released/, or CHANGELOG.md, frozen at {release.FROZEN}), "
-        "plugin.json, pyproject.toml and the snippets in docs/, every changelog fragment (changelog.d/<name>.md) "
-        "parsing, and no doc or workflow naming an event Actions doesn't have)")
+HELP = ("check fleet's own conventions: no release stamp anywhere (no VERSION file, no FLEET_REF in a workflow, "
+        f"plugin.json's and pyproject.toml's version the constant {release.UNVERSIONED}, the snippets in docs/ at the "
+        f"placeholder {release.PLACEHOLDER}, fleet's own AGENTS.md blocks with no version in their markers and equal to "
+        "agents-md/sections/), fleet's checkouts at the workflow's own commit behind their guard step, the self-test's "
+        "calls, the agent review's environment on its two review jobs only, the changelog (CHANGELOG.md frozen at "
+        f"{release.FROZEN}, changelog.d/released/ at {release.FOLDED}, every fragment, changelog.d/<name>.md, parsing), "
+        "and no doc or workflow naming an event Actions doesn't have")
 
 WORKFLOWS = Path(".github/workflows")
 SELF_TEST = "self-test.yml"
@@ -26,13 +27,13 @@ GUARD_RUN = ('[ -n "$FLEET_REF_INPUT" ] || [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ 
              'Update the runner, or pass fleet-ref."; exit 1; }; echo "fleet at ${FLEET_REF_INPUT:-$WORKFLOW_SHA}"')
 OWN_COMMIT_JOB = "checks-own-commit"
 READS_FLEET_REF = re.compile(r"\benv\s*\.\s*FLEET_REF\b|\$\{?FLEET_REF\b")
+STAMP = "FLEET_REF"
 REVIEW_WORKFLOW = "agent-review.yml"
 REVIEW_ENVIRONMENT_INPUT = "environment"
 REVIEW_ENVIRONMENT_JOBS = ("review", "second-review")
 REVIEW_ENVIRONMENT = "${{github.event.pull_request.head.repo.full_name==github.repository&&inputs.environment||''}}"
 REVIEW_ENVIRONMENT_SHOWN = "${{ github.event.pull_request.head.repo.full_name == github.repository && inputs.environment || '' }}"
 READS_ENVIRONMENT_INPUT = re.compile(r"\binputs\s*(?:\.\s*environment\b|\[\s*['\"]environment['\"]\s*\])")
-VERSION_PATTERN = release.VERSION_PATTERN
 NOT_ACTIONS_EVENTS = ("pull_request_review_thread",)
 EVENT_NAME_FILES = ("README.md", "docs/*.md", ".github/workflows/*.y*ml", "plugins/**/*.md")
 KEY_PATTERN = re.compile(r"""^(?P<q>["']?)(?P<key>[^"':#][^"':]*)(?P=q)\s*:(?:\s+(?P<value>.*))?$""")
@@ -397,37 +398,24 @@ def is_reusable(workflow: Node) -> bool:
     return "workflow_call" in re.findall(r"[A-Za-z_]+", trigger)
 
 
-def expected_ref(version: str) -> str:
-    return "main" if version.startswith("0.") else f"v{version}"
-
-
 def check(root: Path) -> list[str]:
     errors: list[str] = []
-    try:
-        version = release.read_version(root)
-    except release.ReleaseError as error:
-        return [str(error)]
-    expected = expected_ref(version)
     directory = root / WORKFLOWS
     files = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
     trees: dict[str, Node] = {}
     for path in files:
         name = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
+        where: Where = {}
         try:
-            workflow = parse(source)
+            workflow = parse(source, where)
         except Unreadable as error:
             errors.append(unreadable(name, error))
             continue
         trees[path.name] = workflow
+        errors.extend(check_stamps(name, where))
         if not is_reusable(workflow) or not isinstance(workflow, dict):
             continue
-        env = workflow.get("env")
-        ref = env.get("FLEET_REF") if isinstance(env, dict) else None
-        if not isinstance(ref, str) or not ref:
-            errors.append(f"{name}: a reusable workflow needs a top-level `env: FLEET_REF: {expected}`")
-        elif ref != expected:
-            errors.append(f"{name}: FLEET_REF is {ref!r}, but VERSION {version} needs {expected!r}")
         errors.extend(check_fleet_checkouts(name, workflow))
         errors.extend(check_fleet_ref_reads(name, source))
         if path.name == REVIEW_WORKFLOW:
@@ -438,8 +426,15 @@ def check(root: Path) -> list[str]:
     elif SELF_TEST in trees:
         errors.extend(check_self_test(self_test.relative_to(root).as_posix(), trees[SELF_TEST]))
     errors.extend(check_event_names(root))
-    errors.extend(release.check(root, version))
+    errors.extend(release.check(root))
     return errors
+
+
+def check_stamps(name: str, where: Where) -> list[str]:
+    return [f"{name}:{number + 1}: sets {STAMP} ({'.'.join(map(str, trail))}), the release stamp fleet no longer has: "
+            "a workflow's fleet files come from `${{ inputs.fleet-ref || job.workflow_sha }}`, and nothing in the tree "
+            "names a version (docs/release.md)"
+            for trail, number in sorted(where.items(), key=lambda item: item[1]) if trail and trail[-1] == STAMP]
 
 
 def check_event_names(root: Path) -> list[str]:
@@ -489,8 +484,8 @@ def is_guard(step: Node) -> bool:
 
 
 def check_fleet_ref_reads(name: str, source: str) -> list[str]:
-    return [f"{name}:{number}: reads FLEET_REF ({code.strip()[:80]}), the release's stamp only: fleet's files come from "
-            "`${{ inputs.fleet-ref || job.workflow_sha }}`"
+    return [f"{name}:{number}: reads FLEET_REF ({code.strip()[:80]}), a release stamp fleet no longer has: fleet's files "
+            "come from `${{ inputs.fleet-ref || job.workflow_sha }}`"
             for number, line in enumerate(source.splitlines(), start=1)
             if READS_FLEET_REF.search(code := strip_comment(line))]
 

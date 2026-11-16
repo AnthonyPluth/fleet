@@ -1,6 +1,6 @@
 [project]
 name = "fleet"
-version = "5.0.0"   # the same as VERSION (fleet self-check checks it); nothing reads it for fleet's identity
+version = "0.0.0"   # a constant, never a release: fleet stamps no version (fleet self-check holds it), docs/release.md
 description = "Shared agent build safeguards: reusable workflows, checks and the Claude Code plugin"
 readme = "README.md"
 license = "AGPL-3.0-only"

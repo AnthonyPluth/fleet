@@ -251,13 +251,19 @@ class Fixtures(unittest.TestCase):
             text = (consumer / "AGENTS.md").read_text(encoding="utf-8")
             self.assertIn(f"<!-- fleet:end mistakes -->\n\n- **{first}**", text)
 
-    def test_fleets_own_agents_md_carries_the_current_blocks(self) -> None:
+    def test_fleets_own_agents_md_carries_the_current_blocks_with_no_version(self) -> None:
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertEqual(agents_md.sync(text, SHIPPED, sync_command.marker_version(text))[0], text, REGENERATE.format("."))
-        self.assertEqual(len(agents_md.blocks(text)), len(agents_md.ORDER))
+        self.assertEqual(agents_md.sync(text, SHIPPED, None)[0], text, REGENERATE.format("."))
+        found = agents_md.blocks(text, own=True)
+        self.assertEqual([block.name for block in found], list(agents_md.ORDER))
+        self.assertEqual({block.version for block in found}, {""})
+        self.assertIn("<!-- fleet:begin mistakes -->\n", text)
+        with self.assertRaisesRegex(agents_md.MarkerError, "a malformed fleet marker: `<!-- fleet:begin starting-work -->`"):
+            agents_md.blocks(text)
 
     def test_the_fixtures_carry_one_version_and_the_made_up_commit(self) -> None:
-        self.assertEqual(VERSION, "v" + release.read_version(ROOT), "fleet release prepare moves the fixtures with VERSION")
+        self.assertEqual((VERSION, release.FIXTURE_VERSION), ("v5.0.0", "v5.0.0"),
+                         "the fixtures stay at v5.0.0, the last stamped release, for good")
         for fixture in (WAYPOINT, RUNWAY, FIXTURES / "drifted"):
             with self.subTest(fixture=fixture.name):
                 self.assertEqual((fixture / ".fleet/version").read_text(encoding="utf-8"), f"{VERSION}\n{FIXTURE_COMMIT}\n")
@@ -274,7 +280,7 @@ class Fixtures(unittest.TestCase):
         caller = (ROOT / ".github" / "workflows" / "agent-review-caller.yml").read_text(encoding="utf-8")
         line = "- **fleet has no merge gate** (its agent review caller passes `merge-gate-workflow: \"\"`)"
         no_gate = 'merge-gate-workflow: ""' in caller
-        self.assertEqual(line in agents_md.outside(text), no_gate,
+        self.assertEqual(line in agents_md.outside(text, own=True), no_gate,
                          "fleet's AGENTS.md says agents mark ready by hand exactly while fleet has no merge gate caller")
         if no_gate:
             self.assertIn("the agent marks it ready by hand, as the block above says for an app with `auto-ready` off", text)
@@ -397,16 +403,16 @@ class SyncSelf(unittest.TestCase):
         self.assertEqual((code, out), (0, "fleet sync: fleet's AGENTS.md and fixture consumers match its tree already; nothing "
                                           "changed.\n"))
 
-    def test_it_keeps_the_markers_version_and_takes_no_other(self) -> None:
+    def test_it_writes_fleets_own_markers_without_a_version_and_takes_none(self) -> None:
         root = self.fleet()
+        clean = self.state(root)
         agents = root / "AGENTS.md"
         text = agents.read_text(encoding="utf-8")
-        agents.write_text(text.replace(f"fleet:begin mistakes {VERSION}", "fleet:begin mistakes v0.0.1"), encoding="utf-8")
-        before = self.state(root)
-        code, _, err = run("--self", "--root", str(root))
-        self.assertEqual(code, 2)
-        self.assertIn(f"AGENTS.md: its fleet markers carry v0.0.1, {VERSION}, not one version", err)
-        self.assertEqual(self.state(root), before)
+        agents.write_text(text.replace("<!-- fleet:begin mistakes -->", "<!-- fleet:begin mistakes v6.0.0 -->"), encoding="utf-8")
+        code, out, err = run("--self", "--root", str(root))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("AGENTS.md: replaced mistakes\n", out)
+        self.assertEqual(self.state(root), clean)
         for argv in (["--to", VERSION], ["--commit", FIXTURE_COMMIT]):
             with self.subTest(argv=argv):
                 code, _, err = run("--self", *argv, "--root", str(root))

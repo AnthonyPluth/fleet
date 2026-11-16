@@ -1,4 +1,4 @@
-name: Reusable stamped for a release
+name: Reusable with the release stamp fleet no longer has
 
 on: workflow_call
 

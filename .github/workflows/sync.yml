@@ -61,9 +61,6 @@ on:
         description: The pull request's or the issue's body, base64; empty for none.
         value: ${{ jobs.sync.outputs.body }}
 
-env:
-  FLEET_REF: v5.0.0   # stamped by the release
-
 permissions: {}
 
 # bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.
