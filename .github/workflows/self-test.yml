@@ -79,9 +79,10 @@ jobs:
           fi
           echo "The fail-on-findings check failed on the planted finding, as it should."
 
-  # `trivy-image-ignore-file`'s script against the real Trivy, at security.yml's pinned version: Trivy must honour the
-  # list the script writes for the entry's own path, and report the finding again for any other path and once the
-  # entry has expired. The vulnerable pin is written at run time, outside the workspace, so no scan of fleet sees it.
+  # `trivy-image-ignore-file` as it ships: the list trivy_ignore.py writes goes to the real Trivy through the same
+  # pinned trivy-action and the same `trivyignores` input the image job uses, at security.yml's pinned Trivy. Trivy must
+  # honour the list for the entry's own path, and report the finding for any other path and once the entry has expired.
+  # The vulnerable pin is written at run time, outside the workspace, so no scan of fleet sees it.
   accepted-finding:
     name: Trivy honours an accepted finding for its path only, until it expires
     runs-on: ubuntu-latest
@@ -97,11 +98,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Trivy
+        id: trivy
         env:
           TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
           TRIVY_BIN: ${{ runner.temp }}/trivy-bin
         run: .github/scripts/security-trivy-install.sh
-      - name: Trivy with the list the script writes
+      - name: Write a vulnerable pin and the lists the script makes of four ignore files
         env:
           WORK: ${{ runner.temp }}/accepted
         run: |
@@ -112,19 +114,79 @@ jobs:
           entry() {
             printf 'vulnerabilities:\n  - id: CVE-2018-18074\n    paths:\n      - %s\n    statement: A made-up reason, for the self-test\n    expired_at: %s\n' "$1" "$2"
           }
-          scan() {
-            python3 -I "$scripts/trivy_ignore.py" --file="$1.yaml" --out="$1.accepted.yaml"
-            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output "$1.json" --ignorefile "$1.accepted.yaml" app
-          }
-          reported() {
-            jq -e '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | index("CVE-2018-18074") != null' "$1.json" > /dev/null
-          }
           soon=$(date -u -d '+30 days' +%F)
           printf 'vulnerabilities: []\n' > none.yaml
           entry requirements.txt "$soon" > accepted.yaml
           entry other/requirements.txt "$soon" > elsewhere.yaml
           entry requirements.txt "$(date -u +%F)" > expired.yaml
-          for list in none accepted elsewhere expired; do scan "$list"; done
+          for list in none accepted elsewhere expired; do
+            python3 -I "$scripts/trivy_ignore.py" --file="$list.yaml" --out="$list.accepted.yaml"
+          done
+      - name: Scan with a list that accepts nothing
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/accepted/app
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/accepted/none.json
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: ${{ runner.temp }}/accepted/none.accepted.yaml
+      - name: Scan with the finding accepted for its path
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/accepted/app
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/accepted/accepted.json
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: ${{ runner.temp }}/accepted/accepted.accepted.yaml
+      - name: Scan with the finding accepted for another path
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/accepted/app
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/accepted/elsewhere.json
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: ${{ runner.temp }}/accepted/elsewhere.accepted.yaml
+      - name: Scan with an acceptance that expired today
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/accepted/app
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/accepted/expired.json
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: ${{ runner.temp }}/accepted/expired.accepted.yaml
+      - name: The finding is dropped only for its own path, and not once expired
+        env:
+          WORK: ${{ runner.temp }}/accepted
+        run: |
+          cd "$WORK"
+          reported() {
+            jq -e '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | index("CVE-2018-18074") != null' "$1.json" > /dev/null
+          }
+          for list in none accepted elsewhere expired; do jq -e '.SchemaVersion' "$list.json" > /dev/null; done
           reported none || { echo "::error::Trivy didn't report the planted CVE-2018-18074 at all"; exit 1; }
           if reported accepted; then echo "::error::Trivy reported a finding accepted for its path"; exit 1; fi
           reported elsewhere || { echo "::error::An entry for another path silenced the finding"; exit 1; }

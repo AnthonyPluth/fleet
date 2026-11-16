@@ -249,6 +249,16 @@ jobs:
           TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
           TRIVY_BIN: ${{ runner.temp }}/trivy-bin
         run: .fleet/.github/scripts/security-trivy-install.sh
+      # The checkout's own copy of the accepted image findings is checked here and never used (the image job reads the
+      # default branch's): a pull request that adds an entry the image job would refuse fails on that pull request,
+      # not on every later one that rebuilds the image.
+      - name: Check the accepted image findings in this checkout
+        if: ${{ inputs.trivy-image-ignore-file != '' }}
+        env:
+          IGNORE_FILE: ${{ inputs.trivy-image-ignore-file }}
+        run: |
+          if [ -L "$IGNORE_FILE" ] || ! [ -f "$IGNORE_FILE" ]; then echo "No file $IGNORE_FILE in this checkout: nothing to check."; exit 0; fi
+          env -u GITHUB_OUTPUT python3 -I .fleet/.github/scripts/trivy_ignore.py --file="$IGNORE_FILE" --out=/dev/null
       # fleet's scripts aren't the app's files: no scan sees them, as before.
       - name: Remove fleet's scripts from the workspace
         run: rm -rf .fleet

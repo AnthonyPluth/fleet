@@ -82,13 +82,25 @@ class WorkflowTest(unittest.TestCase):
         self.assertGreater(removal, index_of(job, "Build the image"))
         self.assertLess(removal, index_of(job, "Scan the image"))
 
-    def test_nothing_else_reads_the_input_and_the_file_scan_takes_no_list(self) -> None:
+    def test_the_file_scans_job_checks_the_checkouts_copy_without_using_it(self) -> None:
+        job = steps("trivy")
+        check = job[index_of(job, "Check the accepted image findings in this checkout")]
+        self.assertEqual(check["if"], SET)
+        self.assertEqual(check["env"], {"IGNORE_FILE": "${{ inputs.trivy-image-ignore-file }}"})
+        text = SECURITY.read_text(encoding="utf-8")
+        self.assertIn('env -u GITHUB_OUTPUT python3 -I .fleet/.github/scripts/trivy_ignore.py --file="$IGNORE_FILE" --out=/dev/null\n', text)
+        self.assertIn('if [ -L "$IGNORE_FILE" ] || ! [ -f "$IGNORE_FILE" ]; then', text)
+        self.assertNotIn("id", check)
+        self.assertLess(index_of(job, "Check the accepted image findings in this checkout"), index_of(job, "rm -rf .fleet"))
+        self.assertNotIn("trivyignores", str(job))
+        self.assertNotIn("steps.accepted", str(job))
+
+    def test_nothing_else_reads_the_input(self) -> None:
         text = SECURITY.read_text(encoding="utf-8")
         code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-        self.assertEqual(code.count(f"inputs.{INPUT}"), 3)
+        self.assertEqual(code.count(f"inputs.{INPUT}"), 5)
         self.assertEqual(code.count("trivyignores"), 1)
-        self.assertNotIn("trivyignores", str(steps("trivy")))
-        self.assertNotIn("trivy_ignore.py", str(steps("trivy")))
+        self.assertEqual(code.count("steps.accepted.outputs.file"), 1)
 
     def test_the_script_never_takes_a_ref_from_the_event(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
@@ -96,14 +108,24 @@ class WorkflowTest(unittest.TestCase):
             self.assertNotIn(name, source)
         self.assertNotIn("--ref", source)
 
-    def test_the_self_test_runs_the_pinned_trivy_with_the_scripts_list(self) -> None:
+    def test_the_self_test_hands_the_scripts_list_to_trivy_the_way_the_image_job_does(self) -> None:
         job = workflow(SELF_TEST)["jobs"]["accepted-finding"]
         pins = workflow()["env"]
         for name in ("TRIVY_VERSION", "TRIVY_SHA256_X64", "TRIVY_SHA256_ARM64"):
             self.assertEqual(job["env"][name], pins[name], name)
+        shipped = steps("image")[index_of(steps("image"), "Scan the image")]
+        scans = [step for step in job["steps"] if "trivyignores" in step.get("with", {})]
+        self.assertEqual([step["with"]["trivyignores"] for step in scans],
+                         [f"${{{{ runner.temp }}}}/accepted/{name}.accepted.yaml" for name in ("none", "accepted", "elsewhere", "expired")])
+        for step in scans:
+            self.assertEqual(step["uses"], shipped["uses"])
+            for same in ("skip-setup-trivy", "version", "severity", "ignore-unfixed"):
+                self.assertEqual(step["with"][same], shipped["with"][same], same)
+            self.assertTrue(step["with"]["trivyignores"].endswith(".yaml"))
+        self.assertTrue(shipped["with"]["trivyignores"] == "${{ steps.accepted.outputs.file }}")
+        self.assertTrue(steps("image")[index_of(steps("image"), "trivy_ignore.py")]["env"]["ACCEPTED"].endswith(".yaml"))
         text = SELF_TEST.read_text(encoding="utf-8")
-        self.assertIn('python3 -I "$scripts/trivy_ignore.py" --file="$1.yaml" --out="$1.accepted.yaml"', text)
-        self.assertIn('--ignorefile "$1.accepted.yaml"', text)
+        self.assertIn('python3 -I "$scripts/trivy_ignore.py" --file="$list.yaml" --out="$list.accepted.yaml"', text)
         for check in ("reported none ||", "if reported accepted;", "reported elsewhere ||", "reported expired ||"):
             self.assertIn(check, text)
 
@@ -112,7 +134,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(adopting, r"\n\| `trivy-image-ignore-file` \| none \| ")
         section = adopting.split("### Accepted image findings\n", 1)[1].split("\n### ", 1)[0]
         for words in ("default branch", "merging the pull request that adds it", "`expired_at`", "`statement`", "at most 180 days",
-                      "No wildcards", "`trivy.yaml` and `.trivyignore`"):
+                      "No wildcards", "`trivy.yaml` and `.trivyignore`", "checks the checkout's own copy"):
             self.assertIn(words, section)
 
 
