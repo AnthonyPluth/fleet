@@ -768,8 +768,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
                                       "to CHANGELOG.md and change no release's notes; a release pull request (VERSION "
                                       "changes) adds no fragment. With --title, also that the title and the description "
                                       "mark the change breaking exactly when its fragment is `kind: breaking`")
-    check_parser.add_argument("--base", required=True, metavar="REF", help="the pull request's base (fleet CI passes "
-                              "HEAD^1, the base side of the merge commit it checks out)")
+    check_parser.add_argument("--base", required=True, metavar="REF", help="the pull request's base (Release check "
+                              "passes HEAD^1, the base side of the merge commit it checks out)")
     check_parser.add_argument("--title", metavar="TEXT", help="the pull request's title (Release check passes it from the "
                               "event)")
     check_parser.add_argument("--body", metavar="TEXT", default="", help="the pull request's description, with --title")
