@@ -97,8 +97,9 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
   agent_review.py previous COMMENTS.jsonl OUT.md  the last review's commit and verdict, its text to OUT.md
   agent_review.py plan                            gather the change into $OUT_DIR ($GENERATED left out of the diff; with
                                                   $VERIFICATION=true, $BODY's verification record to verification.md,
-                                                  reread when its hash differs from $PREV_RECORD); mode, description,
-                                                  incremental, touched (base64, one file per line), record (the hash)
+                                                  reread when its hash differs from $PREV_RECORD; with $DRY_RUN=true,
+                                                  the self-test's, never mode=carry); mode, description, incremental,
+                                                  touched (base64, one file per line), record (the hash)
   agent_review.py risky FILES.txt [REASON.txt]    $LABELS (JSON), $TRIGGER_LABELS, $RISKY_PATHS and the changed files:
                                                   risky=true|false and reason=... for $GITHUB_OUTPUT (and REASON.txt)
   agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment
@@ -453,8 +454,8 @@ def plan(env: dict[str, str], review: Review = FIRST) -> dict[str, str]:
     prev = env.get("PREV_SHA", "")
     try:
         same_record = env.get("VERIFICATION") != "true" or record == env.get("PREV_RECORD", "")
-        if env.get("PREV_VERDICT") == "pass" and env.get("PREV_STATE") == "success" and same_record \
-                and only_main_merged(repo, main, prev, head):
+        if env.get("DRY_RUN") != "true" and env.get("PREV_VERDICT") == "pass" and env.get("PREV_STATE") == "success" \
+                and same_record and only_main_merged(repo, main, prev, head):
             return {**result, "mode": "carry",
                     "description": f"Carried forward from the review of {prev[:7]}: only main merged in since"}
     except Exception as e:

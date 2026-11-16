@@ -239,7 +239,7 @@ The app adds `.github/agent-review/context.md` (what the app is, what private da
 | `second-review-max-turns` | `120` | The most round trips to the model the second review may take |
 | `environment` | none | The GitHub environment that holds the secrets: the `review` and `second-review` jobs run in it, for a pull request from the repository's own branches only ([below](#the-review-secrets-in-an-environment)). Empty runs them in none, as before |
 | `merge-gate-workflow` | `merge-gate.yml` | The caller's merge gate workflow file to start once the status is set; empty starts none |
-| `dry-run` | `false` | Self-test only: the report jobs print the comment and the status instead of posting them |
+| `dry-run` | `false` | Self-test only: the reviews never carry a verdict forward, and the report jobs print the comment and the status instead of posting them |
 | `fake-review` | none | Self-test only: the answer fleet's stub reviewer gives in place of Claude Code (`pass`, `advisory`, `blocking`, `verification`, `malformed`) |
 | `fake-event` | none | Self-test only, with `fake-review`: the event the second review decides on (`action=… sender=… label=… labels=a,b files=x,y`) |
 | `fleet-ref` | the workflow's own commit | The fleet ref to fetch the prompt, scripts and tools from (fleet's self-test only) |
