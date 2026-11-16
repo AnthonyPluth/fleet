@@ -143,7 +143,7 @@ on:
         type: string
         default: ""
       second-review-always:
-        description: Changed paths that always make a pull request risky, one glob per line (`**` spans directories, any case). A line starting with `!` is an exception within this list, matched exactly; it never covers an odd spelling of a path or a SKILL.md, CLAUDE.md, CLAUDE.local.md or AGENTS.md. The default is everything under `.github/` and `.claude/` but a skill's reference documents (`.claude/skills/<name>/references/**/*.md`); a caller that wants the second review on fewer paths lists them here.
+        description: Changed paths that always make a pull request risky, one glob per line (`**` spans directories, any case). A line starting with `!` is an exception within this list, matched exactly; it never covers an odd spelling of a path, a path with a part after the first that starts with `.` (a nested `.claude/`), or a SKILL.md, CLAUDE.md, CLAUDE.local.md, AGENTS.md or AGENTS.override.md. The default is everything under `.github/` and `.claude/` but a skill's reference documents (`.claude/skills/<name>/references/**/*.md`); a caller that wants the second review on fewer paths lists them here.
         type: string
         default: |
           .github/**

@@ -73,7 +73,7 @@ DEFAULT_TRIGGER_LABELS = "safety-critical,security"
 ALWAYS_RISKY = (".github/**", ".claude/**", "!.claude/skills/*/references/**/*.md")
 EXCEPTION = "!"
 PLAIN_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
-LOADED_BY_NAME = ("skill.md", "claude.md", "claude.local.md", "agents.md")
+LOADED_BY_NAME = ("skill.md", "claude.md", "claude.local.md", "agents.md", "agents.override.md")
 GIT_ESCAPES = {"a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
 GIT_OCTAL = re.compile(r"[0-3][0-7]{2}")
 EVENT_KEYS = ("action", "sender", "label", "labels", "files")
@@ -251,7 +251,8 @@ def path_forms(path: str) -> list[str]:
 
 
 def excepted(path: str, exceptions: Sequence[str]) -> bool:
-    if not PLAIN_PATH.fullmatch(path) or {".", ".."} & set(path.split("/")):
+    parts = path.split("/")
+    if not PLAIN_PATH.fullmatch(path) or parts[0] in (".", "..") or any(part.startswith(".") for part in parts[1:]):
         return False
     if path.rsplit("/", 1)[-1].casefold() in LOADED_BY_NAME:
         return False

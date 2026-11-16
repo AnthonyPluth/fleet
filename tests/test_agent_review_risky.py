@@ -108,8 +108,14 @@ class ClaudeRule(unittest.TestCase):
         self.assert_risky(".claude/skills/x/references/SKILL.md", ".claude/skills/x/references/skill.md",
                           ".claude/skills/x/references/sub/SKILL.md", ".claude/skills/x/references/CLAUDE.md",
                           ".claude/skills/x/references/claude.md", ".claude/skills/x/references/CLAUDE.local.md",
-                          ".claude/skills/x/references/AGENTS.md")
+                          ".claude/skills/x/references/AGENTS.md", ".claude/skills/x/references/AGENTS.override.md",
+                          ".claude/skills/x/references/sub/agents.override.md")
+        self.assert_risky(".claude/skills/x/references/.claude/agents/a.md", ".claude/skills/x/references/.claude/commands/ship.md",
+                          ".claude/skills/x/references/.claude/rules/r.md", ".claude/skills/x/references/sub/.claude/skills/y/notes.md",
+                          ".claude/skills/x/references/.codex/notes.md", ".claude/skills/x/references/.hidden.md",
+                          ".claude/skills/.x/references/a.md")
         self.assert_risky(".claude/skills/x/SKILL.md", always=(".claude/**", "!.claude/**"))
+        self.assert_risky("app/photos/.claude/notes.md", always=("app/photos/**", "!app/photos/**/*.md"))
 
     def test_a_mixed_pull_request_is_risky_for_its_other_file(self) -> None:
         for other in (".claude/skills/verify-app/SKILL.md", ".claude/settings.json", ".claude/hooks/x.sh", ".github/workflows/ci.yml"):
