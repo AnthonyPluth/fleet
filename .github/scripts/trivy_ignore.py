@@ -18,8 +18,17 @@ FILE_PATH = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\.ya?ml")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 FINDING_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,63}")
-PURL = re.compile(r"pkg:([a-z][a-z0-9.+-]*)(?:/[A-Za-z0-9._~+-]+)+(?:@[A-Za-z0-9._~+-]+)?")
-PURL_TYPES_WITH_RULES = ("cpan", "julia", "otp", "swift", "vscode-extension")
+PURL = re.compile(r"pkg:([a-z][a-z0-9.+-]*)((?:/[A-Za-z0-9._~+-]+)+)(?:@[A-Za-z0-9._~+-]+)?")
+PURL_FORM = ("a purl is pkg:<type>/<name>, with an optional namespace and @<version>, such as pkg:golang/golang.org/x/net, "
+             "without qualifiers, a subpath or percent-encoding")
+PURL_RULES_FROM = {"trivy": "v0.70.0", "packageurl-go": "v0.1.5"}
+PURL_TYPE_RULES = {
+    "cpan": ("capitals", "a cpan purl needs a namespace in capitals, such as pkg:cpan/AUTHOR/Name"),
+    "julia": ("never", "a julia purl needs a `uuid` qualifier and no qualifier is accepted here, so leave it out: `paths` names the finding"),
+    "otp": ("none", "an otp purl has no namespace: pkg:otp/<name>"),
+    "swift": ("some", "a swift purl needs a namespace, such as pkg:swift/github.com/apple/swift-nio"),
+    "vscode-extension": ("some", "a vscode-extension purl needs a namespace, such as pkg:vscode-extension/publisher/name"),
+}
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 KEY_LINE = re.compile(r"([a-z_]+):(?:[ ]+(.*))?")
 PLAIN_START = set("-?:,[]{}#&*!|>'\"%@`")
@@ -190,6 +199,17 @@ def parse(text: str) -> list[Entry]:
     return entries
 
 
+def refusal(purl: str) -> str | None:
+    form = PURL.fullmatch(purl)
+    if not form:
+        return PURL_FORM
+    namespace = form.group(2).rpartition("/")[0]
+    rule, reason = PURL_TYPE_RULES.get(form.group(1), ("any", ""))
+    allowed = {"any": True, "never": False, "none": not namespace, "some": bool(namespace),
+               "capitals": bool(namespace) and namespace == namespace.upper()}[rule]
+    return None if allowed else reason
+
+
 def checked(entries: list[Entry], today: datetime.date) -> tuple[list[Entry], list[Entry]]:
     active, expired = [], []
     for entry in entries:
@@ -205,10 +225,9 @@ def checked(entries: list[Entry], today: datetime.date) -> tuple[list[Entry], li
             if GLOB & set(path):
                 raise Invalid(f"{at}: a path is an exact path, without wildcards or backslashes")
         for purl in entry.get("purls", []):
-            form = PURL.fullmatch(purl)
-            if not form or form.group(1) in PURL_TYPES_WITH_RULES:
-                raise Invalid(f"{at}: a purl is pkg:<type>/<name>, with an optional namespace and @<version>, such as "
-                              "pkg:golang/golang.org/x/net, without qualifiers, a subpath or percent-encoding")
+            problem = refusal(purl)
+            if problem:
+                raise Invalid(f"{at}: {problem}")
         if "purls" in entry and not entry["purls"]:
             raise Invalid(f"{at}: `purls` is empty")
         if "statement" not in entry:

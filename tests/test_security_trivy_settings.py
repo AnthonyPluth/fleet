@@ -195,7 +195,7 @@ class AcceptedFindingTest(unittest.TestCase):
         job_steps = workflow(SELF_TEST)["jobs"]["accepted-finding"]["steps"]
         shipped = steps("image")[index_of(steps("image"), SCANS["image"])]
         scans = [i for i, step in enumerate(job_steps) if step.get("uses", "").startswith(ACTION)]
-        self.assertEqual(len(scans), 4)
+        self.assertEqual(len(scans), 6)
         for i in scans:
             self.assertEqual(job_steps[i]["env"], shipped["env"], job_steps[i]["name"])
             self.assertEqual(job_steps[i]["env"], SCAN_ENV)

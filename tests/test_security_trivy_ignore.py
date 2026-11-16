@@ -1,4 +1,5 @@
 import base64
+import importlib.util
 import json
 import os
 import subprocess
@@ -14,6 +15,7 @@ SECURITY = cli.ROOT / ".github" / "workflows" / "security.yml"
 SELF_TEST = cli.ROOT / ".github" / "workflows" / "self-test.yml"
 SCRIPT = cli.ROOT / ".github" / "scripts" / "trivy_ignore.py"
 FAKES = cli.ROOT / "tests" / "fakes" / "security"
+PURLS = cli.ROOT / "tests" / "fixtures" / "security" / "purls.txt"
 INPUT = "trivy-image-ignore-file"
 SET = "${{ inputs.trivy-image-ignore-file != '' }}"
 REPO = "example/app"
@@ -38,6 +40,14 @@ def index_of(job_steps: list[Node], match: str) -> int:
     hits = [i for i, step in enumerate(job_steps) if match in str(step)]
     assert len(hits) == 1, (match, hits)
     return hits[0]
+
+
+def script_module() -> Any:
+    spec = importlib.util.spec_from_file_location("trivy_ignore", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def entry(identifier: str = "CVE-2026-0001", path: str = "usr/local/bin/example", statement: str = "Not linked in.",
@@ -125,7 +135,9 @@ class WorkflowTest(unittest.TestCase):
         shipped = steps("image")[index_of(steps("image"), "Scan the image")]
         scans = [step for step in job["steps"] if "trivyignores" in step.get("with", {})]
         self.assertEqual([step["with"]["trivyignores"] for step in scans],
-                         [f"${{{{ runner.temp }}}}/accepted/{name}.accepted.yaml" for name in ("none", "accepted", "elsewhere", "expired")])
+                         [f"${{{{ runner.temp }}}}/accepted/{name}.accepted.yaml"
+                          for name in ("none", "paths", "accepted", "elsewhere", "expired", "refused")])
+        self.assertEqual([step.get("id") for step in scans if step.get("continue-on-error")], ["refused"])
         for step in scans:
             self.assertEqual(step["uses"], shipped["uses"])
             for same in ("skip-setup-trivy", "version", "severity", "ignore-unfixed"):
@@ -135,8 +147,39 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(steps("image")[index_of(steps("image"), "trivy_ignore.py")]["env"]["ACCEPTED"].endswith(".yaml"))
         text = SELF_TEST.read_text(encoding="utf-8")
         self.assertIn('python3 -I "$scripts/trivy_ignore.py" --file="$list.yaml" --out="$list.accepted.yaml"', text)
-        for check in ("reported none ||", "if reported accepted;", "reported elsewhere ||", "reported expired ||"):
+        for check in ("reported none ||", "if reported paths;", "if reported accepted;", "reported elsewhere ||", "reported expired ||"):
             self.assertIn(check, text)
+
+    def test_the_self_test_gives_trivy_a_path_only_entry_and_one_with_purls_of_each_type(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8")
+        for line in ('entry requirements.txt "$soon" > paths.yaml', 'entry requirements.txt "$soon" pkg:pypi/requests > accepted.yaml',
+                     "purls=$PWD/tests/fixtures/security/purls.txt", "sed 's/^/      - /' \"$purls\"", "} >> accepted.yaml",
+                     "for list in none paths accepted elsewhere expired; do\n            python3",
+                     "if grep -q 'purls:' paths.accepted.yaml; then", "grep -q '\"pkg:pypi/requests\"' accepted.accepted.yaml ||",
+                     "-eq \"$(( $(wc -l < \"$purls\") + 1 ))\""):
+            self.assertIn(line, text)
+
+    def test_the_self_test_fails_unless_trivy_refuses_a_list_over_one_purl_on_an_entry_that_matches_nothing(self) -> None:
+        text = SELF_TEST.read_text(encoding="utf-8")
+        control = "pkg:swift/name"
+        self.assertIsNotNone(script_module().refusal(control))
+        self.assertNotIn(control, PURLS.read_text(encoding="utf-8").splitlines())
+        for line in ("cat paths.accepted.yaml\n            printf '  - id: \"CVE-2026-0001\"\\n",
+                     f'purls:\\n      - "{control}"\\n\'', "} > refused.accepted.yaml",
+                     'if python3 -I "$scripts/trivy_ignore.py" --file=refused.accepted.yaml --out=/dev/null > /dev/null; then',
+                     "REFUSED: ${{ steps.refused.outcome }}", 'if [ "$REFUSED" != failure ]; then',
+                     "--ignorefile refused.accepted.yaml app > refused.log 2>&1; then",
+                     f"grep -qF 'purl error in the ignore file: failed to parse purl({control})' refused.log"):
+            self.assertIn(line, text)
+
+    def test_a_trivy_bump_proves_the_purl_rules_again(self) -> None:
+        module = script_module()
+        self.assertEqual(module.PURL_RULES_FROM["trivy"], workflow()["env"]["TRIVY_VERSION"], (
+            "security.yml's TRIVY_VERSION moved, and trivy_ignore.py's purl rules were read from another Trivy's parser: find "
+            "packageurl-go's version in the new Trivy's go.mod, read validCustomRules in its packageurl.go, bring PURL_TYPE_RULES and "
+            "tests/fixtures/security/purls.txt in line with it, then set PURL_RULES_FROM to both versions"))
+        self.assertRegex(module.PURL_RULES_FROM["packageurl-go"], r"^v\d+\.\d+\.\d+$")
+        self.assertIn("`PURL_RULES_FROM`", (cli.ROOT / "docs" / "adopting.md").read_text(encoding="utf-8"))
 
     def test_the_docs_list_the_input_and_say_who_approves_an_entry(self) -> None:
         adopting = (cli.ROOT / "docs" / "adopting.md").read_text(encoding="utf-8")
@@ -319,7 +362,9 @@ class EntriesTest(unittest.TestCase):
     def test_a_purl_is_one_trivy_can_parse(self) -> None:
         for purl in ("pkg:golang/golang.org/x/net", "pkg:golang/golang.org/x/net@v0.60.0", "pkg:deb/debian/libssl3@3.0.11-1~deb12u2",
                      "pkg:pypi/requests@2.19.0", "pkg:npm/lodash", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
-                     "pkg:rpm/redhat/openssl@1.1.1k-7.el8_6", "pkg:gem/rack"):
+                     "pkg:rpm/redhat/openssl@1.1.1k-7.el8_6", "pkg:gem/rack", "pkg:cran/ggplot2", "pkg:cran/ggplot2@3.4.0",
+                     "pkg:conan/zlib@1.3", "pkg:conan/bincrafters/zlib@1.3", "pkg:cpan/DROLSKY/DateTime@1.55", "pkg:cpan/A1/B.C/Name",
+                     "pkg:otp/cowboy@2.10.0", "pkg:swift/github.com/apple/swift-nio@2.60.0", "pkg:vscode-extension/publisher/name"):
             script = Script(self)
             result = script.local(listed(entry(extra=f'    purls:\n      - "{purl}"\n')))
             self.assertEqual(result.returncode, 0, (purl, result.stdout))
@@ -327,9 +372,57 @@ class EntriesTest(unittest.TestCase):
         for purl in ("pkg:", "pkg:golang", "pkg:golang/", "pkg:/net", "pkg://golang/net", "pkg:golang//net", "pkg:golang/net@",
                      "pkg:golang/@v1", "pkg:npm/@babel/core", "pkg:Golang/net", "pkg:1type/name", "pkg:go_lang/net", "golang.org/x/net",
                      "PKG:golang/net", "pkg:golang/net?arch=amd64", "pkg:golang/net#sub/path", "pkg:golang/x%2Fnet", "pkg:golang/x%zz",
-                     "pkg:golang/a b", "pkg:golang/net@1@2", "pkg:golang/net;x", "pkg:deb/debian/x@1:2.0", "pkg:cpan/name",
-                     "pkg:julia/Flux", "pkg:otp/ns/name", "pkg:swift/name", "pkg:vscode-extension/name", "pkg:golang/net/"):
+                     "pkg:golang/a b", "pkg:golang/net@1@2", "pkg:golang/net;x", "pkg:deb/debian/x@1:2.0", "pkg:golang/net/",
+                     "pkg:julia/Flux?uuid=587475ba-b771-5e3f-ad9e-33799f191a9c", "pkg:cpan/GRAY/Net::SSH", "pkg:Cpan/name"):
             self.refused(listed(entry(extra=f'    purls:\n      - "{purl}"\n')), "a purl is pkg:<type>/<name>")
+
+    def test_a_purl_of_a_type_with_rules_of_its_own_is_refused_for_its_reason(self) -> None:
+        reasons = {
+            "pkg:cpan/name": "a cpan purl needs a namespace in capitals, such as pkg:cpan/AUTHOR/Name",
+            "pkg:cpan/name@1.0": "a cpan purl needs a namespace in capitals",
+            "pkg:cpan/Drolsky/DateTime": "a cpan purl needs a namespace in capitals",
+            "pkg:cpan/DROLSKY/x/DateTime": "a cpan purl needs a namespace in capitals",
+            "pkg:julia/Flux": "a julia purl needs a `uuid` qualifier and no qualifier is accepted here",
+            "pkg:julia/Flux@0.14.0": "a julia purl needs a `uuid` qualifier",
+            "pkg:julia/ns/Flux": "a julia purl needs a `uuid` qualifier",
+            "pkg:otp/ns/name": "an otp purl has no namespace: pkg:otp/<name>",
+            "pkg:otp/ns/name@1.0": "an otp purl has no namespace",
+            "pkg:swift/name": "a swift purl needs a namespace, such as pkg:swift/github.com/apple/swift-nio",
+            "pkg:swift/name@1.0": "a swift purl needs a namespace",
+            "pkg:vscode-extension/name": "a vscode-extension purl needs a namespace, such as pkg:vscode-extension/publisher/name",
+        }
+        for purl, reason in reasons.items():
+            script = Script(self)
+            result = script.local(listed(entry(extra=f'    purls:\n      - "{purl}"\n')))
+            self.assertEqual(result.returncode, 1, purl)
+            self.assertIn(f"::error::The accepted findings can't be used, so the job fails: CVE-2026-0001 (line 2): {reason}", result.stdout, purl)
+            self.assertNotIn("a purl is pkg:<type>/<name>", result.stdout, purl)
+            self.assertFalse(script.out.exists(), purl)
+        self.assertEqual(sorted({purl.split("/")[0][4:] for purl in reasons}), sorted(script_module().PURL_TYPE_RULES))
+
+    def test_the_purls_the_self_test_gives_trivy_are_ones_the_script_accepts(self) -> None:
+        module = script_module()
+        purls = PURLS.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(purls, sorted(set(purls)))
+        self.assertEqual([purl for purl in purls if module.refusal(purl)], [])
+        types = {purl.split("/")[0][4:] for purl in purls} | set(module.PURL_TYPE_RULES)
+        self.assertGreaterEqual(len(types), 80)
+        forms = {kind: [f"pkg:{kind}/name", f"pkg:{kind}/name@1.0", f"pkg:{kind}/NAMESPACE/name", f"pkg:{kind}/NAMESPACE/name@1.0"]
+                 for kind in types}
+        self.assertEqual(purls, sorted(form for kind in types for form in forms[kind] if not module.refusal(form)), (
+            "tests/fixtures/security/purls.txt holds every form the script accepts of every type, and nothing else: the "
+            "Self-test hands them to the real Trivy"))
+        with_namespace = {"capitals": [False, False, True, True], "never": [False] * 4, "none": [True, True, False, False],
+                          "some": [False, False, True, True]}
+        for kind, (rule, _) in module.PURL_TYPE_RULES.items():
+            self.assertEqual([form in purls for form in forms[kind]], with_namespace[rule], kind)
+        for kind in ("cran", "conan", "golang", "deb"):
+            self.assertEqual([form in purls for form in forms[kind]], [True] * 4, kind)
+        script = Script(self)
+        result = script.local(listed(entry(extra="    purls:\n" + "".join(f"      - {purl}\n" for purl in purls))))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(script.written().count('      - "pkg:'), len(purls))
+
     def test_only_vulnerabilities_are_accepted(self) -> None:
         for section in ("misconfigurations", "secrets", "licenses"):
             self.refused(f"{section}:\n  - id: AVD-DS-0001\n", f"only `vulnerabilities:` is accepted; `{section}:` isn't")
