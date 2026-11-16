@@ -378,11 +378,14 @@ class Plan(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def plan(self, head: str, main: str | None = None, **extra: str) -> dict[str, str]:
+        return self.plan_for(ar.FIRST, head, main, extra)
+
+    def plan_for(self, review: ar.Review, head: str, main: str | None, extra: dict[str, str]) -> dict[str, str]:
         (self.out / "prompt.md").write_text("PROMPT\n")
         env = {"REPO_DIR": str(self.repo), "OUT_DIR": str(self.out), "TRUSTED": str(self.trusted),
                "MAIN": main or self.git("rev-parse", "main"), "HEAD": head, **extra}
         with mock.patch("builtins.print"):
-            return ar.plan(env)
+            return ar.plan(env, review)
 
     def previous_body(self) -> str:
         p = self.root / "previous-review.md"
@@ -627,6 +630,26 @@ class Plan(unittest.TestCase):
         self.assertEqual(values["mode"], "carry")
         self.assertIn(prev[:7], values["description"])
         self.assertLessEqual(len(values["description"]), 140)
+
+    def test_a_dry_run_reviews_a_merge_only_push_that_a_real_run_carries_forward(self) -> None:
+        (self.trusted / "second-review.md").write_text("SECOND\n")
+        prev, head = self.merge_main()
+        for review in (ar.FIRST, ar.SECOND):
+            for flag in ("false", ""):
+                with self.subTest(review=review.context, dry_run=flag):
+                    values = self.plan_for(review, head, None, {"PREV_SHA": prev, "PREV_BODY": self.previous_body(), "DRY_RUN": flag, **self.PASSED})
+                    self.assertEqual(values["mode"], "carry")
+                    self.assertEqual(values["description"], f"Carried forward from the review of {prev[:7]}: only main merged in since")
+            with self.subTest(review=review.context, dry_run="true"):
+                for name in ("previous-review.md", "since-last-review.patch"):
+                    (self.out / name).unlink(missing_ok=True)
+                values = self.plan_for(review, head, None, {"PREV_SHA": prev, "PREV_BODY": self.previous_body(), "DRY_RUN": "true", **self.PASSED})
+                self.assertEqual((values["mode"], values["description"], values["incremental"]), ("review", "", "true"))
+                self.assertIn("Drops rows", (self.out / "previous-review.md").read_text())
+                self.assertEqual((self.out / "since-last-review.patch").read_text(), "")
+                self.assertIn("+a = 2", (self.out / "diff.patch").read_text())
+                extra = "SECOND\n\n" if review is ar.SECOND else ""
+                self.assertEqual((self.out / "prompt.md").read_text(), f"PROMPT\n\n{extra}RE-REVIEW\n")
 
     def test_merging_main_in_twice_still_carries_from_the_reviewed_commit(self) -> None:
         prev, _ = self.merge_main()

@@ -45,7 +45,9 @@ name: Agent review
 # review passed: if every commit since it is a merge and the pull request's own change (its diff against where it
 # meets main, blob ids included) is byte for byte the one that was reviewed, that "Agent review" verdict is copied to
 # the new head, saying so. A blocking or failed review is never carried forward, anything that can't be proved
-# identical is reviewed, and the merge gate still requires the status on the head commit itself.
+# identical is reviewed, and the merge gate still requires the status on the head commit itself. A dry run (the
+# self-test's) never carries one forward: it reads the pull request's real last review, so it would otherwise copy that
+# verdict over the stub answer it exists to check.
 # ready_for_review reviews only when the head has no "Agent review" status yet (a draft already reviewed isn't paid
 # for twice); labeled and unlabeled don't run the first review at all (only the second review reacts to them), and the
 # concurrency group is the review job's, not the workflow's, so a label event can't cancel a running review.
@@ -168,7 +170,7 @@ on:
         type: string
         default: merge-gate.yml
       dry-run:
-        description: Self-test only. The report job prints the comment and the status instead of posting them and starts no merge gate.
+        description: Self-test only. The reviews never carry a verdict forward (a push that only merges main is reviewed too), and the report jobs print the comment and the status instead of posting them and start no merge gate.
         type: boolean
         default: false
       fake-review:
@@ -358,6 +360,7 @@ jobs:
           PREV_SHA: ${{ steps.prev.outputs.sha }}
           PREV_VERDICT: ${{ steps.prev.outputs.verdict }}
           PREV_STATE: ${{ steps.prev.outputs.state }}
+          DRY_RUN: ${{ inputs.dry-run }}   # the self-test's dry runs never carry a verdict forward
           GENERATED: ${{ inputs.generated }}
           VERIFICATION: ${{ inputs.verification }}
           BODY: ${{ github.event.pull_request.body }}
@@ -821,6 +824,7 @@ jobs:
           PREV_SHA: ${{ steps.prev.outputs.sha }}
           PREV_VERDICT: ${{ steps.prev.outputs.verdict }}
           PREV_STATE: ${{ steps.prev.outputs.state }}
+          DRY_RUN: ${{ inputs.dry-run }}   # the self-test's dry runs never carry a verdict forward
           GENERATED: ${{ inputs.generated }}
           VERIFICATION: ${{ inputs.verification }}
           BODY: ${{ github.event.pull_request.body }}
