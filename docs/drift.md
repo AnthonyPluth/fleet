@@ -99,7 +99,7 @@ Neither app had one. The second review is new, in the same reusable workflow as 
 
 | Piece | Waypoint | Runway | fleet takes | Why |
 | --- | --- | --- | --- | --- |
-| A second review | — | — ("every review uses Sonnet and never Opus", owner decision) | The `second-review` job on `claude-opus-5-5` at `xhigh` effort, both fixed, on risky pull requests only: a label in `second-review-labels` (`safety-critical,security`) or a path in `second-review-paths` (`.github/**`, `.claude/**` always); its own "Second review" status and `<!-- second-review -->` comment; "Not a risky pull request" passes so the gate can require it everywhere; `labeled`/`unlabeled` run only it, and only the owner's `unlabeled` re-evaluates; budget 10, turns 120; the app's `invariants.md` required with `second-review-paths` | The owner's new rule supersedes Runway's; the first review stays Sonnet |
+| A second review | — | — ("every review uses Sonnet and never Opus", owner decision) | The `second-review` job on `claude-opus-5-5` at `xhigh` effort, both fixed, on risky pull requests only: a label in `second-review-labels` (`safety-critical,security`) or a path in `second-review-paths` (`second-review-always` on top: everything under `.github/` and `.claude/` but a skill's reference documents); its own "Second review" status and `<!-- second-review -->` comment; "Not a risky pull request" passes so the gate can require it everywhere; `labeled`/`unlabeled` run only it, and only the owner's `unlabeled` re-evaluates; budget 10, turns 120; the app's `invariants.md` required with `second-review-paths` | The owner's new rule supersedes Runway's; the first review stays Sonnet |
 
 ## Finding outcomes (`FLEET-FINDING-OUTCOMES`)
 

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -69,7 +70,12 @@ NOT_WANTED = {
 }
 NOT_RISKY = "Not a risky pull request"
 DEFAULT_TRIGGER_LABELS = "safety-critical,security"
-ALWAYS_RISKY = (".github/**", ".claude/**")
+ALWAYS_RISKY = (".github/**", ".claude/**", "!.claude/skills/*/references/**/*.md")
+EXCEPTION = "!"
+PLAIN_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
+LOADED_BY_NAME = ("skill.md", "claude.md", "claude.local.md", "agents.md")
+GIT_ESCAPES = {"a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+GIT_OCTAL = re.compile(r"[0-3][0-7]{2}")
 EVENT_KEYS = ("action", "sender", "label", "labels", "files")
 VERIFICATION_FILE = "verification.md"
 VERIFICATION_PROMPT = "verification-review.md"
@@ -99,7 +105,7 @@ USAGE = """usage: agent_review.py [second] COMMAND ...   (second: the "Second re
                                                   $VERIFICATION=true, $BODY's verification record to verification.md,
                                                   reread when its hash differs from $PREV_RECORD); mode, description,
                                                   incremental, touched (base64, one file per line), record (the hash)
-  agent_review.py risky FILES.txt [REASON.txt]    $LABELS (JSON), $TRIGGER_LABELS, $RISKY_PATHS and the changed files:
+  agent_review.py risky FILES.txt [REASON.txt]    $LABELS (JSON), $TRIGGER_LABELS, $RISKY_PATHS, $ALWAYS_PATHS and the changed files:
                                                   risky=true|false and reason=... for $GITHUB_OUTPUT (and REASON.txt)
   agent_review.py report OUT.json                 the reviewer's answer as the verdict, description and comment
                                                   ($RISKY_REASON goes into the second review's comment, $RUN_ID into
@@ -187,7 +193,7 @@ def event_class(event: dict[str, Any]) -> str:
     return "label" if event.get("label", "") in event.get("trigger_labels", []) else "other-label"
 
 
-def glob_to_regex(pattern: str) -> re.Pattern[str]:
+def glob_to_regex(pattern: str, ignore_case: bool = False) -> re.Pattern[str]:
     pattern = pattern.strip().lstrip("/")
     out = ""
     index = 0
@@ -208,11 +214,64 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
         else:
             out += re.escape(char)
             index += 1
-    return re.compile(f"^{out}$")
+    return re.compile(out, re.DOTALL | (re.IGNORECASE if ignore_case else 0))
 
 
-def matches(path: str, pattern: str) -> bool:
-    return bool(glob_to_regex(pattern).match(path))
+def matches(path: str, pattern: str, ignore_case: bool = False) -> bool:
+    return bool(glob_to_regex(pattern, ignore_case).fullmatch(path))
+
+
+def git_unquoted(path: str) -> str | None:
+    if not (len(path) >= 2 and path.startswith('"') and path.endswith('"')):
+        return path
+    body, out, index = path[1:-1], bytearray(), 0
+    while index < len(body):
+        char = body[index]
+        if char == '"':
+            return None
+        if char != "\\":
+            out += char.encode("utf-8", "replace")
+            index += 1
+        elif body[index + 1:index + 2] in GIT_ESCAPES:
+            out += GIT_ESCAPES[body[index + 1]].encode()
+            index += 2
+        elif GIT_OCTAL.fullmatch(body[index + 1:index + 4]):
+            out.append(int(body[index + 1:index + 4], 8))
+            index += 4
+        else:
+            return None
+    return out.decode("utf-8", "replace")
+
+
+def path_forms(path: str) -> list[str]:
+    decoded = git_unquoted(path)
+    forms = [path, path.strip('"'), *([decoded] if decoded is not None else [])]
+    forms += [posixpath.normpath(form.replace("\\", "/")).lstrip("/") for form in forms if form]
+    return list(dict.fromkeys(forms))
+
+
+def excepted(path: str, exceptions: Sequence[str]) -> bool:
+    if not PLAIN_PATH.fullmatch(path) or {".", ".."} & set(path.split("/")):
+        return False
+    if path.rsplit("/", 1)[-1].casefold() in LOADED_BY_NAME:
+        return False
+    return any(matches(path, pattern) for pattern in exceptions)
+
+
+def listed(path: str, patterns: Iterable[str]) -> str | None:
+    rules = [pattern.strip() for pattern in patterns if pattern.strip()]
+    exceptions = [rule[len(EXCEPTION):] for rule in rules if rule.startswith(EXCEPTION)]
+    forms = path_forms(path)
+    for rule in rules:
+        if not rule.startswith(EXCEPTION) and any(matches(form, rule, ignore_case=True) for form in forms):
+            return None if excepted(path, exceptions) else rule
+    return None
+
+
+def shown(path: str) -> str:
+    decoded = git_unquoted(path)
+    text = path if decoded is None else decoded
+    return text if text.isprintable() else text.encode("unicode_escape").decode("ascii")
 
 
 def changed_paths(files_text: str) -> list[str]:
@@ -228,12 +287,11 @@ def changed_paths(files_text: str) -> list[str]:
 def risky(labels: Iterable[str], paths: Iterable[str], trigger_labels: Iterable[str],
           patterns: Iterable[str], always: Iterable[str] = ALWAYS_RISKY) -> tuple[bool, str]:
     reasons = [f"labelled `{label}`" for label in labels if label in set(trigger_labels)]
-    globs = [*(p for p in always if p.strip()), *(p for p in patterns if p.strip())]
+    always, patterns = list(always), list(patterns)
     for path in paths:
-        for pattern in globs:
-            if matches(path, pattern):
-                reasons.append(f"changes `{path}` (matches `{pattern.strip()}`)")
-                break
+        pattern = listed(path, always) or listed(path, patterns)
+        if pattern:
+            reasons.append(f"changes `{shown(path)}` (matches `{pattern}`)")
     if not reasons:
         return False, NOT_RISKY
     reason = "; ".join(reasons)

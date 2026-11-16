@@ -984,7 +984,7 @@ jobs:
       fleet-ref: ${{ github.sha }}
       dry-run: true
       fake-review: pass
-      fake-event: action=synchronize labels=docs files=README.md,app/app.py
+      fake-event: action=synchronize labels=docs files=README.md,app/app.py,.claude/skills/verify-app/references/feature-map.md
       merge-gate-workflow: ""
 
   second-review-unlabeled-by-another:
