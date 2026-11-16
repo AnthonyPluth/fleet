@@ -174,7 +174,7 @@ jobs:
           SARIF_UPLOAD: ${{ inputs.sarif-upload }}
           SEMGREP: pipx run semgrep==1.146.0
         run: .fleet/.github/scripts/security-semgrep.sh
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
         if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('semgrep.sarif') != '' }}
         with:
           sarif_file: semgrep.sarif
@@ -273,7 +273,7 @@ jobs:
           output: ${{ inputs.sarif-upload && 'trivy-fs.sarif' || '' }}
           exit-code: ${{ inputs.sarif-upload && '0' || '1' }}
           severity: CRITICAL,HIGH
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
         if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('trivy-fs.sarif') != '' }}
         with:
           sarif_file: trivy-fs.sarif
@@ -379,7 +379,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           trivyignores: ${{ steps.accepted.outputs.file }}
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
         if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('trivy-image.sarif') != '' }}
         with:
           sarif_file: trivy-image.sarif
@@ -428,7 +428,7 @@ jobs:
           else
             pipx run zizmor==1.31.1 "${paths[@]}"
           fi
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
         if: ${{ inputs.sarif-upload && !cancelled() && hashFiles('zizmor.sarif') != '' }}
         with:
           sarif_file: zizmor.sarif
@@ -453,7 +453,7 @@ jobs:
           results_file: scorecard.sarif
           results_format: sarif
           publish_results: true
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4.39.1
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
         if: ${{ inputs.sarif-upload }}
         with:
           sarif_file: scorecard.sarif
