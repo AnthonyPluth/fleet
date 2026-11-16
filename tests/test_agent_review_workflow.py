@@ -430,6 +430,17 @@ class ReusableWorkflowTest(unittest.TestCase):
             self.assertNotIn("pull_request.body", job_source(self.text, job))
         self.assertEqual(self.text.count("BODY: ${{ github.event.pull_request.body }}"), 4)
 
+    def test_a_dry_run_tells_plan_so_which_alone_decides_a_carried_verdict(self) -> None:
+        for job in REVIEW_JOBS:
+            steps = steps_of(self.workflow, job)
+            plan = mapping(next(s for s in steps if s.get("id") == "plan")["env"])
+            self.assertEqual(plan["DRY_RUN"], "${{ inputs.dry-run }}", job)
+            self.assertEqual(plan["PREV_STATE"], "${{ steps.prev.outputs.state }}", job)
+            verdict = next(c for c in step_sources(self.text, job) if c.startswith("name: Verdict"))
+            self.assertIn('elif [ "$MODE" = carry ]; then', verdict, job)
+            self.assertEqual(mapping(next(s for s in steps if s.get("id") == "result")["env"])["MODE"], "${{ steps.plan.outputs.mode }}", job)
+        self.assertEqual(self.text.count("DRY_RUN: ${{ inputs.dry-run }}"), 6)
+
     def test_the_stub_review_runs_only_when_asked_and_the_real_one_only_otherwise(self) -> None:
         steps = {step_name(step): step for step in steps_of(self.workflow, "review")}
         self.assertEqual(steps["Review"]["if"], "steps.plan.outputs.mode == 'review' && inputs.fake-review == ''")
