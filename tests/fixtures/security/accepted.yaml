@@ -1,0 +1,3 @@
+# The list fleet's own Self-test names as `trivy-image-ignore-file`, so the file scan's job checks a real file. It
+# accepts nothing: fleet builds no image, and an entry here would need an expiry that goes stale.
+vulnerabilities: []
