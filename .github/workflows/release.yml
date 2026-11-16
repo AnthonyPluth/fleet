@@ -2,7 +2,8 @@ name: Release
 
 # Tags fleet's release and publishes its notes (docs/release.md). A release pull request stamps every version
 # (`fleet release prepare X.Y.Z`); when it lands, the push to main changes VERSION and this tags that commit vX.Y.Z,
-# once: it fails if the tag exists on another commit, and never moves one. A re-run after a failed publish reuses the
+# once: it fails if the tag exists on another commit, and never moves one, and it tags nothing while a changelog
+# fragment is still pending at that commit (one merged after prepare ran). A re-run after a failed publish reuses the
 # tag on this commit and skips a release that already exists. The notes are the version's own file,
 # changelog.d/released/X.Y.Z.md, which prepare folds from the changelog fragments (CHANGELOG.md's section up to 4.0.0,
 # where it froze).
@@ -40,6 +41,24 @@ jobs:
       # The runner's own python3, with nothing installed (fleet_tools is standard library only).
       - name: Check that every stamp agrees
         run: /usr/bin/python3 -E -s -m fleet_tools.cli self-check
+      # At a release commit `fleet release prepare` has folded every changelog fragment into the release's notes, so a
+      # fragment still in changelog.d/ merged to main after prepare ran. fleet CI's `fleet release check` refuses that
+      # only when it runs on the release pull request after that merge, and GitHub doesn't re-run a pull request's
+      # checks when its base moves: 4.1.0 was tagged that way, with two changes in its code and not in its notes, one of
+      # them breaking under a minor version. So nothing is tagged while one is pending; the version stays untagged and
+      # the next release pull request, cut from main, folds what's pending (docs/release.md).
+      - name: Check that no fragment is pending
+        run: |
+          pending=$(/usr/bin/python3 -E -s -c '
+          import pathlib
+          from fleet_tools import release
+          print(" ".join(found.path.as_posix() for found in release.fragments(pathlib.Path.cwd())[0]))
+          ')
+          if [[ -n "$pending" ]]; then
+            echo "::error::Pending at the release commit: $pending. A fragment still in changelog.d/ here merged to main after fleet release prepare ran, so this release's notes leave its entry out. Not tagging, and this version stays untagged: cut the next release from main (fleet release prepare on a fresh branch folds what's pending; a breaking fragment makes it a major), docs/release.md."
+            exit 1
+          fi
+          echo "No changelog fragment is pending"
       - name: Read the version and the notes
         id: version
         run: |
