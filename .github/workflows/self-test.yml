@@ -136,7 +136,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/trivy-secret.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -155,7 +155,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/trivy-secret.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -174,7 +174,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/trivy-secret.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -193,7 +193,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/trivy-secret.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -228,10 +228,10 @@ jobs:
   # files Trivy reads from there, each written to drop one of them: .trivyignore the CVE, trivy-secret.yaml the token's
   # rule, trivy.yaml the file with the key. Unprotected, the pinned Trivy must report none of the three, or the files
   # prove nothing. After security.yml's own step as the file scan runs it (security-trivy-settings.sh, which leaves
-  # the files in place) and with its scan's environment, it must report all three. The planted trivy.yaml also holds
-  # a fourth finding, a made-up registry password: a scan of the workspace, as the file scan scans it, must report it
-  # in that file, so the settings files are never out of the secret scan's reach. Last, the step as the image job
-  # runs it must remove the three.
+  # the files in place) and with its scan's environment, it must report all three. Each planted settings file also
+  # holds a fourth finding, a made-up registry password (in trivy.yaml as a setting, in the other two as a comment):
+  # a scan of the workspace, as the file scan scans it, must report it in each of the three, so the settings files
+  # are never out of the secret scan's reach. Last, the step as the image job runs it must remove the three.
   checkout-trivy-settings:
     name: A checkout's own Trivy settings don't drop a planted finding
     runs-on: ubuntu-latest
@@ -252,7 +252,7 @@ jobs:
           TRIVY_CACHE: ${{ runner.temp }}/trivy-tarball
           TRIVY_BIN: ${{ runner.temp }}/trivy-bin
         run: .github/scripts/security-trivy-install.sh
-      - name: Plant four findings, and the settings files that drop three of them
+      - name: Plant four findings, and the settings files that drop three of them and hold the fourth
         env:
           WORK: ${{ runner.temp }}/planted
         run: |
@@ -260,9 +260,10 @@ jobs:
           printf 'requests==2.19.0\n' > "$WORK/app/requirements.txt"
           printf 'token = "ghp_%s"\n' "$(printf '%036d' 0 | tr 0 a)" > "$WORK/app/deploy.py"
           printf 'key = "AKIA%s"\n' "$(printf '%016d' 0 | tr 0 Q)" > "$WORK/app/cloud.py"
-          printf 'CVE-2018-18074\n' > "$WORK/settings/.trivyignore"
-          printf 'disable-rules:\n  - github-pat\n' > "$WORK/settings/trivy-secret.yaml"
-          printf 'scan:\n  skip-files:\n    - "**/cloud.py"\nregistry:\n  username: scanner\n  password: "glpat-%s"\n' "$(printf '%020d' 0 | tr 0 b)" > "$WORK/settings/trivy.yaml"
+          password="glpat-$(printf '%020d' 0 | tr 0 b)"
+          printf '# %s\nCVE-2018-18074\n' "$password" > "$WORK/settings/.trivyignore"
+          printf '# %s\ndisable-rules:\n  - github-pat\n' "$password" > "$WORK/settings/trivy-secret.yaml"
+          printf 'scan:\n  skip-files:\n    - "**/cloud.py"\nregistry:\n  username: scanner\n  password: "%s"\n' "$password" > "$WORK/settings/trivy.yaml"
           cp "$WORK/settings/.trivyignore" "$WORK/settings/trivy-secret.yaml" "$WORK/settings/trivy.yaml" .
       - name: Scan with the checkout's settings read, as Trivy would by itself
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
@@ -293,7 +294,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/trivy-secret.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -311,7 +312,7 @@ jobs:
         env:
           TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
           TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
-          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/trivy-secret.yaml
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/fleet-empty-secret-config.yaml
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
@@ -345,8 +346,10 @@ jobs:
             if reported unprotected "$id"; then echo "::error::The planted settings file didn't drop $id, so this case proves nothing"; exit 1; fi
             reported protected "$id" || { echo "::error::A settings file in the checkout dropped $id with security.yml's step and its scan's environment"; exit 1; }
           done
-          jq -e '[.Results[]? | select(.Target == "trivy.yaml") | .Secrets[]?.RuleID] | index("gitlab-pat") != null' workspace.json > /dev/null || { echo "::error::The secret planted inside the checkout's trivy.yaml wasn't reported: the file scan doesn't read that file"; exit 1; }
-          echo "The checkout's .trivyignore, trivy.yaml and trivy-secret.yaml dropped nothing, and the secret in trivy.yaml was reported, as they should."
+          for name in trivy.yaml .trivyignore trivy-secret.yaml; do
+            jq -e --arg name "$name" '[.Results[]? | select(.Target == $name) | .Secrets[]?.RuleID] | index("gitlab-pat") != null' workspace.json > /dev/null || { echo "::error::The secret planted inside the checkout's $name wasn't reported: the file scan doesn't read that file"; exit 1; }
+          done
+          echo "The checkout's .trivyignore, trivy.yaml and trivy-secret.yaml dropped nothing, and the secret in each was reported, as they should."
 
   # The deep-scan reminder in dry run on fleet itself: it reads fleet's issues and prints the issue it would open (or
   # that one is open) without opening anything. The called job asks for `issues: write` and `contents: read` (the
