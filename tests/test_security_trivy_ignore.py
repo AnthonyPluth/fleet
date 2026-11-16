@@ -84,13 +84,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(scan["with"]["ignore-unfixed"], "true")
         self.assertEqual(scan["with"]["severity"], "CRITICAL,HIGH")
 
-    def test_with_the_input_the_checkouts_own_trivy_settings_go_before_the_scan(self) -> None:
+    def test_without_the_list_the_scan_still_reads_no_ignore_file_of_the_checkouts(self) -> None:
         job = steps("image")
-        removal = index_of(job, "rm -f trivy.yaml .trivyignore")
-        self.assertEqual(job[removal]["if"], SET)
-        self.assertEqual(job[removal]["run"], "rm -f trivy.yaml .trivyignore")
-        self.assertGreater(removal, index_of(job, "Build the image"))
-        self.assertLess(removal, index_of(job, "Scan the image"))
+        scan = job[index_of(job, "Scan the image")]
+        self.assertEqual(scan["env"]["TRIVY_IGNOREFILE"], "${{ runner.temp }}/trivy-settings/trivyignore")
+        removal = job[index_of(job, "security-trivy-settings.sh")]
+        self.assertNotIn("if", removal)
+        self.assertNotIn("rm -f trivy.yaml .trivyignore", str(job))
 
     def test_the_file_scans_job_checks_the_checkouts_copy_without_using_it(self) -> None:
         job = steps("trivy")
@@ -117,7 +117,7 @@ class WorkflowTest(unittest.TestCase):
     def test_nothing_else_reads_the_input(self) -> None:
         text = SECURITY.read_text(encoding="utf-8")
         code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-        self.assertEqual(code.count(f"inputs.{INPUT}"), 5)
+        self.assertEqual(code.count(f"inputs.{INPUT}"), 4)
         self.assertEqual(code.count("trivyignores"), 1)
         self.assertEqual(code.count("steps.accepted.outputs.file"), 1)
 
@@ -186,7 +186,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(adopting, r"\n\| `trivy-image-ignore-file` \| none \| ")
         section = adopting.split("### Accepted image findings\n", 1)[1].split("\n### ", 1)[0]
         for words in ("default branch", "merging the pull request that adds it", "`expired_at`", "`statement`", "at most 180 days",
-                      "No wildcards", "`trivy.yaml` and `.trivyignore`", "checks the checkout's own copy"):
+                      "No wildcards", "Trivy's settings files in the checkout", "checks the checkout's own copy"):
             self.assertIn(words, section)
 
 

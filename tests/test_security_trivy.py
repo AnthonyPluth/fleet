@@ -265,6 +265,9 @@ class TrivyJobsTest(unittest.TestCase):
             if left.get("uses") == CACHE:
                 self.assertEqual(right["uses"], CACHE_RESTORE)
                 self.assertEqual(left["with"], right["with"])
+            elif "security-trivy-settings.sh" in left.get("run", ""):
+                self.assertEqual((left["env"]["CHECKOUT_SETTINGS"], right["env"]["CHECKOUT_SETTINGS"]), ("keep", "remove"))
+                self.assertEqual({**left, "env": {**left["env"], "CHECKOUT_SETTINGS": "remove"}}, right)
             else:
                 self.assertEqual(left, right)
 

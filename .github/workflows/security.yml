@@ -16,6 +16,14 @@ name: Security scans
 # request is the pull request's own merge commit: an entry counts once it is merged, so no change accepts its own
 # findings. Trivy gets a copy rewritten from what the script understood, never the file itself.
 #
+# Neither Trivy job reads Trivy's settings from the caller's checkout. Trivy takes ./trivy.yaml, ./.trivyignore and
+# ./trivy-secret.yaml from its working directory when they exist, and a pull request could add one to drop its own
+# findings, so both jobs point Trivy at empty ones outside the workspace (.github/scripts/security-trivy-settings.sh),
+# on every event. The file scan leaves the checkout's three where they are and scans them like any other file, so a
+# secret committed in one is still reported; the image job, which scans the image and not the checkout, also removes
+# them. Trivy's database cache is outside the workspace too, so a checkout can't bring its own. The scan's options are
+# the ones set here; the only findings accepted are the image's, through `trivy-image-ignore-file`.
+#
 # The caller (docs/adopting.md has the snippet) keeps the triggers: pull_request and push to main, the weekly schedule
 # (new vulnerabilities are published for code that hasn't changed) and workflow_dispatch. A pull request, and a push to
 # main, runs only the scans its change can affect (the `changes` job, .github/scripts/security-changes.sh); a
@@ -48,7 +56,7 @@ on:
         type: string
         default: Dockerfile
       trivy-image-ignore-file:
-        description: The path in the caller's repository of a Trivy YAML ignore file (".trivyignore.yaml") listing the findings the owner accepted for the image scan. It is read from the default branch, never from the checkout, so a pull request can't accept its own findings; each entry needs an id, exact paths, a statement and an expired_at at most 180 days away (docs/adopting.md, "Accepted image findings"). Empty (the default) leaves the image scan as it was.
+        description: The path in the caller's repository of a Trivy YAML ignore file (".trivyignore.yaml") listing the findings the owner accepted for the image scan. It is read from the default branch, never from the checkout, so a pull request can't accept its own findings; each entry needs an id, exact paths, a statement and an expired_at at most 180 days away (docs/adopting.md, "Accepted image findings"). Empty (the default) accepts nothing, and the scans never read the checkout's own .trivyignore, trivy.yaml or trivy-secret.yaml.
         type: string
         default: ""
       zizmor-paths:
@@ -259,14 +267,27 @@ jobs:
         run: |
           if ! [ -e "$IGNORE_FILE" ] && ! [ -L "$IGNORE_FILE" ]; then echo "No file $IGNORE_FILE in this checkout: nothing to check."; exit 0; fi
           env -u GITHUB_OUTPUT python3 -I .fleet/.github/scripts/trivy_ignore.py --file="$IGNORE_FILE" --out=/dev/null
+      # Trivy would read ./trivy.yaml, ./.trivyignore and ./trivy-secret.yaml from this checkout, which on a pull
+      # request is the pull request's: the scan below is pointed at empty ones outside the workspace instead. The
+      # checkout's own stay (with a warning), so the scan reads them as files: a secret in one is a finding.
+      - name: Keep the checkout's own Trivy settings out of the scan
+        env:
+          TRIVY_SETTINGS: ${{ runner.temp }}/trivy-settings
+          CHECKOUT_SETTINGS: keep
+        run: .fleet/.github/scripts/security-trivy-settings.sh
       # fleet's scripts aren't the app's files: no scan sees them, as before.
       - name: Remove fleet's scripts from the workspace
         run: rm -rf .fleet
       - name: Scan the repository (dependencies, secrets, Dockerfile and workflow settings)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        env:
+          TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
+          TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
+          cache-dir: ${{ runner.temp }}/trivy-cache
           scan-type: fs
           scanners: vuln,secret,misconfig
           format: ${{ inputs.sarif-upload && 'sarif' || 'table' }}
@@ -358,20 +379,29 @@ jobs:
           IGNORE_FILE: ${{ inputs.trivy-image-ignore-file }}
           ACCEPTED: ${{ runner.temp }}/trivy-image-accepted.yaml
         run: python3 -I .fleet/.github/scripts/trivy_ignore.py --repo="$REPO" --path="$IGNORE_FILE" --out="$ACCEPTED"
-      # Trivy also reads ./trivy.yaml and ./.trivyignore when they exist, and here they are the checkout's (on a pull
-      # request, the pull request's). The image is already built and loaded, so with an ignore file named they go:
-      # the list above is then the only thing that accepts a finding.
-      - name: Remove the checkout's own Trivy settings
-        if: ${{ inputs.trivy-image-ignore-file != '' }}
-        run: rm -f trivy.yaml .trivyignore
+      # Trivy would read ./trivy.yaml, ./.trivyignore and ./trivy-secret.yaml from this checkout, which on a pull
+      # request is the pull request's. The scan below is pointed at empty ones outside the workspace, and, as the
+      # image is already built and loaded and the scan reads the image, not the checkout, the checkout's own go too:
+      # the list above is the only thing that accepts a finding, and with no list named nothing does (`trivyignores`
+      # replaces the empty ignore file when the list is there: trivy-action exports its YAML file over this one).
+      - name: Keep the checkout's own Trivy settings out of the scan
+        env:
+          TRIVY_SETTINGS: ${{ runner.temp }}/trivy-settings
+          CHECKOUT_SETTINGS: remove
+        run: .fleet/.github/scripts/security-trivy-settings.sh
       # fleet's scripts aren't the app's files: no scan sees them, as before.
       - name: Remove fleet's scripts from the workspace
         run: rm -rf .fleet
       - name: Scan the image (OS packages and libraries)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        env:
+          TRIVY_CONFIG: ${{ runner.temp }}/trivy-settings/trivy.yaml
+          TRIVY_IGNOREFILE: ${{ runner.temp }}/trivy-settings/trivyignore
+          TRIVY_SECRET_CONFIG: ${{ runner.temp }}/trivy-settings/.git
         with:
           skip-setup-trivy: ${{ steps.trivy.outputs.installed == 'true' }}
           version: ${{ env.TRIVY_VERSION }}
+          cache-dir: ${{ runner.temp }}/trivy-cache
           image-ref: app:scan
           format: ${{ inputs.sarif-upload && 'sarif' || 'table' }}
           output: ${{ inputs.sarif-upload && 'trivy-image.sarif' || '' }}

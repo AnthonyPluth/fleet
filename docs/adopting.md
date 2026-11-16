@@ -88,7 +88,7 @@ With `sarif-upload: true` (the default) Semgrep and Trivy pass their jobs with f
 | `web-dirs` | none | Directories with a `package-lock.json` to `npm audit`, one per line; a change to their `package.json` or `package-lock.json` runs it |
 | `image-paths` | none | Regex of the paths whose change rebuilds and scans the image (none: no image scan) |
 | `dockerfile` | `Dockerfile` | The image's Dockerfile |
-| `trivy-image-ignore-file` | none | The caller's Trivy YAML ignore file (`.trivyignore.yaml`) listing the findings the owner accepted for the image scan, read from the default branch ([Accepted image findings](#accepted-image-findings)); none leaves the image scan as it was |
+| `trivy-image-ignore-file` | none | The caller's Trivy YAML ignore file (`.trivyignore.yaml`) listing the findings the owner accepted for the image scan, read from the default branch ([Accepted image findings](#accepted-image-findings)); none accepts nothing (the scans never read the checkout's own `.trivyignore`: [Trivy's settings files in the checkout](#trivys-settings-files-in-the-checkout)) |
 | `zizmor-paths` | `.` | What zizmor audits (space-separated paths); the whole tree by default |
 | `sarif-upload` | `true` | Upload findings to the Security tab; `false` fails the job on findings instead |
 | `fail-on-findings` | `false` | With `sarif-upload`, also fail the Semgrep and Trivy jobs after the upload when they found findings (Semgrep any, Trivy CRITICAL or HIGH); `false` leaves them to code scanning's check runs. No effect with `sarif-upload: false` |
@@ -120,7 +120,31 @@ Only `vulnerabilities:` is accepted (no `misconfigurations:`, `secrets:` or `lic
 
 **Where the list is read from, and who approves an entry.** The image job never reads the file from its checkout. On a pull request the checkout is the pull request's own merge commit, which its author controls, from a fork or not, so a list read from there would let a change accept its own findings. The job asks GitHub's API for the file at the tip of the repository's default branch instead, on every event, checks it (`.github/scripts/trivy_ignore.py`), and hands Trivy a copy written from what the check understood, kept outside the workspace. So an entry counts only once it is on the default branch: the owner approves it by merging the pull request that adds it, and that pull request's own scan doesn't use it. To accept a finding a change introduces, merge the entry first (it matches nothing until the change lands), then re-run the change's scan. Adding `.trivyignore.yaml` to the caller's `second-review-paths` gives every change to the list the second review, and a `CODEOWNERS` entry with a ruleset that requires Code Owner review keeps anyone else's merge from adding one. A file that isn't on the default branch accepts nothing. The file scan's job, which runs on every pull request, checks the checkout's own copy by the same rules without using it, so an entry the image job would refuse fails the pull request that adds it, not every later one that rebuilds the image. The list is a regular file of at most 64 KiB: a symbolic link fails that check.
 
-With the input set, the image job also deletes the checkout's `trivy.yaml` and `.trivyignore` before the scan (the image is already built by then): Trivy reads both from its working directory when they exist, and they would be the pull request's. The list is then the only thing that accepts an image finding. Without the input, the image scan is as before, Trivy's own reading of those two files included. The file scan (`Trivy (files)`) never uses the list to accept anything.
+The list is the only thing that accepts an image finding, with the input set or not: neither Trivy job reads Trivy's own settings files from the checkout ([Trivy's settings files in the checkout](#trivys-settings-files-in-the-checkout)). The file scan (`Trivy (files)`) never uses the list to accept anything.
+
+### Trivy's settings files in the checkout
+
+Neither Trivy job (`Trivy (files)`, `Trivy (image)`) reads Trivy's settings from the caller's checkout, on every event and whatever the inputs. Trivy by itself reads three files from its working directory when they exist, which in both jobs is the checkout, and on a pull request that is the pull request's own merge commit, so a pull request that added one could drop its own findings:
+
+| File | What Trivy would take from it |
+| --- | --- |
+| `.trivyignore` | Ids of findings to drop, for every scanner (`--ignorefile`) |
+| `trivy.yaml` | Any option (`--config`): files and directories to skip, another ignore file, severities, scanners |
+| `trivy-secret.yaml` | Secret rules to disable and paths to allow (`--secret-config`) |
+
+Before each scan, the job points Trivy at empty ones it wrote outside the workspace (`TRIVY_CONFIG`, `TRIVY_IGNOREFILE` and `TRIVY_SECRET_CONFIG` on the scan step; `.github/scripts/security-trivy-settings.sh`), so Trivy doesn't look for them in the checkout at all. A checkout that has one gets a warning on the run naming it: delete the file. Only those three names at the repository's root count: Trivy reads nothing of the kind from a subdirectory, nor a `.trivyignore.yaml` unless it is named, which the scans do only for the image's list.
+
+The file scan leaves the checkout's three where they are and scans them like any other file, so a secret committed in one is reported (a registry password in `trivy.yaml`, say): they are not settings to it, only files. (The empty secret settings are a file named `.git` for that: Trivy's secret scan skips the one file at the repository's root that has its secret settings' name, and no file a repository tracks can be named `.git`.) The image job, whose scan reads the built image and nothing in the checkout, also removes them once the image is built.
+
+Trivy's vulnerability database is not taken from the checkout either: both scans pass `cache-dir` under the runner's temporary directory, where `trivy-action` otherwise keeps it in the workspace (`.cache/trivy`), which a pull request could fill with a database of its own. The first run after this change downloads the database again, since the cache is saved for the new path.
+
+What this means for a repository that had one:
+
+- **`.trivyignore`**: its findings are reported again. One in the image goes in the list `trivy-image-ignore-file` names, with a statement and an expiry ([Accepted image findings](#accepted-image-findings)). The file scan has no such list: fix the finding, or, with `sarif-upload: true` and without `fail-on-findings`, dismiss its alert in the Security tab.
+- **`trivy.yaml`**: the scans' options are the ones `security.yml` sets (`scanners`, `severity`, `ignore-unfixed`), which the workflow's inputs already overrode. What it could add and the scans now lack is a skip list (`skip-files`, `skip-dirs`), a timeout or a database mirror. There is no input for those: one read from the checkout would be the pull request's, and a skip list hides whatever is under it. A repository that needs one asks for an input in fleet.
+- **`trivy-secret.yaml`**: no built-in secret rule is disabled and no path or pattern of the repository's is allowed. Trivy's own built-in rules and exclusions apply, the same to every file the scan reads, these three among them; a made-up secret in a test fixture that Trivy reports is changed so no rule matches it (put together at run time, say).
+
+It is the same on a push to `main` and on the weekly run, where the checkout is the default branch's: a scan of `main` reads what a pull request's scan reads, so nothing works on `main` that a pull request can't check for itself. Comments in the scanned files that Trivy honours for a misconfiguration (`#trivy:ignore:<id>` beside the line, in the formats Trivy supports them in) still work: they sit beside what they silence, in the diff the review reads.
 
 ### Trivy's version
 
