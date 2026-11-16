@@ -681,11 +681,14 @@ class FleetsOwnSecondReviewScopeTest(unittest.TestCase):
 
     def test_the_release_check_and_the_release_tools_are_covered(self) -> None:
         listed = always_risky_in_caller()
-        for path in (".github/workflows/release-check.yml", "fleet_tools/release.py", "fleet_tools/next_version.py",
-                     "fleet_tools/cli.py"):
+        self.assertIn(".github/workflows/release-check.yml", listed)
+        self.assertIn("fleet_tools/**", listed)
+        tools = sorted(path.relative_to(cli.ROOT).as_posix() for path in (cli.ROOT / "fleet_tools").rglob("*.py"))
+        for path in ("fleet_tools/cli.py", "fleet_tools/next_version.py", "fleet_tools/release.py", "fleet_tools/checks/runner.py"):
+            self.assertIn(path, tools)
+        for path in (".github/workflows/release-check.yml", *tools):
             with self.subTest(path=path):
-                self.assertIn(path, listed)
-                self.assertTrue(any(ar.matches(path, pattern) for pattern in listed))
+                self.assertTrue(ar.listed(path, listed), path)
 
     def test_the_exempt_workflows_are_fleets_own_ci_only(self) -> None:
         listed = always_risky_in_caller()

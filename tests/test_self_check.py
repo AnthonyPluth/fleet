@@ -83,6 +83,16 @@ class FleetRefTest(unittest.TestCase):
                 self.assertEqual(len(errors), 1, errors)
                 self.assertRegex(errors[0], r"^\.github/workflows/stamped\.yml:\d+: sets FLEET_REF \(")
 
+    def test_a_yaml_workflow_is_checked_too(self) -> None:
+        repo = Repo(self)
+        repo.add("reusable-tagged.yml", "reusable-tagged.yaml")
+        repo.add("reusable-fleet-at-another-ref.yml", "reusable-fleet-at-another-ref.yaml")
+        errors = self_check.check(repo.root)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertTrue(all(error.startswith(".github/workflows/reusable-fleet-at-another-ref.yaml: job run checks out "
+                                             "AnthonyPluth/fleet at ") for error in errors[:2]), errors)
+        self.assertTrue(errors[2].startswith(".github/workflows/reusable-tagged.yaml:6: sets FLEET_REF"), errors)
+
     def test_fleet_ref_in_a_value_a_comment_or_a_script_isnt_a_stamp(self) -> None:
         repo = Repo(self)
         repo.add("reusable-ok.yml", "reusable.yml")

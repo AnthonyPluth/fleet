@@ -313,6 +313,16 @@ class NotesTest(unittest.TestCase):
             self.assertEqual((code, out), (1, ""))
             self.assertIn("fleet release: no notes for 3.0.0", err)
 
+    def test_a_later_release_is_read_from_its_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CHANGELOG.md").write_text(self.CHANGELOG, encoding="utf-8")
+            notes = root / release.RELEASE_NOTES / "5.0.0.md"
+            notes.parent.mkdir(parents=True)
+            notes.write_text("## [5.0.0] - 2026-12-02\n\n### Changed\n\n- **Breaking:** Moved.\n", encoding="utf-8")
+            self.assertEqual(run("release", "notes", "5.0.0", "--root", directory), (0, "### Changed\n\n- **Breaking:** Moved.\n", ""))
+            self.assertEqual(run("release", "notes", "1.1.0", "--root", directory), (0, "### Added\n\n- New.\n", ""))
+
     def test_a_folded_release_is_read_from_its_notes(self) -> None:
         self.assertEqual(run("release", "notes", "5.0.0", "--root", str(ROOT))[1],
                          release.notes((ROOT / "CHANGELOG.md").read_text(encoding="utf-8"), "5.0.0", release.released(ROOT)[0]))
@@ -709,7 +719,8 @@ class RehearsalTest(unittest.TestCase):
         remote = Remote(self)
         self.first_release(remote)
         plan, _ = remote.plan()
-        for version in ("", "6.0.0", "v6.0", "v06.0.0", "v6.0.0\nv7.0.0", "v6.0.0; gh release delete v5.0.0", "v\u0666.0.0"):
+        for version in ("", "6.0.0", "v6.0", "v06.0.0", "v6.0.0\nv7.0.0", "v6.0.0; gh release delete v5.0.0", "v\u0666.0.0",
+                        "v6.0.0 ", " v6.0.0", "v6.0.0\n", "\ufeffv6.0.0"):
             with self.subTest(version=version):
                 done = remote.release({**plan, "version": version})
                 self.assertEqual([step.returncode for step in done], [1])
@@ -721,6 +732,31 @@ class RehearsalTest(unittest.TestCase):
                 self.assertIn("::error::The plan's notes", done[0].stdout)
         self.assertEqual(remote.calls(), [])
         self.assertEqual(sorted(remote.tags()), ["v5.0.0"])
+
+
+class AdoptingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = (ROOT / release.ADOPTING).read_text(encoding="utf-8")
+
+    def test_every_reusable_workflow_has_a_caller(self) -> None:
+        reusable = [path for path in sorted(WORKFLOWS.glob("*.yml"))
+                    if self_check.is_reusable(self_check.parse(path.read_text(encoding="utf-8")))]
+        self.assertTrue(reusable)
+        for workflow in reusable:
+            with self.subTest(workflow=workflow.name):
+                self.assertRegex(self.text, rf"uses: AnthonyPluth/fleet/\.github/workflows/{re.escape(workflow.name)}@<commit>   # vX\.Y\.Z")
+
+    def test_secrets_are_passed_by_name(self) -> None:
+        self.assertNotRegex(self.text.replace("(`secrets: inherit`", ""), r"secrets:\s*inherit\b")
+        for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "FLEET_BOT_PRIVATE_KEY"):
+            self.assertIn(f"      {name}: ${{{{ secrets.{name} }}}}", self.text)
+
+    def test_the_adoption_steps(self) -> None:
+        for needle in ("fleet sync --to vX.Y.Z", ".fleet/version", '"ref": "vX.Y.Z"', "Merge gate",
+                       'patterns: ["AnthonyPluth/fleet", "AnthonyPluth/fleet/*"]', "schedule: { interval: daily }", "cooldown: { default-days: 3 }", "guides =",
+                       "safety-critical", "review-mining", "manual"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.text)
 
 
 if __name__ == "__main__":

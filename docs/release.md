@@ -89,7 +89,7 @@ Dependabot opens the apps' pin bumps (the `fleet` group, on the apps' first run 
 
 ## The threat model
 
-`release.yml` is in the second review's always-risky paths (`agent-review-caller.yml`), with what it runs: `fleet_tools/next_version.py`, `fleet_tools/release.py` and `fleet_tools/cli.py`, and Release check's `release-check.yml`.
+`release.yml` is in the second review's always-risky paths (`agent-review-caller.yml`), with what it runs: everything under `fleet_tools/` (the Plan job runs `fleet_tools/cli.py`, which imports every module, so a change to any of them can change the version or the notes it hands on), and Release check's `release-check.yml`.
 
 - **What it trusts.** It runs only on a push to this repository's `main`, from `main`'s own files: no pull request's content, event or title reaches it except as the merged commit itself, which is as trusted as `main`. The suite and the planner run that commit's code with a read-only token and no secret, each on a runner of its own, so nothing the suite installs (Poetry's environment, the locked Claude Code, actionlint) can touch the planner's checkout.
 - **The write token.** `contents: write`, and nothing else, is held by one job that checks nothing out and runs no file of the repository: only `gh`, with every value through `env` (never an expression in a script), the commit from the push event, and the plan's version and notes checked before use (`vX.Y.Z`, one base64 line). Code in a merged commit can change the version and the notes the plan hands on, and so which new tag the commit gets, but not what the write job runs or which commit it tags: it can't push a branch, move or delete a tag, or reach anything else the token could.
