@@ -1,0 +1,28 @@
+name: Codex bot probe
+
+# A throwaway experiment, never to be merged: does Codex start a review when github-actions[bot] (this job's
+# GITHUB_TOKEN) comments "@codex review" on a draft pull request? The comment is a fixed string; nothing of the pull
+# request reaches the script but its number, through env.
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment @codex review as github-actions[bot]
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh api -X POST "repos/$REPO/issues/$PR/comments" -f body='@codex review' --jq '[.id, .user.login, .created_at] | @tsv'
