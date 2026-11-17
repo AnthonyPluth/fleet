@@ -487,8 +487,8 @@ def review(commit_id: str = SHA, author: str = CODEX) -> Json:
     return {"user": {"login": author}, "commit_id": commit_id, "state": "COMMENTED", "body": "### Codex Review"}
 
 
-def comment(body: str, author: str = CODEX) -> Json:
-    return {"user": {"login": author}, "body": body}
+def comment(body: str, author: str = CODEX, created_at: str = "2026-01-01T09:00:00Z", association: str = "OWNER") -> Json:
+    return {"user": {"login": author}, "body": body, "created_at": created_at, "author_association": association}
 
 
 def summary(commit_sha: str = SHA, state: str = "completed") -> str:
@@ -498,6 +498,14 @@ def summary(commit_sha: str = SHA, state: str = "completed") -> str:
 
 def receipt(prefix: str = SHA[:10]) -> str:
     return f"<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues.\n\n**Reviewed commit:** `{prefix}`\n"
+
+
+PUSHED = "2026-01-01T10:00:00Z"
+AFTER_THE_PUSH = "2026-01-01T10:05:00Z"
+WAITING_FOR_CODEX = "Waiting for: Codex review of this commit"
+NONE_REQUESTED = ("pending", f"{WAITING_FOR_CODEX} (none requested yet: comment @codex review)")
+REQUESTED = ("pending", f"{WAITING_FOR_CODEX} (requested)")
+RUNNING = ("pending", f"{WAITING_FOR_CODEX} (requested, running)")
 
 
 class CodexReviewTest(unittest.TestCase):
@@ -513,22 +521,80 @@ class CodexReviewTest(unittest.TestCase):
         self.assertEqual(result.reads_of("/reviews"), 0)
         self.assertEqual(result.reads_of("/comments"), 0)
 
-    def test_a_head_without_a_codex_review_waits(self) -> None:
-        gate = self.gate([], [comment("@codex review", author="octocat")])
-        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+    def test_a_head_without_a_codex_review_waits_and_says_none_was_requested(self) -> None:
+        gate = self.gate([], [])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
+
+    def test_every_wait_keeps_the_prefix(self) -> None:
+        for wait in (NONE_REQUESTED, REQUESTED, RUNNING):
+            self.assertTrue(wait[1].startswith(f"{WAITING_FOR_CODEX} ("), wait)
+            self.assertLessEqual(len(wait[1]), 140)
+
+    def test_a_request_before_the_push_was_for_an_earlier_commit(self) -> None:
+        gate = self.gate([], [comment("@codex review", author="octocat", created_at="2026-01-01T09:59:59Z")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
+
+    def test_a_request_since_the_push_says_requested(self) -> None:
+        for created_at in (PUSHED, AFTER_THE_PUSH):
+            gate = self.gate([], [comment("@codex review", author="octocat", created_at=created_at)])
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED], created_at)
+
+    def test_the_push_is_the_earliest_run_on_the_head(self) -> None:
+        gate = self.gate([], [comment("@codex review", author="octocat", created_at="2026-01-01T10:30:00Z")])
+        gate.runs([run("Security scans", created_at="2026-01-01T11:00:00Z"), run("Docs", created_at=PUSHED), codeql_run()])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
+
+    def test_only_a_comment_that_starts_with_the_request_counts_and_never_codexs_own(self) -> None:
+        quoting = comment("<!-- second-review -->\nComment `@codex review` after every push.", author="github-actions[bot]", created_at=AFTER_THE_PUSH)
+        own = comment("@codex review", author=CODEX, created_at=AFTER_THE_PUSH)
+        undated = {"user": {"login": "octocat"}, "body": "@codex review"}
+        gate = self.gate([], [quoting, own, undated, comment(receipt("b" * 10), created_at=AFTER_THE_PUSH)])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
+        gate.comments([comment("\n  @Codex Review, please", author="octocat", created_at=AFTER_THE_PUSH)])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
+
+    def test_a_bots_request_does_not_count(self) -> None:
+        typed = {**comment("@codex review", author="fleet-helper", created_at=AFTER_THE_PUSH), "user": {"login": "fleet-helper", "type": "Bot"}}
+        gate = self.gate([], [comment("@codex review", author="github-actions[bot]", created_at=AFTER_THE_PUSH), typed])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
+        gate.comments([{**comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH), "user": {"login": "octocat", "type": "User"}}])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
+
+    def test_only_a_request_from_the_owner_a_member_or_a_collaborator_counts(self) -> None:
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", ""):
+            gate = self.gate([], [comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH, association=association)])
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED], association)
+        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+            gate = self.gate([], [comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH, association=association)])
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED], association)
+
+    def test_codexs_review_of_the_head_under_way_says_running(self) -> None:
+        for state in ("running", "queued", "in_progress"):
+            gate = self.gate([], [comment(summary(state=state))])
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [RUNNING], state)
+
+    def test_a_review_under_way_of_an_older_commit_or_a_failed_one_is_not_this_ones(self) -> None:
+        gate = self.gate([], [comment(summary("b" * 40, state="running")), comment(summary(state="failed"))])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
+
+    def test_a_head_with_no_run_yet_says_neither(self) -> None:
+        gate = self.gate([], [comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH)])
+        gate.runs([])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted,
+                         [("pending", "Waiting for: Security scans (not started), CodeQL (not started), Codex review of this commit")])
 
     def test_a_review_of_an_older_commit_does_not_count(self) -> None:
         older = "b" * 40
         gate = self.gate([review(older)], [comment(summary(older)), comment(receipt(older[:10]))])
-        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
 
     def test_only_codexs_own_reviews_and_comments_count(self) -> None:
         gate = self.gate([review(author="octocat")], [comment(summary(), author="octocat"), comment(receipt(), author="hubot")])
-        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
 
     def test_a_running_review_or_a_short_prefix_does_not_count(self) -> None:
         gate = self.gate([], [comment(summary(state="in_progress")), comment(receipt(SHA[:6]))])
-        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [RUNNING])
 
     def test_a_review_a_receipt_or_a_summary_of_the_head_passes(self) -> None:
         for reviews, comments in (([review()], []), ([], [comment(receipt())]), ([], [comment(summary())])):
@@ -537,7 +603,7 @@ class CodexReviewTest(unittest.TestCase):
 
     def test_a_summary_that_is_not_json_is_ignored(self) -> None:
         gate = self.gate([], [comment("<!-- codex-review-state:v1 {not json -->")])
-        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
 
     def test_reviews_that_cannot_be_read_leave_it_pending(self) -> None:
         gate = Gate(self)
@@ -743,7 +809,7 @@ class ForkTest(unittest.TestCase):
         gate.threads([])
         gate.reviews([])
         gate.comments([])
-        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [("pending", "Waiting for: Codex review of this commit")])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
 
     def test_a_codeql_run_that_does_come_still_counts(self) -> None:
         gate = self.fork()

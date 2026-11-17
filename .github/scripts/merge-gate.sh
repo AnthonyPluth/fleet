@@ -19,7 +19,9 @@
 #   - no review thread whose first comment has a blocking badge (P1 or P2 by default, from Codex by default) is still
 #     open: resolving the thread clears it, and the caller's merge-gate-threads workflow runs the gate again when that
 #     happens.
-#   - with REQUIRE_CODEX_REVIEW, Codex has reviewed the head commit itself (not an older one): it waits until then.
+#   - with REQUIRE_CODEX_REVIEW, Codex has reviewed the head commit itself (not an older one): it waits until then,
+#     and says whether a review was asked for since the push (Codex reviews a push only when someone comments
+#     "@codex review"; it ignores that comment from a workflow's token, so the gate can't ask for it).
 # Anything still running makes it "pending". Workflows and apps that aren't about whether the change is sound are left
 # out (IGNORED_*). When it passes on a draft, it marks the draft ready for review (AUTO_READY), and when it passes on
 # one of Dependabot's pull requests, it merges it (see the end).
@@ -43,7 +45,8 @@
 #                        lets any author's badge count (default: chatgpt-codex-connector)
 #   REQUIRE_CODEX_REVIEW wait for a completed Codex review of the head (not on Dependabot's pull requests): a review
 #                        by chatgpt-codex-connector[bot] on the head commit, or its comment whose "Reviewed commit" or
-#                        review state names it (default: false)
+#                        review state names it; the wait says whether one is running, was requested or wasn't
+#                        (default: false)
 #   AUTOMERGE_DEPENDABOT merge Dependabot's pull requests once the gate passes (default: true)
 #   AUTOMERGE_FLEET_BUMPS merge one that changes a fleet reference too, rather than leave it for the owner
 #                        (default: false)
@@ -109,10 +112,19 @@ fi
 field() { cut -f"$1" <<< "$prs"; }
 number=$(field 1) author=$(field 2) head_repo=$(field 3) draft=$(field 4)
 CODEX_REVIEWED_HEAD='.[] | select(.user.login == "'"$CODEX"'" and .commit_id == "'"$SHA"'") | "reviewed"'
-CODEX_COMMENTED_HEAD='.[] | select(.user.login == "'"$CODEX"'") | (.body // "") | (
-  (capture("<!-- codex-review-state:v1 (?<s>[^\n]*) -->") | .s | fromjson? | .code_review?
-     | select(.status == "completed" and .commit_sha == "'"$SHA"'") | "reviewed"),
-  (capture("Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`") | .c | select(. as $c | "'"$SHA"'" | startswith($c)) | "reviewed"))'
+# The conversation's comments, one line each that matters: "reviewed" for Codex's finished review of the head,
+# "running" for its review state naming the head as still under way, and "requested <time>" for a comment that
+# starts with "@codex review" (Codex's own quote the phrase, and a review's comment may too, further in) from a
+# person who owns the repository, belongs to its organization or collaborates on it. A bot's doesn't count (Codex
+# answers github-actions[bot]'s with "create a Codex account" and reviews nothing), nor an outsider's, which Codex
+# may not act on either: if it does, its review state says so.
+CODEX_COMMENTED_HEAD='.[] | (.body // "") as $body | if .user.login == "'"$CODEX"'" then $body | (
+  (capture("<!-- codex-review-state:v1 (?<s>[^\n]*) -->") | .s | fromjson? | .code_review? | select(.commit_sha == "'"$SHA"'")
+     | if .status == "completed" then "reviewed" elif ((.status // "") | test("^(queued|pending|running|in_progress)$")) then "running" else empty end),
+  (capture("Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`") | .c | select(. as $c | "'"$SHA"'" | startswith($c)) | "reviewed"))
+  elif (.user.type // "") != "Bot" and ((.user.login // "") | endswith("[bot]") | not)
+       and ((.author_association // "") | test("^(OWNER|MEMBER|COLLABORATOR)$")) and ($body | test("^\\s*@codex review\\b"; "i"))
+    then "requested \(.created_at // "")" else empty end'
 echo "Pull request #$number by $author at $SHA"
 # CodeQL's default setup doesn't analyse Dependabot's pull requests (its check says the configurations "were not found"),
 # so none of its runs ever comes: waiting for one would keep the gate pending, and the merge below, forever. A run that
@@ -207,11 +219,30 @@ evaluate() {
   # 5. With REQUIRE_CODEX_REVIEW, a finished Codex review of this very commit: a pull request review on it (Codex posts
   # one when it has findings), or Codex's own comment naming it, by the full hash in its review state line or by at
   # least 7 leading digits after "Reviewed commit:" (a review that found nothing is a comment, not a review). Only
-  # Codex's login counts. A review of an older commit doesn't: the head waits for its own.
+  # Codex's login counts. A review of an older commit doesn't: the head waits for its own, and the wait says why:
+  # Codex's review state names the head as under way ("requested, running"), a comment starting with "@codex review"
+  # came after the head was pushed ("requested"), or neither ("none requested yet: comment @codex review"), since
+  # Codex reviews a push only when asked. The push is the earliest of the head's runs above, which GitHub creates when
+  # the commit arrives (a commit's own dates are whatever its author set); a head with no run yet says neither.
   if [ "$REQUIRE_CODEX_REVIEW" = true ]; then
     if codex_reviews=$(gh api --paginate "repos/$REPO/pulls/$number/reviews?per_page=100" --jq "$CODEX_REVIEWED_HEAD") &&
        codex_comments=$(gh api --paginate "repos/$REPO/issues/$number/comments?per_page=100" --jq "$CODEX_COMMENTED_HEAD"); then
-      grep -q reviewed <<< "$codex_reviews$codex_comments" || pending+=("Codex review of this commit")
+      if ! grep -qx reviewed <<< "$codex_reviews"$'\n'"$codex_comments"; then
+        pushed_at=$(awk -F'\t' 'NF && $1 != "" && (first == "" || $1 < first) { first = $1 } END { print first }' <<< "$runs")
+        if grep -qx running <<< "$codex_comments"; then codex_wait=running
+        elif [ -z "$pushed_at" ]; then codex_wait=unknown
+        elif awk -v since="$pushed_at" '$1 == "requested" && $2 >= since { found = 1 } END { exit !found }' <<< "$codex_comments"; then
+          codex_wait=requested
+        else
+          codex_wait=none
+        fi
+        case "$codex_wait" in
+          running) pending+=("Codex review of this commit (requested, running)") ;;
+          requested) pending+=("Codex review of this commit (requested)") ;;
+          none) pending+=("Codex review of this commit (none requested yet: comment @codex review)") ;;
+          *) pending+=("Codex review of this commit") ;;
+        esac
+      fi
     else
       pending+=("Codex review (couldn't be read)")
     fi
