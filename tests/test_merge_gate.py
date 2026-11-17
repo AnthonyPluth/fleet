@@ -545,10 +545,11 @@ class CodexReviewTest(unittest.TestCase):
         self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
 
     def test_only_a_comment_that_starts_with_the_request_counts_and_never_codexs_own(self) -> None:
-        quoting = comment("<!-- second-review -->\nComment `@codex review` after every push.", author="github-actions[bot]", created_at=AFTER_THE_PUSH)
+        quoting = comment("<!-- a review -->\nComment `@codex review` after every push.", author="octocat", created_at=AFTER_THE_PUSH)
+        mentioning = comment("I'll comment @codex review after this push.", author="octocat", created_at=AFTER_THE_PUSH)
         own = comment("@codex review", author=CODEX, created_at=AFTER_THE_PUSH)
-        undated = {"user": {"login": "octocat"}, "body": "@codex review"}
-        gate = self.gate([], [quoting, own, undated, comment(receipt("b" * 10), created_at=AFTER_THE_PUSH)])
+        undated = {"user": {"login": "octocat"}, "body": "@codex review", "author_association": "OWNER"}
+        gate = self.gate([], [quoting, mentioning, own, undated, comment(receipt("b" * 10), created_at=AFTER_THE_PUSH)])
         self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
         gate.comments([comment("\n  @Codex Review, please", author="octocat", created_at=AFTER_THE_PUSH)])
         self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
