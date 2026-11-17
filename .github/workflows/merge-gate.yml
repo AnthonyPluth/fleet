@@ -61,7 +61,7 @@ on:
         type: string
         default: chatgpt-codex-connector
       require-codex-review:
-        description: Wait for a completed Codex review of the head commit (a review by chatgpt-codex-connector[bot] on it, or its "Reviewed commit" receipt or review summary naming it) before passing; Dependabot's pull requests are exempt. false (the default) asks for none. The caller's merge-gate-threads workflow should then also run on issue_comment, where Codex posts a review that found nothing.
+        description: Wait for a completed Codex review of the head commit (a review by chatgpt-codex-connector[bot] on it, or its "Reviewed commit" receipt or review summary naming it) before passing; Dependabot's pull requests are exempt. While it waits, the status says whether that review is running, was requested since the push, or wasn't (Codex reviews a push only when someone comments "@codex review"). false (the default) asks for none. The caller's merge-gate-threads workflow should then also run on issue_comment, where Codex posts a review that found nothing.
         type: boolean
         default: false
       automerge-dependabot:

@@ -114,6 +114,13 @@ class Sections(unittest.TestCase):
             self.assertIn(phrase, body)
         self.assertNotIn("Mark it ready for review only when", body)
 
+    def test_git_and_prs_asks_for_a_review_after_every_push(self) -> None:
+        body = SHIPPED["git-and-prs"].body
+        for phrase in ("comment `@codex review` on it", "and again after every push to it, however small",
+                       "it needs a finished review of the head commit itself", "a push without the comment leaves the gate waiting"):
+            self.assertIn(phrase, body)
+        self.assertNotIn("substantive", body)
+
     def test_nothing_app_specific_in_the_blocks(self) -> None:
         for section in SHIPPED.values():
             for word in ("Codex", "SQLAlchemy", "Postgres", "oidc.", "Waypoint's", "Runway's", "http://", "https://"):
