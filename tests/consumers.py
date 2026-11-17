@@ -20,6 +20,20 @@ OFFLINE_TAGS = mock.patch.object(sync, "ls_remote", side_effect=lambda version: 
 AT_FIXTURE_COMMIT = mock.patch.multiple(identity, commit=mock.Mock(return_value=FIXTURE_COMMIT), tag=mock.Mock(return_value=None))
 GIT_ENV = {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test",
            "GIT_COMMITTER_EMAIL": "test@example.com", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+STANDARD_LIBRARY_FIRST = ("-I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; "
+                          "sys.exit(main())' \"$PWD\"")
+SHADOWS = ("argparse", "json")
+
+
+def shadows(marker: Path) -> dict[str, str]:
+    return {f"{name}.py": f"open({str(marker)!r}, 'a').write({name + chr(10)!r})\n"
+                          f"raise SystemExit({name + '.py at the checkout root ran in place of the standard library module'!r})\n"
+            for name in SHADOWS}
+
+
+def shadow_the_standard_library(checkout: Path, marker: Path) -> None:
+    for name, text in shadows(marker).items():
+        write(checkout, name, text)
 
 
 def git(root: Path, *args: str) -> str:

@@ -44,10 +44,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      # -E and -s ignore PYTHON* variables and user site-packages (-I would also drop the working directory from
-      # sys.path, and with it fleet_tools).
+      # The standard library first, as release.yml's Plan runs fleet: -I (-E, -s and -P, so the checkout isn't first on
+      # sys.path, where a root-level file named like a standard-library module would be imported in its place) and -S
+      # (no site-packages; fleet_tools is standard library only), then `-c` appends the checkout ("$PWD") to sys.path and
+      # runs fleet_tools.cli.
       - name: fleet release check
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
-        run: /usr/bin/python3 -E -s -m fleet_tools.cli release check --base 'HEAD^1' --title="$TITLE" --body="$BODY"
+        run: /usr/bin/python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" release check --base 'HEAD^1' --title="$TITLE" --body="$BODY"

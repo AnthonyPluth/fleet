@@ -1,10 +1,14 @@
 import contextlib
 import io
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from consumers import STANDARD_LIBRARY_FIRST
 
 from fleet_tools import agents_md, cli, self_check
 
@@ -172,6 +176,56 @@ class FleetRefTest(unittest.TestCase):
             self.assertNotRegex(text, r"(?m)^\s*FLEET_REF:", path.name)
             checkouts += text.count("ref: ${{ inputs.fleet-ref || job.workflow_sha }}")
         self.assertGreater(checkouts, 0)
+
+def workflow_steps(text: str) -> list[list[str]]:
+    steps: list[list[str]] = []
+    for line in text.splitlines():
+        if re.match(r" {6}- | {0,4}\S", line) or not steps:
+            steps.append([])
+        steps[-1].append(line)
+    return steps
+
+
+def sparse_patterns(step: str) -> list[str] | None:
+    found = re.search(r"^ {10}sparse-checkout: (?:\|\n((?: {12}\S.*\n)+)|(\S+)$)", step, re.MULTILINE)
+    if not found or "sparse-checkout-cone-mode: false" not in step:
+        return None
+    return found.group(1).split() if found.group(1) else [found.group(2)]
+
+
+class StandardLibraryFirstTest(unittest.TestCase):
+    def test_every_run_of_fleet_puts_the_standard_library_before_fleets_files(self) -> None:
+        first: dict[str, int] = {}
+        for path in sorted((cli.ROOT / ".github" / "workflows").glob("*.yml")):
+            steps = ["\n".join(lines) + "\n" for lines in workflow_steps(path.read_text(encoding="utf-8"))]
+            from_fleet = False
+            for step in steps:
+                lines = step.splitlines()
+                for index, line in enumerate(lines):
+                    if line.lstrip().startswith("#") or "fleet_tools.cli" not in line:
+                        continue
+                    with self.subTest(workflow=path.name, line=line.strip()[:80]):
+                        if STANDARD_LIBRARY_FIRST in line:
+                            first[path.name] = first.get(path.name, 0) + 1
+                        elif not re.search(r"\bpython3? -I -m fleet_tools\.cli ", line):
+                            self.assertRegex(line, r"\bpython3 -E -s -m fleet_tools\.cli ")
+                            self.assertTrue("        working-directory: .fleet" in lines
+                                            or any(re.fullmatch(r" +cd \.fleet \|\| exit 1", before) for before in lines[:index]))
+                            from_fleet = True
+            if from_fleet:
+                checkouts = [step for step in steps if re.search(r"^ {10}path: \.fleet$", step, re.MULTILINE)]
+                self.assertTrue(checkouts, path.name)
+                for step in checkouts:
+                    patterns = sparse_patterns(step)
+                    with self.subTest(workflow=path.name, checkout=patterns):
+                        assert patterns is not None, f"{path.name}: .fleet isn't a sparse checkout without cone mode"
+                        for pattern in patterns:
+                            top = pattern.split("/")[0]
+                            self.assertNotIn("*", pattern)
+                            self.assertTrue("/" in pattern or not pattern.endswith(".py"), pattern)
+                            self.assertNotIn(top.removesuffix(".py"), sys.stdlib_module_names, pattern)
+        self.assertEqual(first, {"ci.yml": 1, "release-check.yml": 1, "release.yml": 2, "sync.yml": 1})
+
 
 class GuardScriptTest(unittest.TestCase):
     def run_guard(self, fleet_ref: str, workflow_sha: str) -> subprocess.CompletedProcess[str]:

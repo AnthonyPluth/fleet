@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from consumers import GIT_ENV
+from consumers import GIT_ENV, STANDARD_LIBRARY_FIRST, shadows
 
 from fleet_tools import agents_md, cli, release, self_check, sync, sync_workflow
 
@@ -369,14 +369,15 @@ class ReleaseWorkflowTest(unittest.TestCase):
         checkout, planner, notes = self.steps("plan")
         self.assertTrue(str(checkout["uses"]).startswith("actions/checkout@"))
         self.assertEqual(checkout["with"], {"fetch-depth": "0", "persist-credentials": "false"})
-        self.assertEqual(planner["run"], '/usr/bin/python3 -E -s -m fleet_tools.cli next-version --first-parent --fragments '
+        self.assertEqual(planner["run"], f'/usr/bin/python3 {STANDARD_LIBRARY_FIRST} next-version --first-parent --fragments '
                                          '--sha "$SHA"')
         self.assertEqual(planner["env"], {"SHA": "${{ github.sha }}"})
         self.assertEqual(notes["if"], "steps.next.outputs.skip != 'true'")
         script = step_script("Write the notes")
         self.assertIn("git describe --tags --abbrev=0 --first-parent --match 'v[0-9]*.[0-9]*.[0-9]*' \"$SHA^\"", script)
-        self.assertIn('/usr/bin/python3 -E -s -m fleet_tools.cli release notes "${VERSION#v}" --since "$previous" --at '
+        self.assertIn(f'/usr/bin/python3 {STANDARD_LIBRARY_FIRST} release notes "${{VERSION#v}}" --since "$previous" --at '
                       '"$SHA"', script)
+        self.assertNotIn("-m fleet_tools", self.text)
 
     def test_the_write_job_runs_only_gh_on_checked_values(self) -> None:
         steps = self.steps("release")
@@ -714,6 +715,20 @@ class RehearsalTest(unittest.TestCase):
         self.assertFalse((remote.origin / "feature.txt").exists())
         self.assertEqual(remote.git("show", "v6.1.1:changelog.d/a-bad-input.md"),
                          remote.git("show", "v6.1.0:changelog.d/a-bad-input.md"))
+
+    def test_a_root_level_file_named_like_a_standard_library_module_never_runs_in_the_plan(self) -> None:
+        remote = Remote(self)
+        marker = remote.base / "shadowed"
+        head = remote.land("fix: a root-level argparse.py and json.py (#160)", {
+            **shadows(marker), "changelog.d/root-modules.md": "---\nkind: fixed\n---\nTwo root-level modules (#160).\n"})
+        self.assertEqual(sorted(path.name for path in remote.origin.glob("*.py")), ["argparse.py", "json.py"])
+        plan, _ = remote.plan()
+        self.assertFalse(marker.exists(), marker.read_text(encoding="utf-8") if marker.exists() else "")
+        self.assertEqual((plan["version"], plan["new"], notes_of(plan)),
+                         ("v5.0.1", "true", "### Fixed\n\n- Two root-level modules (#160).\n"))
+        self.assertEqual([step.returncode for step in remote.release(plan)], [0, 0, 0])
+        self.assertEqual(remote.tags()["v5.0.1"], head)
+        self.assertFalse(marker.exists())
 
     def test_the_plan_refuses_what_the_release_job_shouldnt_tag(self) -> None:
         remote = Remote(self)

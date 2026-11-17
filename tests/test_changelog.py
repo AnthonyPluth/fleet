@@ -2,12 +2,22 @@ import contextlib
 import io
 import os
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from consumers import commit, git, temporary, write
+from consumers import (
+    GIT_ENV,
+    STANDARD_LIBRARY_FIRST,
+    commit,
+    git,
+    shadows,
+    temporary,
+    write,
+)
 
 from fleet_tools import cli, release, self_check
 
@@ -517,10 +527,32 @@ class ReleaseCheckWorkflowTest(unittest.TestCase):
         self.assertEqual(self.job["if"], "github.event.pull_request.user.login != 'dependabot[bot]'")
         self.assertEqual(mapping(self.job["permissions"]), {"contents": "read"})
         step = self.steps[-1]
-        self.assertEqual(step["run"], "/usr/bin/python3 -E -s -m fleet_tools.cli release check --base 'HEAD^1' "
+        self.assertEqual(step["run"], f"/usr/bin/python3 {STANDARD_LIBRARY_FIRST} release check --base 'HEAD^1' "
                                       "--title=\"$TITLE\" --body=\"$BODY\"")
         self.assertEqual(mapping(step["env"]), {"TITLE": "${{ github.event.pull_request.title }}",
                                                 "BODY": "${{ github.event.pull_request.body }}"})
+
+    @unittest.skipUnless(Path("/usr/bin/python3").is_file() and shutil.which("git"), "the check runs on the runner's /usr/bin/python3")
+    def test_a_root_level_file_named_like_a_standard_library_module_never_runs_in_the_check(self) -> None:
+        base = temporary(self)
+        checkout, marker = base / "fleet", base / "shadowed"
+        shutil.copytree(ROOT / "fleet_tools", checkout / "fleet_tools", ignore=shutil.ignore_patterns("__pycache__"))
+        write(checkout, "CHANGELOG.md", FROZEN_CHANGELOG)
+        git(checkout, "init", "-q", "-b", "main")
+        commit(checkout, "chore: main")
+        git(checkout, "checkout", "-q", "-b", "change")
+        for name, text in {**shadows(marker), "changelog.d/root-modules.md": fragment_text("fixed", "Two root-level modules.")}.items():
+            write(checkout, name, text)
+        commit(checkout, "fix: a root-level argparse.py and json.py")
+        git(checkout, "checkout", "-q", "main")
+        git(checkout, "merge", "-q", "--no-ff", "-m", "Merge the pull request into its base", "change")
+        done = subprocess.run(["bash", "-eo", "pipefail", "-c", str(self.steps[-1]["run"])], cwd=checkout, capture_output=True,
+                              text=True, check=False, env={**GIT_ENV, "PATH": "/usr/bin:/bin", "HOME": str(base),
+                                                           "TITLE": "fix: a root-level argparse.py and json.py", "BODY": ""})
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        self.assertEqual(done.stdout, "fleet release check: ok, it adds changelog.d/root-modules.md (fixed); its title makes it a "
+                                      "patch change\n")
+        self.assertFalse(marker.exists())
 
     def test_the_checkout_holds_the_merge_commits_base(self) -> None:
         checkout = self.steps[0]

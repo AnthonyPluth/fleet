@@ -196,14 +196,17 @@ jobs:
           cat "$RUNNER_TEMP/body.md"
 
       # The content at the pin, staged. Nothing under .github/workflows/ may change (the App couldn't push it, and the
-      # sync has no business there); a sync that changes nothing is an error too, since the versions differ.
+      # sync has no business there); a sync that changes nothing is an error too, since the versions differ. fleet runs
+      # from .fleet-pin, a full clone, with the standard library first (-I and -S, as release.yml's Plan runs it): the
+      # clone is appended to sys.path rather than put first as `-m` would put it, so no root-level file there stands in
+      # for a standard-library module.
       - name: Sync the content
         id: content
         if: steps.plan.outputs.action == 'sync'
         env:
           PIN: ${{ steps.plan.outputs.pin }}
         run: |
-          (cd .fleet-pin && python3 -E -s -m fleet_tools.cli sync --to "$PIN" --root "$GITHUB_WORKSPACE/app")
+          (cd .fleet-pin && python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" sync --to "$PIN" --root "$GITHUB_WORKSPACE/app")
           cd app || exit 1
           git add -A
           if [ -n "$(git diff --cached --name-only -- .github/workflows)" ]; then

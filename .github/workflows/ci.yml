@@ -58,11 +58,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           persist-credentials: false
-      # The runner's own python3, with nothing installed: -E and -s ignore PYTHON* variables and user site-packages.
-      # (-I would also drop the working directory from sys.path, and with it fleet_tools.)
+      # The runner's own python3, with nothing installed, and the standard library first, as release.yml's Plan runs
+      # fleet: -I (-E, -s and -P, so the checkout isn't first on sys.path, where a root-level file named like a
+      # standard-library module would be imported in its place) and -S (no site-packages), then `-c` appends the
+      # checkout ("$PWD") to sys.path and runs fleet_tools.cli.
       - name: fleet checks on each fixture consumer
         run: |
           /usr/bin/python3 --version
           for consumer in tests/fixtures/consumer-*/; do
-            /usr/bin/python3 -E -s -m fleet_tools.cli checks --root "$consumer"
+            /usr/bin/python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" checks --root "$consumer"
           done

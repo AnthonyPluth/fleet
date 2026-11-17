@@ -15,10 +15,12 @@ from consumers import (
     FIXTURE_VERSION,
     FIXTURES,
     RUNWAY,
+    STANDARD_LIBRARY_FIRST,
     WAYPOINT,
     commit,
     copy,
     git,
+    shadow_the_standard_library,
     temporary,
     write,
 )
@@ -670,8 +672,8 @@ class SyncWorkflow(unittest.TestCase):
         script = self.steps["Sync the content"].split("run: |\n", 1)[1]
         self.assertIn('git diff --cached --name-only -- .github/workflows', script)
         self.assertIn("The sync changed files under .github/workflows/", script)
-        self.assertIn('fleet_tools.cli sync --to "$PIN"', script)
-        self.assertIn("cd .fleet-pin", script)
+        self.assertIn(f'(cd .fleet-pin && python3 {STANDARD_LIBRARY_FIRST} sync --to "$PIN" --root "$GITHUB_WORKSPACE/app")', script)
+        self.assertNotIn("-m fleet_tools.cli sync ", script)
 
     def test_no_expression_reaches_a_shell(self) -> None:
         for body in run_bodies(self.text):
@@ -806,7 +808,9 @@ class FixtureMode(unittest.TestCase):
                 self.assertIn(f"## CHANGELOG v1.0.0 → {found['pin']}", body)
                 self.assertEqual(found["title"], sync_workflow.plan(workspace / "app").title)
                 if action == "sync":
+                    shadow_the_standard_library(workspace / ".fleet-pin", workspace / "shadowed")
                     self.run_step("Sync the content", workspace, env)
+                    self.assertFalse((workspace / "shadowed").exists())
                     changed = base64.b64decode(self.outputs(env)["changed"]).decode().split()
                     self.assertEqual(sorted(changed), sync_fixture.expected())
                     self.assertEqual((workspace / "app/.fleet/version").read_text(encoding="utf-8"), f"v1.1.0\n{own}\n")

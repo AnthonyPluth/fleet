@@ -85,13 +85,17 @@ jobs:
           fetch-depth: 0       # main's history and every tag, for the planner and the notes
           persist-credentials: false
       # Its outputs: newest, then version and new, or skip (true when this commit isn't main's newest any more and
-      # isn't tagged yet, so nothing is released from it). -E and -s ignore PYTHON* variables and user site-packages
-      # (-I would also drop the working directory from sys.path, and with it fleet_tools).
+      # isn't tagged yet, so nothing is released from it). The planner and the notes run with the standard library first:
+      # -I (-E and -s, which ignore PYTHON* variables and user site-packages, and -P, which keeps the working directory,
+      # the checkout, off the front of sys.path, where `-m` would put it and a root-level file named like a
+      # standard-library module, an argparse.py or a json.py, would be imported in its place) and -S (no site-packages and
+      # no .pth file; fleet_tools is standard library only). `-c` then appends the checkout ("$PWD") to sys.path, after
+      # the standard library, and runs fleet_tools.cli's main from it.
       - name: Work out the next version
         id: next
         env:
           SHA: ${{ github.sha }}
-        run: /usr/bin/python3 -E -s -m fleet_tools.cli next-version --first-parent --fragments --sha "$SHA"
+        run: /usr/bin/python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" next-version --first-parent --fragments --sha "$SHA"
       # The notes start from the newest release tag in main's first-parent history before this commit: on a re-run
       # whose commit is tagged already, the tag before its own. They reach the release job as one base64 line, so no
       # entry can end the output or start another.
@@ -112,7 +116,7 @@ jobs:
             echo "::error::The previous release tag '${previous:0:40}' isn't vX.Y.Z"
             exit 1
           fi
-          /usr/bin/python3 -E -s -m fleet_tools.cli release notes "${VERSION#v}" --since "$previous" --at "$SHA" > "$RUNNER_TEMP/notes.md"
+          /usr/bin/python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" release notes "${VERSION#v}" --since "$previous" --at "$SHA" > "$RUNNER_TEMP/notes.md"
           echo "The notes of $VERSION, since $previous:"
           cat "$RUNNER_TEMP/notes.md"
           echo "notes=$(base64 -w0 < "$RUNNER_TEMP/notes.md")" >> "$GITHUB_OUTPUT"
