@@ -487,8 +487,8 @@ def review(commit_id: str = SHA, author: str = CODEX) -> Json:
     return {"user": {"login": author}, "commit_id": commit_id, "state": "COMMENTED", "body": "### Codex Review"}
 
 
-def comment(body: str, author: str = CODEX, created_at: str = "2026-01-01T09:00:00Z") -> Json:
-    return {"user": {"login": author}, "body": body, "created_at": created_at}
+def comment(body: str, author: str = CODEX, created_at: str = "2026-01-01T09:00:00Z", association: str = "OWNER") -> Json:
+    return {"user": {"login": author}, "body": body, "created_at": created_at, "author_association": association}
 
 
 def summary(commit_sha: str = SHA, state: str = "completed") -> str:
@@ -552,6 +552,21 @@ class CodexReviewTest(unittest.TestCase):
         self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
         gate.comments([comment("\n  @Codex Review, please", author="octocat", created_at=AFTER_THE_PUSH)])
         self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
+
+    def test_a_bots_request_does_not_count(self) -> None:
+        typed = {**comment("@codex review", author="fleet-helper", created_at=AFTER_THE_PUSH), "user": {"login": "fleet-helper", "type": "Bot"}}
+        gate = self.gate([], [comment("@codex review", author="github-actions[bot]", created_at=AFTER_THE_PUSH), typed])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED])
+        gate.comments([{**comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH), "user": {"login": "octocat", "type": "User"}}])
+        self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED])
+
+    def test_only_a_request_from_the_owner_a_member_or_a_collaborator_counts(self) -> None:
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", ""):
+            gate = self.gate([], [comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH, association=association)])
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [NONE_REQUESTED], association)
+        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+            gate = self.gate([], [comment("@codex review", author="octocat", created_at=AFTER_THE_PUSH, association=association)])
+            self.assertEqual(gate.run(REQUIRE_CODEX_REVIEW="true").posted, [REQUESTED], association)
 
     def test_codexs_review_of_the_head_under_way_says_running(self) -> None:
         for state in ("running", "queued", "in_progress"):

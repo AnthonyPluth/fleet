@@ -113,13 +113,18 @@ field() { cut -f"$1" <<< "$prs"; }
 number=$(field 1) author=$(field 2) head_repo=$(field 3) draft=$(field 4)
 CODEX_REVIEWED_HEAD='.[] | select(.user.login == "'"$CODEX"'" and .commit_id == "'"$SHA"'") | "reviewed"'
 # The conversation's comments, one line each that matters: "reviewed" for Codex's finished review of the head,
-# "running" for its review state naming the head as still under way, and "requested <time>" for anyone else's comment
-# that starts with "@codex review" (Codex's own quote the phrase, and a review's comment may too, further in).
+# "running" for its review state naming the head as still under way, and "requested <time>" for a comment that
+# starts with "@codex review" (Codex's own quote the phrase, and a review's comment may too, further in) from a
+# person who owns the repository, belongs to its organization or collaborates on it. A bot's doesn't count (Codex
+# answers github-actions[bot]'s with "create a Codex account" and reviews nothing), nor an outsider's, which Codex
+# may not act on either: if it does, its review state says so.
 CODEX_COMMENTED_HEAD='.[] | (.body // "") as $body | if .user.login == "'"$CODEX"'" then $body | (
   (capture("<!-- codex-review-state:v1 (?<s>[^\n]*) -->") | .s | fromjson? | .code_review? | select(.commit_sha == "'"$SHA"'")
      | if .status == "completed" then "reviewed" elif ((.status // "") | test("^(queued|pending|running|in_progress)$")) then "running" else empty end),
   (capture("Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`") | .c | select(. as $c | "'"$SHA"'" | startswith($c)) | "reviewed"))
-  elif ($body | test("^\\s*@codex review\\b"; "i")) then "requested \(.created_at // "")" else empty end'
+  elif (.user.type // "") != "Bot" and ((.user.login // "") | endswith("[bot]") | not)
+       and ((.author_association // "") | test("^(OWNER|MEMBER|COLLABORATOR)$")) and ($body | test("^\\s*@codex review\\b"; "i"))
+    then "requested \(.created_at // "")" else empty end'
 echo "Pull request #$number by $author at $SHA"
 # CodeQL's default setup doesn't analyse Dependabot's pull requests (its check says the configurations "were not found"),
 # so none of its runs ever comes: waiting for one would keep the gate pending, and the merge below, forever. A run that
