@@ -8,9 +8,6 @@ on:
         type: string
         default: ""
 
-env:
-  FLEET_REF: main   # stamped by the release
-
 permissions: {}
 
 defaults:

@@ -23,7 +23,7 @@ from consumers import (
     write,
 )
 
-from fleet_tools import agents_md, cli, drift, identity, vendor
+from fleet_tools import agents_md, cli, drift, identity, release, vendor
 from fleet_tools.checks import skills
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,9 +67,9 @@ class Plugin(unittest.TestCase):
         self.assertEqual([(plugin["name"], plugin["source"]) for plugin in marketplace["plugins"]],
                          [("fleet", "./plugins/fleet")])
 
-    def test_the_plugin_version_is_fleets(self) -> None:
+    def test_the_plugin_version_is_a_constant_not_a_release(self) -> None:
         manifest = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["name"], "v" + manifest["version"]), ("fleet", VERSION))
+        self.assertEqual((manifest["name"], manifest["version"]), ("fleet", release.UNVERSIONED))
 
     def test_the_hook_is_declared_as_session_start(self) -> None:
         hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]

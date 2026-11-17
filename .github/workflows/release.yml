@@ -1,88 +1,166 @@
 name: Release
 
-# Tags fleet's release and publishes its notes (docs/release.md). A release pull request stamps every version
-# (`fleet release prepare X.Y.Z`); when it lands, the push to main changes VERSION and this tags that commit vX.Y.Z,
-# once: it fails if the tag exists on another commit, and never moves one, and it tags nothing while a changelog
-# fragment is still pending at that commit (one merged after prepare ran). A re-run after a failed publish reuses the
-# tag on this commit and skips a release that already exists. The notes are the version's own file,
-# changelog.d/released/X.Y.Z.md, which prepare folds from the changelog fragments (CHANGELOG.md's section up to 4.0.0,
-# where it froze).
+# Every push to main is a release (docs/release.md). Nothing in fleet's tree names its version, so the release is the
+# merged commit as it is: tagged vX.Y.Z and published as a GitHub Release, never a release commit. Three jobs:
 #
-# It runs only on a push to main, from main's own files, with a contents: write token and nothing else: no pull
-# request's content reaches it, and every value reaches the shell through env, never through an expression in a script.
+# - make check (contents: read): the whole suite on the merged commit, because two pull requests that each passed can
+#   break main together; nothing is released while it fails.
+# - Plan (contents: read): on a fresh checkout and the runner's own python3, `fleet next-version --first-parent
+#   --fragments` works out the version from main's first-parent commits since the last tag, one per merged pull request
+#   (its title: feat: a minor, a ! or BREAKING CHANGE: a major, anything else a patch; a breaking changelog fragment
+#   added since that tag's tree a major whatever the titles say), and skips a commit that isn't main's newest any more.
+#   `fleet release notes --since` then writes the notes: the changelog fragments this commit's tree adds to the
+#   previous tag's, and the subject of each merge that added none.
+# - Tag and release (contents: write, nothing else): runs no file of the repository, only gh, on the plan's version
+#   checked to be vX.Y.Z and the commit the push names. It tags that commit through the API and publishes the release
+#   with --verify-tag. A tag already on this commit (a re-run after a failed publish) passes; one on any other commit
+#   fails, as a release tag is never moved (the release-tags ruleset refuses that too). A release that exists already
+#   isn't published again.
+#
+# One concurrency group, fleet-release, that waits instead of cancelling: two runs never overlap, so two never plan the
+# same version. GitHub keeps one pending run per group, so a push while one run works and another waits replaces the
+# waiting one; the newest commit's release then carries every merge since the last tag, and its notes list them all.
+# It runs only on a push to this repository's main, from main's own files: no pull request's content or event reaches
+# it, and every value reaches the shell through env, never through an expression in a script.
 on:
   push:
     branches: [main]
-    paths: [VERSION]
 
 permissions: {}
 
 concurrency:
-  group: release
+  group: fleet-release
   cancel-in-progress: false
 
-# bash, which runs each step with -eo pipefail: a failed gh call fails the step instead of passing an empty result on.
+# bash, which runs each step with -eo pipefail: a failed git or gh call fails the step instead of passing an empty
+# result on.
 defaults:
   run:
     shell: bash
 
 jobs:
+  check:
+    name: make check
+    if: github.repository == 'AnthonyPluth/fleet'
+    runs-on: ubuntu-latest   # hosted: fleet's own CI, as fleet CI runs it
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      # The oldest Python fleet_tools supports (pyproject.toml's requires-python), as fleet CI's.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
+        id: python
+        with:
+          python-version: "3.11"
+      - name: Install Poetry
+        env:
+          PYTHON_PATH: ${{ steps.python.outputs.python-path }}
+        run: pipx install --python "$PYTHON_PATH" "poetry==2.5.1"
+      - name: make setup
+        run: make setup
+      # GH_TOKEN (read-only here) lets zizmor run its online audits too, as in fleet CI.
+      - name: make check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make check
+
+  plan:
+    name: Plan
+    needs: check
+    if: github.repository == 'AnthonyPluth/fleet'
+    runs-on: ubuntu-latest   # hosted: the standard library and git only
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      skip: ${{ steps.next.outputs.skip }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          fetch-depth: 0       # main's history and every tag, for the planner and the notes
+          persist-credentials: false
+      # Its outputs: newest, then version and new, or skip (true when this commit isn't main's newest any more and
+      # isn't tagged yet, so nothing is released from it). The planner and the notes run with the standard library first:
+      # -I (-E and -s, which ignore PYTHON* variables and user site-packages, and -P, which keeps the working directory,
+      # the checkout, off the front of sys.path, where `-m` would put it and a root-level file named like a
+      # standard-library module, an argparse.py or a json.py, would be imported in its place) and -S (no site-packages and
+      # no .pth file; fleet_tools is standard library only). `-c` then appends the checkout ("$PWD") to sys.path, after
+      # the standard library, and runs fleet_tools.cli's main from it.
+      - name: Work out the next version
+        id: next
+        env:
+          SHA: ${{ github.sha }}
+        run: /usr/bin/python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" next-version --first-parent --fragments --sha "$SHA"
+      # The notes start from the newest release tag in main's first-parent history before this commit: on a re-run
+      # whose commit is tagged already, the tag before its own. They reach the release job as one base64 line, so no
+      # entry can end the output or start another.
+      - name: Write the notes
+        id: notes
+        if: steps.next.outputs.skip != 'true'
+        env:
+          SHA: ${{ github.sha }}
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if ! [[ "$VERSION" =~ $tag ]]; then
+            echo "::error::The planner's version '${VERSION:0:40}' isn't vX.Y.Z"
+            exit 1
+          fi
+          previous=$(git describe --tags --abbrev=0 --first-parent --match 'v[0-9]*.[0-9]*.[0-9]*' "$SHA^")
+          if ! [[ "$previous" =~ $tag ]]; then
+            echo "::error::The previous release tag '${previous:0:40}' isn't vX.Y.Z"
+            exit 1
+          fi
+          /usr/bin/python3 -I -S -c 'import sys; sys.path.append(sys.argv.pop(1)); from fleet_tools.cli import main; sys.exit(main())' "$PWD" release notes "${VERSION#v}" --since "$previous" --at "$SHA" > "$RUNNER_TEMP/notes.md"
+          echo "The notes of $VERSION, since $previous:"
+          cat "$RUNNER_TEMP/notes.md"
+          echo "notes=$(base64 -w0 < "$RUNNER_TEMP/notes.md")" >> "$GITHUB_OUTPUT"
+
   release:
     name: Tag and release
-    if: github.repository == 'AnthonyPluth/fleet'
+    needs: plan
+    if: github.repository == 'AnthonyPluth/fleet' && needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest   # hosted: holds the contents: write token that creates the tag
     timeout-minutes: 5
     permissions:
       contents: write          # create the tag and the release
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
-        with:
-          persist-credentials: false
-      # The runner's own python3, with nothing installed (fleet_tools is standard library only).
-      - name: Check that every stamp agrees
-        run: /usr/bin/python3 -E -s -m fleet_tools.cli self-check
-      # At a release commit `fleet release prepare` has folded every changelog fragment into the release's notes, so a
-      # fragment still in changelog.d/ merged to main after prepare ran. Release check's `fleet release check` refuses
-      # that only when it runs on the release pull request after that merge, and GitHub doesn't re-run a pull request's
-      # checks when its base moves: 4.1.0 was tagged that way, with two changes in its code and not in its notes, one of
-      # them breaking under a minor version. So nothing is tagged while one is pending; the version stays untagged and
-      # the next release pull request, cut from main, folds what's pending (docs/release.md).
-      - name: Check that no fragment is pending
+      - name: Check the plan
+        id: plan
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          NOTES: ${{ needs.plan.outputs.notes }}
         run: |
-          pending=$(/usr/bin/python3 -E -s -c '
-          import pathlib
-          from fleet_tools import release
-          print(" ".join(found.path.as_posix() for found in release.fragments(pathlib.Path.cwd())[0]))
-          ')
-          if [[ -n "$pending" ]]; then
-            echo "::error::Pending at the release commit: $pending. A fragment still in changelog.d/ here merged to main after fleet release prepare ran, so this release's notes leave its entry out. Not tagging, and this version stays untagged: cut the next release from main (fleet release prepare on a fresh branch folds what's pending; a breaking fragment makes it a major), docs/release.md."
+          if ! [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The plan's version '${VERSION:0:40}' isn't vX.Y.Z"
             exit 1
           fi
-          echo "No changelog fragment is pending"
-      - name: Read the version and the notes
-        id: version
-        run: |
-          # Exactly as fleet self-check reads it: the version, then at most one newline ($(cat) would drop them all).
-          raw=$(cat VERSION; printf x)
-          raw=${raw%x}
-          version=${raw%$'\n'}
-          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::VERSION isn't MAJOR.MINOR.PATCH in ASCII digits without leading zeros"
+          if ! [[ "$NOTES" =~ ^[A-Za-z0-9+/]+=*$ ]]; then
+            echo "::error::The plan's notes aren't one base64 line"
             exit 1
           fi
-          /usr/bin/python3 -E -s -m fleet_tools.cli release notes "$version" > "$RUNNER_TEMP/notes.md"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          base64 -d <<< "$NOTES" > "$RUNNER_TEMP/notes.md"
+          if [[ ! -s "$RUNNER_TEMP/notes.md" ]]; then
+            echo "::error::The plan's notes are empty"
+            exit 1
+          fi
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
       # Re-runnable: a tag already on this commit (from a run whose publish failed) passes; one on any other commit fails.
       - name: Tag the commit
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.plan.outputs.tag }}
         run: |
           if existing=$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha' 2>/dev/null); then
             if [[ "$existing" != "$SHA" ]]; then
-              echo "::error::$TAG exists already on $existing: a release tag is never moved. Bump VERSION in a new release pull request."
+              echo "::error::$TAG exists already on $existing: a release tag is never moved. The next merge to main releases the next version."
               exit 1
             fi
             echo "$TAG is already on $SHA; not tagging again"
@@ -94,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.plan.outputs.tag }}
         run: |
           if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
             echo "The release $TAG exists already; not publishing again"

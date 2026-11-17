@@ -63,9 +63,6 @@ on:
         description: The link to the run's `loop-stats.json` artifact.
         value: ${{ jobs.mine.outputs.loop-stats-url }}
 
-env:
-  FLEET_REF: v5.0.0   # stamped by the release
-
 permissions: {}
 
 # bash, which runs each step with -eo pipefail: a command that fails inside a pipeline fails the step.

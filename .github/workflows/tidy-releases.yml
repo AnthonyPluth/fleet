@@ -40,9 +40,6 @@ on:
         type: string
         default: ""
 
-env:
-  FLEET_REF: v5.0.0   # stamped by the release
-
 permissions: {}
 
 # bash, which runs each step with -eo pipefail: a failed gh call fails the step instead of passing an empty result on.

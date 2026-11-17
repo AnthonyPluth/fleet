@@ -2,12 +2,22 @@ import contextlib
 import io
 import os
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from consumers import commit, git, temporary, write
+from consumers import (
+    GIT_ENV,
+    STANDARD_LIBRARY_FIRST,
+    commit,
+    git,
+    shadows,
+    temporary,
+    write,
+)
 
 from fleet_tools import cli, release, self_check
 
@@ -102,13 +112,14 @@ class FragmentFormatTest(unittest.TestCase):
         write(root, "changelog.d", "a file\n")
         self.assertEqual(release.fragments(root), ([], ["changelog.d: isn't a directory"]))
 
-    def test_render_groups_by_kind_in_the_changelogs_format(self) -> None:
+    def test_the_notes_group_the_fragments_by_kind_in_the_changelogs_format(self) -> None:
         found = [release.Fragment(Path(f"changelog.d/{name}.md"), kind, entry) for name, kind, entry in (
             ("b", "fixed", "Fixed b."), ("a", "changed", "Changed a."), ("c", "breaking", "Broke c."), ("d", "added", "Added d."))]
-        self.assertEqual(release.render("5.0.0", "2026-12-01", found),
-                         "## [5.0.0] - 2026-12-01\n\n### Added\n\n- Added d.\n\n### Changed\n\n- **Breaking:** Broke c.\n"
-                         "- Changed a.\n\n### Fixed\n\n- Fixed b.\n")
-        self.assertEqual(release.render("4.0.1", "2026-12-01", found[:1]), "## [4.0.1] - 2026-12-01\n\n### Fixed\n\n- Fixed b.\n")
+        self.assertEqual("\n".join(release.grouped(found)),
+                         "\n### Added\n\n- Added d.\n\n### Changed\n\n- **Breaking:** Broke c.\n- Changed a.\n\n### Fixed\n\n"
+                         "- Fixed b.")
+        self.assertEqual("\n".join(release.grouped(found[:1], ["deps: a bump (#9)"])),
+                         "\n### Changed\n\n- deps: a bump (#9)\n\n### Fixed\n\n- Fixed b.")
 
     def test_fleets_own_fragments_parse(self) -> None:
         self.assertEqual(release.fragments(ROOT)[1], [])
@@ -135,6 +146,9 @@ class ReleasedNotesTest(unittest.TestCase):
             "4.5.0.md": ("## [4.5.0] - 2026-02-30\n\n- x\n", "the section for 4.5.0 has the impossible date 2026-02-30"),
             "4.6.0.md": ("## [4.6.0] - 2026-11-20\n\n### Added\n", "the section for 4.6.0 has no entries"),
             "4.7.0.md": ("## [4.7.0] - 2026-11-20\n\n- x\n\n```sh\n", "changelog.d/released/4.7.0.md:5: a code fence that is never closed"),
+            "5.0.1.md": ("## [5.0.1] - 2026-11-20\n\n- x\n", f"changelog.d/released/ is frozen at {release.FOLDED}, the last "
+                         "release whose fragments were folded"),
+            "6.0.0.md": ("## [6.0.0] - 2026-11-20\n\n- x\n", "a later release's notes are the changelog fragments it adds"),
         }
         for name, (text, needle) in cases.items():
             with self.subTest(name=name):
@@ -150,7 +164,6 @@ class ReleasedNotesTest(unittest.TestCase):
 class PullRequestCheckTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = temporary(self) / "fleet"
-        write(self.root, "VERSION", f"{release.FROZEN}\n")
         write(self.root, "CHANGELOG.md", FROZEN_CHANGELOG)
         write(self.root, "README.md", "fleet\n")
         git(self.root, "init", "-q", "-b", "main")
@@ -246,11 +259,6 @@ class PullRequestCheckTest(unittest.TestCase):
         commit(self.root, "fix: an input is gone")
         self.assertEqual(self.check(), (0, "fleet release check: ok, it adds changelog.d/change.md (breaking)\n", ""))
 
-    def test_a_release_pull_request_is_no_change_of_its_own(self) -> None:
-        self.release_on_main()
-        self.assertEqual(self.check(title=f"chore: release v{LATER}", body="Notes.\n"),
-                         (0, "fleet release check: ok, a release pull request, which folds the fragments\n", ""))
-
     def test_a_pull_request_that_adds_a_fragment_passes(self) -> None:
         write(self.root, "README.md", "fleet, changed\n")
         write(self.root, "changelog.d/readme.md", fragment_text("fixed", "The README says more."))
@@ -265,17 +273,65 @@ class PullRequestCheckTest(unittest.TestCase):
         self.assertEqual(err, "fleet release check: this pull request adds no changelog fragment: add changelog.d/<name>.md, "
                               f"{release.FRAGMENT_FORMAT} (docs/release.md)\n")
 
-    def test_editing_someone_elses_fragment_isnt_adding_one(self) -> None:
-        write(self.root, "changelog.d/earlier.md", fragment_text("added", "Earlier."))
+    def merged(self, name: str = "earlier", kind: str = "added") -> None:
+        write(self.root, f"changelog.d/{name}.md", fragment_text(kind, "Earlier."))
         commit(self.root, "feat: earlier")
         git(self.root, "checkout", "-q", "main")
         git(self.root, "merge", "-q", "--ff-only", "change")
         git(self.root, "checkout", "-q", "-b", "follow-up")
+
+    def merged_fragment_error(self, path: str) -> str:
+        return (f"fleet release check: {path}: a merged fragment, which a pull request doesn't change or delete: each "
+                "release's notes are the fragments its tree adds to the previous tag's, so the apps' sync bodies read it "
+                "from there (docs/release.md); say a correction in a fragment of its own, and name a new one so it takes "
+                "no merged fragment's name\n")
+
+    def test_editing_someone_elses_fragment_isnt_adding_one_and_fails(self) -> None:
+        self.merged()
         write(self.root, "changelog.d/earlier.md", fragment_text("added", "Earlier, reworded."))
         commit(self.root, "docs: reword")
-        code, _, err = self.check()
+        code, out, err = self.check()
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "fleet release check: this pull request adds no changelog fragment: add changelog.d/<name>.md, "
+                              f"{release.FRAGMENT_FORMAT} (docs/release.md)\n" + self.merged_fragment_error("changelog.d/earlier.md"))
+
+    def test_a_merged_fragment_changed_or_deleted_beside_a_new_one_fails(self) -> None:
+        self.merged()
+        write(self.root, "changelog.d/correction.md", fragment_text("fixed", "Earlier, corrected."))
+        for change in ("reworded", "deleted", "a new fragment that takes its name"):
+            with self.subTest(change=change):
+                git(self.root, "checkout", "-q", "-B", "follow-up", "main")
+                write(self.root, "changelog.d/correction.md", fragment_text("fixed", "Earlier, corrected."))
+                if change == "deleted":
+                    (self.root / "changelog.d/earlier.md").unlink()
+                else:
+                    write(self.root, "changelog.d/earlier.md", fragment_text("fixed", "Something else."))
+                commit(self.root, f"fix: {change}")
+                code, out, err = self.check(title=f"fix: {change}")
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(err, self.merged_fragment_error("changelog.d/earlier.md"))
+        git(self.root, "checkout", "-q", "-B", "follow-up", "main")
+        write(self.root, "changelog.d/correction.md", fragment_text("fixed", "Earlier, corrected."))
+        commit(self.root, "fix: a correction of its own")
+        self.assertEqual(self.check(title="fix: a correction of its own"),
+                         (0, "fleet release check: ok, it adds changelog.d/correction.md (fixed); its title makes it a "
+                             "patch change\n", ""))
+
+    def test_a_revert_keeps_the_reverted_fragment_and_adds_its_own(self) -> None:
+        write(self.root, "feature.txt", "A feature.\n")
+        self.merged("a-feature")
+        git(self.root, "revert", "--no-edit", "HEAD")
+        write(self.root, "changelog.d/revert-a-feature.md", fragment_text("fixed", "Reverts the feature."))
+        commit(self.root, "fix: revert the feature")
+        code, _, err = self.check(title='Revert "feat: earlier"')
         self.assertEqual(code, 1)
-        self.assertIn("adds no changelog fragment", err)
+        self.assertEqual(err, self.merged_fragment_error("changelog.d/a-feature.md"))
+        git(self.root, "checkout", "-q", "main", "--", "changelog.d/a-feature.md")
+        commit(self.root, "fix: keep the reverted pull request's fragment")
+        self.assertFalse((self.root / "feature.txt").exists())
+        self.assertEqual(self.check(title='Revert "feat: earlier"'),
+                         (0, "fleet release check: ok, it adds changelog.d/revert-a-feature.md (fixed); its title makes it "
+                             "a patch change\n", ""))
 
     def test_a_fragment_that_doesnt_parse_fails(self) -> None:
         write(self.root, "changelog.d/readme.md", "---\nkind: feature\n---\nThe README.\n")
@@ -316,86 +372,26 @@ class PullRequestCheckTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"CHANGELOG.md: frozen at {release.FROZEN}, and this pull request deletes it", err)
 
-    def release_on_main(self) -> None:
-        write(self.root, "changelog.d/readme.md", fragment_text("fixed", "The README."))
-        commit(self.root, "fix: the README")
+    def test_the_released_notes_are_frozen(self) -> None:
+        write(self.root, f"changelog.d/released/{LATER}.md", f"## [{LATER}] - 2026-11-20\n\n### Fixed\n\n- Folded.\n")
+        commit(self.root, f"chore: release v{LATER}")
         git(self.root, "checkout", "-q", "main")
         git(self.root, "merge", "-q", "--ff-only", "change")
-        git(self.root, "checkout", "-q", "-b", "release")
-        (self.root / "changelog.d/readme.md").unlink()
-        write(self.root, "VERSION", f"{LATER}\n")
-        write(self.root, f"changelog.d/released/{LATER}.md", f"## [{LATER}] - 2026-11-20\n\n### Fixed\n\n- The README.\n")
-        commit(self.root, f"chore: release v{LATER}")
-
-    def test_a_release_pull_request_folds_the_fragments_and_adds_none(self) -> None:
-        self.release_on_main()
-        self.assertEqual(self.check(), (0, "fleet release check: ok, a release pull request, which folds the fragments\n", ""))
-
-    def test_a_release_pull_request_fails_when_a_fragment_lands_on_the_base_after_prepare(self) -> None:
-        self.release_on_main()
-        git(self.root, "checkout", "-q", "main")
-        git(self.root, "merge", "-q", "--no-ff", "-m", "Merge the release pull request into main", "release")
-        self.assertEqual(self.check("HEAD^1")[0], 0)
-        git(self.root, "reset", "-q", "--hard", "HEAD^1")
-        write(self.root, "changelog.d/late.md", fragment_text("breaking", "Merged while the release was open."))
-        commit(self.root, "feat!: merged while the release was open")
-        git(self.root, "merge", "-q", "--no-ff", "-m", "Merge the release pull request into main", "release")
-        code, _, err = self.check("HEAD^1")
-        self.assertEqual(code, 1)
-        self.assertEqual(err, "fleet release check: changelog.d/late.md: still pending in the tree this release pull "
-                              "request merges into (merged to the base after `fleet release prepare` ran), so the release "
-                              "would ship without it in its notes; cut the release again from the base: `fleet release "
-                              "prepare X.Y.Z` on a fresh branch\n")
-
-    def test_a_release_pull_request_that_adds_a_fragment_fails(self) -> None:
-        self.release_on_main()
-        write(self.root, "changelog.d/sneaked.md", fragment_text("added", "Sneaked in."))
-        commit(self.root, "feat: sneaked in")
-        code, _, err = self.check()
-        self.assertEqual(code, 1)
-        self.assertIn("changelog.d/sneaked.md: a release pull request (it changes VERSION) folds the fragments and adds none", err)
-
-    def test_a_release_pull_request_writes_only_its_own_notes(self) -> None:
-        self.release_on_main()
-        write(self.root, "changelog.d/released/4.0.9.md", "## [4.0.9] - 2026-11-19\n\n- Made up.\n")
-        commit(self.root, "chore: more notes")
-        code, _, err = self.check()
-        self.assertEqual(code, 1)
-        self.assertIn("changelog.d/released/4.0.9.md: a released version's notes, which a pull request doesn't change", err)
-
-    def test_a_release_pull_request_doesnt_rewrite_an_earlier_releases_notes(self) -> None:
-        self.release_on_main()
-        git(self.root, "checkout", "-q", "main")
-        git(self.root, "merge", "-q", "--ff-only", "release")
-        write(self.root, "changelog.d/next.md", fragment_text("added", "Next."))
-        commit(self.root, "feat: next")
-        git(self.root, "checkout", "-q", "-b", "release-2")
-        (self.root / "changelog.d/next.md").unlink()
-        write(self.root, "VERSION", "4.2.0\n")
-        write(self.root, "changelog.d/released/4.2.0.md", "## [4.2.0] - 2026-11-21\n\n### Added\n\n- Next.\n")
-        commit(self.root, "chore: release v4.2.0")
-        self.assertEqual(self.check()[0], 0)
-        write(self.root, f"changelog.d/released/{LATER}.md", f"## [{LATER}] - 2026-11-20\n\n### Fixed\n\n- Rewritten.\n")
-        commit(self.root, "chore: and rewrite the last notes")
-        code, _, err = self.check()
-        self.assertEqual(code, 1)
-        self.assertEqual(err, f"fleet release check: changelog.d/released/{LATER}.md: a released version's notes, which a "
-                              "pull request doesn't change (`fleet release prepare` writes the new release's, in its "
-                              "release pull request)\n")
-
-    def test_a_pull_request_that_changes_a_releases_notes_fails(self) -> None:
-        self.release_on_main()
-        git(self.root, "checkout", "-q", "main")
-        git(self.root, "merge", "-q", "--ff-only", "release")
-        git(self.root, "checkout", "-q", "-b", "rewrite")
-        write(self.root, f"changelog.d/released/{LATER}.md", f"## [{LATER}] - 2026-11-20\n\n### Fixed\n\n- Rewritten.\n")
-        write(self.root, "changelog.d/rewrite.md", fragment_text("fixed", "Rewrote the notes."))
-        commit(self.root, "docs: rewrite the notes")
-        code, _, err = self.check()
-        self.assertEqual(code, 1)
-        self.assertEqual(err, f"fleet release check: changelog.d/released/{LATER}.md: a released version's notes, which a "
-                              "pull request doesn't change (`fleet release prepare` writes the new release's, in its "
-                              "release pull request)\n")
+        for case in ("rewritten", "deleted", "added"):
+            with self.subTest(case=case):
+                git(self.root, "checkout", "-q", "-B", "rewrite", "main")
+                write(self.root, "changelog.d/rewrite.md", fragment_text("fixed", "Rewrote the notes."))
+                path = f"changelog.d/released/{LATER if case != 'added' else '4.2.0'}.md"
+                if case == "deleted":
+                    (self.root / path).unlink()
+                else:
+                    write(self.root, path, "## [4.2.0] - 2026-11-21\n\n### Fixed\n\n- Rewritten.\n")
+                commit(self.root, "docs: the notes")
+                code, _, err = self.check()
+                self.assertEqual(code, 1)
+                self.assertIn(f"fleet release check: {path}: changelog.d/released/ is frozen at {release.FOLDED}: a "
+                              "released version's notes, which a pull request doesn't change; a later release's notes "
+                              "are the fragments it adds (docs/release.md)\n", err)
 
     def test_in_ci_the_merge_commits_first_parent_is_the_base(self) -> None:
         write(self.root, "README.md", "fleet, changed\n")
@@ -531,10 +527,32 @@ class ReleaseCheckWorkflowTest(unittest.TestCase):
         self.assertEqual(self.job["if"], "github.event.pull_request.user.login != 'dependabot[bot]'")
         self.assertEqual(mapping(self.job["permissions"]), {"contents": "read"})
         step = self.steps[-1]
-        self.assertEqual(step["run"], "/usr/bin/python3 -E -s -m fleet_tools.cli release check --base 'HEAD^1' "
+        self.assertEqual(step["run"], f"/usr/bin/python3 {STANDARD_LIBRARY_FIRST} release check --base 'HEAD^1' "
                                       "--title=\"$TITLE\" --body=\"$BODY\"")
         self.assertEqual(mapping(step["env"]), {"TITLE": "${{ github.event.pull_request.title }}",
                                                 "BODY": "${{ github.event.pull_request.body }}"})
+
+    @unittest.skipUnless(Path("/usr/bin/python3").is_file() and shutil.which("git"), "the check runs on the runner's /usr/bin/python3")
+    def test_a_root_level_file_named_like_a_standard_library_module_never_runs_in_the_check(self) -> None:
+        base = temporary(self)
+        checkout, marker = base / "fleet", base / "shadowed"
+        shutil.copytree(ROOT / "fleet_tools", checkout / "fleet_tools", ignore=shutil.ignore_patterns("__pycache__"))
+        write(checkout, "CHANGELOG.md", FROZEN_CHANGELOG)
+        git(checkout, "init", "-q", "-b", "main")
+        commit(checkout, "chore: main")
+        git(checkout, "checkout", "-q", "-b", "change")
+        for name, text in {**shadows(marker), "changelog.d/root-modules.md": fragment_text("fixed", "Two root-level modules.")}.items():
+            write(checkout, name, text)
+        commit(checkout, "fix: a root-level argparse.py and json.py")
+        git(checkout, "checkout", "-q", "main")
+        git(checkout, "merge", "-q", "--no-ff", "-m", "Merge the pull request into its base", "change")
+        done = subprocess.run(["bash", "-eo", "pipefail", "-c", str(self.steps[-1]["run"])], cwd=checkout, capture_output=True,
+                              text=True, check=False, env={**GIT_ENV, "PATH": "/usr/bin:/bin", "HOME": str(base),
+                                                           "TITLE": "fix: a root-level argparse.py and json.py", "BODY": ""})
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        self.assertEqual(done.stdout, "fleet release check: ok, it adds changelog.d/root-modules.md (fixed); its title makes it a "
+                                      "patch change\n")
+        self.assertFalse(marker.exists())
 
     def test_the_checkout_holds_the_merge_commits_base(self) -> None:
         checkout = self.steps[0]

@@ -1,26 +1,30 @@
 import contextlib
 import io
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from consumers import STANDARD_LIBRARY_FIRST
 
 from fleet_tools import agents_md, cli, self_check
 
 WORKFLOW_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "workflows"
 
 
-def stamps(root: Path, version: str) -> None:
-    released = "" if version.startswith("0.") else f"## [{version}] - 2026-11-02\n\n- A change.\n"
-    (root / "CHANGELOG.md").write_text(f"# Changelog\n\n{released}", encoding="utf-8")
-    (root / "pyproject.toml").write_text(f'[project]\nname = "fleet"\nversion = "{version}"\n', encoding="utf-8")
+def unstamped(root: Path) -> None:
+    (root / "CHANGELOG.md").write_text("# Changelog\n\n## [4.0.0] - 2026-11-14\n\n- A change.\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nname = "fleet"\nversion = "0.0.0"\n', encoding="utf-8")
     plugin = root / "plugins" / "fleet" / ".claude-plugin"
     plugin.mkdir(parents=True)
-    (plugin / "plugin.json").write_text(f'{{"name": "fleet", "version": "{version}"}}\n', encoding="utf-8")
-    (root / "AGENTS.md").write_text(agents_md.sync("# Agent guide\n", agents_md.sections(), f"v{version}")[0], encoding="utf-8")
+    (plugin / "plugin.json").write_text('{"name": "fleet", "version": "0.0.0"}\n', encoding="utf-8")
+    shutil.copytree(cli.ROOT / agents_md.SECTIONS, root / agents_md.SECTIONS)
+    (root / "AGENTS.md").write_text(agents_md.sync("# Agent guide\n", agents_md.sections(), None)[0], encoding="utf-8")
     (root / "docs").mkdir()
-    (root / "docs" / "adopting.md").write_text(f"# Adopting fleet\n\n```sh\ntools/fleet sync --to v{version}\n```\n", encoding="utf-8")
+    (root / "docs" / "adopting.md").write_text("# Adopting fleet\n\n```sh\ntools/fleet sync --to vX.Y.Z\n```\n", encoding="utf-8")
 
 
 def ok_text() -> str:
@@ -39,14 +43,13 @@ def moved_after_checkout(text: str, guard: str) -> str:
 
 
 class Repo:
-    def __init__(self, test: unittest.TestCase, version: str = "0.1.0") -> None:
+    def __init__(self, test: unittest.TestCase) -> None:
         temporary = tempfile.TemporaryDirectory()
         test.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.workflows = self.root / ".github" / "workflows"
         self.workflows.mkdir(parents=True)
-        (self.root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
-        stamps(self.root, version)
+        unstamped(self.root)
         self.add("self-test-ok.yml", "self-test.yml")
 
     def add(self, fixture: str, name: str | None = None) -> None:
@@ -59,46 +62,48 @@ class FleetItselfTest(unittest.TestCase):
 
 
 class FleetRefTest(unittest.TestCase):
-    def test_a_stamped_reusable_workflow_passes(self) -> None:
+    def test_a_reusable_workflow_without_a_stamp_passes(self) -> None:
         repo = Repo(self)
         repo.add("reusable-ok.yml", "reusable.yml")
+        repo.add("reusable-no-fleet-ref.yml")
         repo.add("plain.yml")
         self.assertEqual(self_check.check(repo.root), [])
 
-    def test_a_reusable_workflow_without_fleet_ref_fails(self) -> None:
+    def test_a_fleet_ref_stamp_anywhere_fails(self) -> None:
         repo = Repo(self)
-        repo.add("reusable-no-fleet-ref.yml")
-        errors = self_check.check(repo.root)
-        self.assertEqual(len(errors), 1)
-        self.assertIn(".github/workflows/reusable-no-fleet-ref.yml", errors[0])
-        self.assertIn("FLEET_REF", errors[0])
-
-    def test_a_fleet_ref_that_disagrees_with_version_fails(self) -> None:
-        repo = Repo(self)
-        repo.add("reusable-wrong-ref.yml")
-        errors = self_check.check(repo.root)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("'v0.0.9'", errors[0])
-        self.assertIn("'main'", errors[0])
-
-    def test_main_while_version_is_1_x_fails(self) -> None:
-        repo = Repo(self, version="1.2.0")
-        repo.add("reusable-ok.yml")
-        errors = self_check.check(repo.root)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("'v1.2.0'", errors[0])
-
-    def test_a_tag_matching_version_passes(self) -> None:
-        repo = Repo(self, version="1.2.0")
         repo.add("reusable-tagged.yml")
-        self.assertEqual(self_check.check(repo.root), [])
+        self.assertEqual(self_check.check(repo.root), [
+            ".github/workflows/reusable-tagged.yml:6: sets FLEET_REF (env.FLEET_REF), the release stamp fleet no longer "
+            "has: a workflow's fleet files come from `${{ inputs.fleet-ref || job.workflow_sha }}`, and nothing in the "
+            "tree names a version (docs/release.md)"])
+        for case, text in (("a workflow that isn't reusable", "name: Plain\non: push\nenv:\n  FLEET_REF: main\njobs: {}\n"),
+                           ("a job's env", "on: push\njobs:\n  run:\n    env:\n      'FLEET_REF': v1.0.0\n    steps: []\n"),
+                           ("a step's env", "on: workflow_call\njobs:\n  run:\n    steps:\n      - env:\n"
+                                            "          FLEET_REF: v6.0.0\n        run: echo\n")):
+            with self.subTest(case=case):
+                repo = Repo(self)
+                (repo.workflows / "stamped.yml").write_text(text, encoding="utf-8")
+                errors = self_check.check(repo.root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertRegex(errors[0], r"^\.github/workflows/stamped\.yml:\d+: sets FLEET_REF \(")
 
-    def test_a_tag_while_version_is_0_x_fails(self) -> None:
+    def test_a_yaml_workflow_is_checked_too(self) -> None:
         repo = Repo(self)
         repo.add("reusable-tagged.yml", "reusable-tagged.yaml")
+        repo.add("reusable-fleet-at-another-ref.yml", "reusable-fleet-at-another-ref.yaml")
         errors = self_check.check(repo.root)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("reusable-tagged.yaml", errors[0])
+        self.assertEqual(len(errors), 3, errors)
+        self.assertTrue(all(error.startswith(".github/workflows/reusable-fleet-at-another-ref.yaml: job run checks out "
+                                             "AnthonyPluth/fleet at ") for error in errors[:2]), errors)
+        self.assertTrue(errors[2].startswith(".github/workflows/reusable-tagged.yaml:6: sets FLEET_REF"), errors)
+
+    def test_fleet_ref_in_a_value_a_comment_or_a_script_isnt_a_stamp(self) -> None:
+        repo = Repo(self)
+        repo.add("reusable-ok.yml", "reusable.yml")
+        text = ok_text().replace("      - name: Say so\n", "      - name: Mention it\n        run: 'echo \"FLEET_REF: main\"'   # FLEET_REF: x\n"
+                                                           "      - name: Say so\n")
+        (repo.workflows / "reusable.yml").write_text(text, encoding="utf-8")
+        self.assertEqual(self_check.check(repo.root), [])
 
     def test_a_fleet_checkout_at_any_other_ref_fails(self) -> None:
         repo = Repo(self)
@@ -158,36 +163,68 @@ class FleetRefTest(unittest.TestCase):
         env_line = lines.index("          REF: ${{ env.FLEET_REF }}   # env.FLEET_REF in a comment is fine") + 1
         run_line = lines.index('          echo "${FLEET_REF}"') + 1
         self.assertEqual(errors, [
-            f".github/workflows/reusable.yml:{env_line}: reads FLEET_REF (REF: ${{{{ env.FLEET_REF }}}}), the release's "
-            "stamp only: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`",
-            f".github/workflows/reusable.yml:{run_line}: reads FLEET_REF (echo \"${{FLEET_REF}}\"), the release's stamp "
-            "only: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`"])
+            f".github/workflows/reusable.yml:{env_line}: reads FLEET_REF (REF: ${{{{ env.FLEET_REF }}}}), a release "
+            "stamp fleet no longer has: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`",
+            f".github/workflows/reusable.yml:{run_line}: reads FLEET_REF (echo \"${{FLEET_REF}}\"), a release stamp "
+            "fleet no longer has: fleet's files come from `${{ inputs.fleet-ref || job.workflow_sha }}`"])
 
     def test_fleets_own_fleet_checkouts_are_at_the_workflows_own_commit(self) -> None:
         checkouts = 0
         for path in sorted((cli.ROOT / ".github" / "workflows").glob("*.yml")):
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("env.FLEET_REF", text, path.name)
+            self.assertNotRegex(text, r"(?m)^\s*FLEET_REF:", path.name)
             checkouts += text.count("ref: ${{ inputs.fleet-ref || job.workflow_sha }}")
         self.assertGreater(checkouts, 0)
 
-    def test_a_workflow_that_isnt_reusable_needs_no_fleet_ref(self) -> None:
-        repo = Repo(self)
-        repo.add("plain.yml")
-        self.assertEqual(self_check.check(repo.root), [])
+def workflow_steps(text: str) -> list[list[str]]:
+    steps: list[list[str]] = []
+    for line in text.splitlines():
+        if re.match(r" {6}- | {0,4}\S", line) or not steps:
+            steps.append([])
+        steps[-1].append(line)
+    return steps
 
-    def test_version_must_exist_and_be_a_version(self) -> None:
-        repo = Repo(self)
-        (repo.root / "VERSION").write_text("one\n", encoding="utf-8")
-        self.assertIn("isn't a version", self_check.check(repo.root)[0])
-        (repo.root / "VERSION").unlink()
-        self.assertEqual(self_check.check(repo.root), ["VERSION: missing"])
 
-    def test_expected_ref(self) -> None:
-        self.assertEqual(self_check.expected_ref("0.1.0"), "main")
-        self.assertEqual(self_check.expected_ref("0.12.3"), "main")
-        self.assertEqual(self_check.expected_ref("1.0.0"), "v1.0.0")
-        self.assertEqual(self_check.expected_ref("10.0.1"), "v10.0.1")
+def sparse_patterns(step: str) -> list[str] | None:
+    found = re.search(r"^ {10}sparse-checkout: (?:\|\n((?: {12}\S.*\n)+)|(\S+)$)", step, re.MULTILINE)
+    if not found or "sparse-checkout-cone-mode: false" not in step:
+        return None
+    return found.group(1).split() if found.group(1) else [found.group(2)]
+
+
+class StandardLibraryFirstTest(unittest.TestCase):
+    def test_every_run_of_fleet_puts_the_standard_library_before_fleets_files(self) -> None:
+        first: dict[str, int] = {}
+        for path in sorted((cli.ROOT / ".github" / "workflows").glob("*.yml")):
+            steps = ["\n".join(lines) + "\n" for lines in workflow_steps(path.read_text(encoding="utf-8"))]
+            from_fleet = False
+            for step in steps:
+                lines = step.splitlines()
+                for index, line in enumerate(lines):
+                    if line.lstrip().startswith("#") or "fleet_tools.cli" not in line:
+                        continue
+                    with self.subTest(workflow=path.name, line=line.strip()[:80]):
+                        if STANDARD_LIBRARY_FIRST in line:
+                            first[path.name] = first.get(path.name, 0) + 1
+                        elif not re.search(r"\bpython3? -I -m fleet_tools\.cli ", line):
+                            self.assertRegex(line, r"\bpython3 -E -s -m fleet_tools\.cli ")
+                            self.assertTrue("        working-directory: .fleet" in lines
+                                            or any(re.fullmatch(r" +cd \.fleet \|\| exit 1", before) for before in lines[:index]))
+                            from_fleet = True
+            if from_fleet:
+                checkouts = [step for step in steps if re.search(r"^ {10}path: \.fleet$", step, re.MULTILINE)]
+                self.assertTrue(checkouts, path.name)
+                for step in checkouts:
+                    patterns = sparse_patterns(step)
+                    with self.subTest(workflow=path.name, checkout=patterns):
+                        assert patterns is not None, f"{path.name}: .fleet isn't a sparse checkout without cone mode"
+                        for pattern in patterns:
+                            top = pattern.split("/")[0]
+                            self.assertNotIn("*", pattern)
+                            self.assertTrue("/" in pattern or not pattern.endswith(".py"), pattern)
+                            self.assertNotIn(top.removesuffix(".py"), sys.stdlib_module_names, pattern)
+        self.assertEqual(first, {"ci.yml": 1, "release-check.yml": 1, "release.yml": 2, "sync.yml": 1})
 
 
 class GuardScriptTest(unittest.TestCase):
@@ -391,18 +428,18 @@ class CommandTest(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(cli.main(["self-check", "--root", str(repo.root)]), 0)
         self.assertEqual(out.getvalue(), "fleet self-check: ok\n")
-        repo.add("reusable-no-fleet-ref.yml")
+        repo.add("reusable-tagged.yml")
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(cli.main(["self-check", "--root", str(repo.root)]), 1)
-        self.assertIn("fleet self-check: .github/workflows/reusable-no-fleet-ref.yml", err.getvalue())
+        self.assertIn("fleet self-check: .github/workflows/reusable-tagged.yml:6: sets FLEET_REF", err.getvalue())
 
 
 class ParseTest(unittest.TestCase):
     def test_the_workflow_subset(self) -> None:
         workflow = self_check.parse((WORKFLOW_FIXTURES / "reusable-ok.yml").read_text(encoding="utf-8"))
         assert isinstance(workflow, dict)
-        self.assertEqual(workflow["env"], {"FLEET_REF": "main"})
+        self.assertNotIn("env", workflow)
         self.assertEqual(workflow["permissions"], "{}")
         trigger = workflow["on"]
         assert isinstance(trigger, dict)

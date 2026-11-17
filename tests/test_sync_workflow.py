@@ -15,10 +15,12 @@ from consumers import (
     FIXTURE_VERSION,
     FIXTURES,
     RUNWAY,
+    STANDARD_LIBRARY_FIRST,
     WAYPOINT,
     commit,
     copy,
     git,
+    shadow_the_standard_library,
     temporary,
     write,
 )
@@ -304,6 +306,15 @@ class Changelog(unittest.TestCase):
         self.assertIsInstance(sync_workflow.changelog_between(text, "v0.0.0", "v99.0.0", sync_workflow.release_notes(ROOT)), str)
 
 
+FIRST_RELEASE = (
+    ("dry-run-never-carries-forward", "fix: the self-test's dry runs never carry a review verdict forward (#138)"),
+    ("agent-review-narrow-claude-risky", "feat!: the second review no longer counts a skill's reference documents as always "
+                                         "risky (#139)"),
+    ("release-planner", "feat: fleet's release planner, notes from two tags and a title check (#141)"),
+    ("release-on-merge", "feat: every merge to main is a release, and nothing in fleet's tree names its version (#142)"),
+)
+
+
 class AcrossTheFreeze(unittest.TestCase):
     LATER = ("## [1.3.0] - 2026-04-01\n\n### Added\n\n- A fourth thing.\n",
              "## [1.4.0] - 2026-05-01\n\n### Changed\n\n- **Breaking:** A fifth thing.\n")
@@ -319,28 +330,58 @@ class AcrossTheFreeze(unittest.TestCase):
         self.assertEqual(sync_workflow.changelog_between(CHANGELOG, "v1.4.0", "v1.4.1", self.LATER),
                          "The CHANGELOG at v1.4.1 has no entry between v1.4.0 and v1.4.1.\n")
 
-    def test_a_sync_from_3_1_0_to_a_fragment_era_release_lists_the_changelog_and_the_notes(self) -> None:
-        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        later = sync_workflow.release_notes(ROOT)
-        newest = max([release.FROZEN, *(notes.version for notes in release.released(ROOT)[0])], key=release.version_key)
-        major, minor, _ = release.version_key(newest)
-        upto = f"{major}.{minor + 1}.0"
-        pending = release.fragments(ROOT)[0] or [release.Fragment(Path("changelog.d/x.md"), "added", "A change.")]
-        found = sync_workflow.plan(consumer(self, f"v{upto}", "v3.1.0"))
-        self.assertEqual(found.action, "migration")
-        body = sync_workflow.body(found, changelog, [*later, release.render(upto, "2026-12-01", pending)])
-        headings = [f"## [{upto}] - 2026-12-01", f"## [{release.FROZEN}] - 2026-11-14", "## [3.3.0] - 2026-11-13",
-                    "## [3.2.0] - 2026-11-09"]
-        self.assertEqual([body.index(f"\n{heading}\n") for heading in headings],
-                         sorted(body.index(f"\n{heading}\n") for heading in headings))
-        self.assertNotIn("## [3.1.0]", body)
-        self.assertIn(f"## CHANGELOG v3.1.0 → v{upto}", body)
-        for fragment in pending:
-            self.assertIn(fragment.entry, body)
-        found = sync_workflow.plan(consumer(self, f"v{upto}", f"v{newest}"))
-        body = sync_workflow.body(found, changelog, [*later, release.render(upto, "2026-12-01", pending)])
-        self.assertIn(f"\n## [{upto}] - 2026-12-01\n", body)
-        self.assertNotIn(f"## [{newest}]", body)
+    def fleet_across_the_last_fold(self) -> Path:
+        fleet = temporary(self) / "fleet-pin"
+        write(fleet, "CHANGELOG.md", (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
+        git(fleet, "init", "-q", "-b", "main")
+        commit(fleet, "chore: release v3.1.0")
+        git(fleet, "tag", "v3.1.0")
+        notes = ROOT / release.RELEASE_NOTES
+        write(fleet, "changelog.d/released/4.1.0.md", (notes / "4.1.0.md").read_text(encoding="utf-8"))
+        write(fleet, "changelog.d/trivy-ignore-purl-rules.md", "---\nkind: fixed\n---\nLate, folded into 5.0.0 (#133).\n")
+        commit(fleet, "chore: release v4.1.0 (#135)")
+        git(fleet, "tag", "v4.1.0")
+        (fleet / "changelog.d/trivy-ignore-purl-rules.md").unlink()
+        write(fleet, "changelog.d/released/5.0.0.md", (notes / "5.0.0.md").read_text(encoding="utf-8"))
+        commit(fleet, "chore: release v5.0.0 (#137)")
+        git(fleet, "tag", "v5.0.0")
+        for name, title in FIRST_RELEASE:
+            write(fleet, f"changelog.d/{name}.md", (ROOT / release.FRAGMENTS / f"{name}.md").read_text(encoding="utf-8"))
+            commit(fleet, title)
+        git(fleet, "tag", "v6.0.0")
+        write(fleet, "changelog.d/a-later-fix.md", "---\nkind: fixed\n---\nA later fix (#200).\n")
+        commit(fleet, "fix: a later fix (#200)")
+        git(fleet, "tag", "v6.0.1")
+        return fleet
+
+    def body_across(self, fleet: Path, pins: str, content: str) -> str:
+        git(fleet, "checkout", "-q", pins)
+        out = temporary(self) / "body.md"
+        code, _, err = plan_cli(consumer(self, pins, content), "--changelog", str(fleet / "CHANGELOG.md"), "--body", str(out))
+        self.assertEqual((code, err), (0, ""))
+        return out.read_text(encoding="utf-8").split(f"## CHANGELOG {content} → {pins}\n\n", 1)[1]
+
+    def test_a_sync_across_the_last_fold_lists_the_fragments_then_the_folded_notes(self) -> None:
+        fleet = self.fleet_across_the_last_fold()
+        first = [release.parse_fragment(Path(f"changelog.d/{name}.md"),
+                                        (ROOT / release.FRAGMENTS / f"{name}.md").read_text(encoding="utf-8"))
+                 for name, _ in FIRST_RELEASE]
+        block = "\n".join(["## Releases after v5.0.0, up to v6.0.0", *release.grouped(first)]) + "\n"
+        self.assertEqual(self.body_across(fleet, "v6.0.0", "v5.0.0"), block)
+        self.assertIn("- **Breaking:** `agent-review.yml`'s second review no longer counts", block)
+        from_4_1 = self.body_across(fleet, "v6.0.0", "v4.1.0")
+        self.assertTrue(from_4_1.startswith(block + "\n## [5.0.0] - 2026-11-16\n"), from_4_1[:300])
+        self.assertNotIn("## [4.1.0]", from_4_1)
+        self.assertNotIn("Late, folded into 5.0.0", from_4_1)
+        from_3_1 = self.body_across(fleet, "v6.0.0", "v3.1.0")
+        headings = ["## Releases after v5.0.0, up to v6.0.0", "## [5.0.0] - 2026-11-16", "## [4.1.0] - 2026-11-16",
+                    f"## [{release.FROZEN}] - 2026-11-14", "## [3.3.0] - 2026-11-13", "## [3.2.0] - 2026-11-09"]
+        self.assertTrue(from_3_1.startswith(block))
+        self.assertEqual([from_3_1.index(f"{heading}\n") for heading in headings],
+                         sorted(from_3_1.index(f"{heading}\n") for heading in headings))
+        self.assertNotIn("## [3.1.0]", from_3_1)
+        self.assertEqual(self.body_across(fleet, "v6.0.1", "v6.0.0"),
+                         "## Releases after v6.0.0, up to v6.0.1\n\n### Fixed\n\n- A later fix (#200).\n")
 
     def test_the_fragments_two_tags_differ_by_come_first_after_the_newest_notes(self) -> None:
         added = sync_workflow.Unfolded((release.Fragment(Path("changelog.d/b-input.md"), "added", "A new input (#2)."),
@@ -560,7 +601,7 @@ class SyncWorkflow(unittest.TestCase):
         self.assertEqual(list(secrets), ["FLEET_BOT_PRIVATE_KEY"])
         self.assertEqual(mapping(secrets["FLEET_BOT_PRIVATE_KEY"])["required"], "false")
         self.assertEqual(sorted(call["outputs"]), ["action", "body", "changed", "title"])
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(ROOT))})
+        self.assertNotIn("env", self.workflow)
         self.assertEqual(self.workflow["permissions"], "{}")
 
     def test_the_job_holds_the_least_permissions_and_runs_hosted(self) -> None:
@@ -631,8 +672,8 @@ class SyncWorkflow(unittest.TestCase):
         script = self.steps["Sync the content"].split("run: |\n", 1)[1]
         self.assertIn('git diff --cached --name-only -- .github/workflows', script)
         self.assertIn("The sync changed files under .github/workflows/", script)
-        self.assertIn('fleet_tools.cli sync --to "$PIN"', script)
-        self.assertIn("cd .fleet-pin", script)
+        self.assertIn(f'(cd .fleet-pin && python3 {STANDARD_LIBRARY_FIRST} sync --to "$PIN" --root "$GITHUB_WORKSPACE/app")', script)
+        self.assertNotIn("-m fleet_tools.cli sync ", script)
 
     def test_no_expression_reaches_a_shell(self) -> None:
         for body in run_bodies(self.text):
@@ -767,7 +808,9 @@ class FixtureMode(unittest.TestCase):
                 self.assertIn(f"## CHANGELOG v1.0.0 → {found['pin']}", body)
                 self.assertEqual(found["title"], sync_workflow.plan(workspace / "app").title)
                 if action == "sync":
+                    shadow_the_standard_library(workspace / ".fleet-pin", workspace / "shadowed")
                     self.run_step("Sync the content", workspace, env)
+                    self.assertFalse((workspace / "shadowed").exists())
                     changed = base64.b64decode(self.outputs(env)["changed"]).decode().split()
                     self.assertEqual(sorted(changed), sync_fixture.expected())
                     self.assertEqual((workspace / "app/.fleet/version").read_text(encoding="utf-8"), f"v1.1.0\n{own}\n")
@@ -824,7 +867,7 @@ class ChecksWorkflow(unittest.TestCase):
         job = mapping(mapping(self.workflow["jobs"])["checks"])
         self.assertEqual(job["permissions"], {"contents": "read"})
         self.assertEqual(job["runs-on"], "${{ fromJSON(inputs.runs-on) }}")
-        self.assertEqual(self.workflow["env"], {"FLEET_REF": self_check.expected_ref(release.read_version(ROOT))})
+        self.assertNotIn("env", self.workflow)
         self.assertEqual(self.workflow["permissions"], "{}")
 
     def test_the_consumer_is_checked_out_into_app_with_history_before_fleet_at_the_pinned_ref(self) -> None:

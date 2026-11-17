@@ -6,7 +6,8 @@ name: Agent review
 # for (a called workflow can't be given more than its caller has). fleet has no merge gate caller yet, so none is
 # started after the status is set (merge-gate-workflow is empty); the apps keep the default, merge-gate.yml. It keeps
 # fleet's default review policy, as an app's caller does: no first review (first-review is left at false), and the
-# second review on every pull request that changes a path below or carries a security label.
+# second review on every pull request that changes a path below or carries a security label. The paths include all of
+# fleet_tools/: release.yml runs fleet_tools/cli.py, which imports every module, and the apps' CI runs the same command.
 on:  # zizmor: ignore[dangerous-triggers] -- runs main's workflow; the pull request's code is only read, never run
   pull_request_target:
     branches: [main]
@@ -51,8 +52,7 @@ jobs:
         .claude/**
         plugins/**
         shim/**
-        fleet_tools/next_version.py
-        fleet_tools/release.py
+        fleet_tools/**
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

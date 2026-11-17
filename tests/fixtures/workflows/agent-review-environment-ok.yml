@@ -11,9 +11,6 @@ on:
       ANTHROPIC_API_KEY:
         required: false
 
-env:
-  FLEET_REF: main   # stamped by the release
-
 permissions: {}
 
 defaults:

@@ -5,7 +5,7 @@ name: Checks
 # and `fleet drift` (the AGENTS.md blocks, the vendored files and .fleet/version against fleet's, and that version
 # within the workflow pins). It replaces each app's own `fleet-checks` job. `contents: read` only, no secrets.
 #
-# The tools run from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the FLEET_REF
+# The tools run from fleet at this workflow's own commit (inputs.fleet-ref || job.workflow_sha, the fleet-ref
 # convention), never from a ref the pull request names: a pull request could otherwise pick which fleet checks it. The
 # consumer's .fleet/version is data to `fleet drift`: content at the commit fleet's checkout is at is read from that
 # checkout, and content at another version from that version's tag in fleet's history (the checkout brings the tags),
@@ -38,9 +38,6 @@ on:
         description: The fleet ref to run the tools from (the self-test passes its own commit).
         type: string
         default: ""
-
-env:
-  FLEET_REF: v5.0.0   # stamped by the release
 
 permissions: {}
 
