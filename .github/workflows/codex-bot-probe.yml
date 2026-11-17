@@ -5,7 +5,7 @@ name: Codex bot probe
 # request reaches the script but its number, through env.
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
 
 permissions: {}
 
@@ -16,10 +16,13 @@ defaults:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       pull-requests: write
     steps:
+      - name: On a push, wait four minutes first, to see that the push alone starts no review
+        if: github.event.action == 'synchronize'
+        run: sleep 240
       - name: Comment @codex review as github-actions[bot]
         env:
           GH_TOKEN: ${{ github.token }}
