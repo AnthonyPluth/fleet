@@ -27,7 +27,7 @@ GH_API_LIST = re.compile(r"\bgh api\b[^\n]*per_page=")
 RUNS_ON = ("runs-on: ${{ fromJSON(vars.RUNS_ON != '' && github.actor != 'dependabot[bot]' && "
            "(!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository && "
            "github.event.pull_request.user.login != 'dependabot[bot]') && vars.RUNS_ON || '\"ubuntu-latest\"') }}")
-HOSTED = re.compile(r"^runs-on: (?:ubuntu-latest|macos-\d+|xcode-[0-9]+)[ \t]+# hosted: \S")
+HOSTED = re.compile(r"^runs-on: (?:ubuntu-latest|macos-[0-9]+|xcode-[0-9]+)[ \t]+# hosted: \S")
 EVENTS = frozenset({
     "branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment", "deployment_status",
     "discussion", "discussion_comment", "fork", "gollum", "image_version", "issue_comment", "issues", "label",

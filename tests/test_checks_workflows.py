@@ -70,7 +70,7 @@ class Workflow(unittest.TestCase):
                      "runs-on: xcode-   # hosted: Xcode", "runs-on: xcode-27; echo   # hosted: Xcode",
                      "runs-on: xcode-27-beta   # hosted: Xcode", "runs-on: xcode-27-xlarge   # hosted: Xcode",
                      "runs-on: xcode-2a   # hosted: Xcode", "runs-on: xcode-\u0662\u0667   # hosted: Xcode", "runs-on: Xcode-27   # hosted: Xcode",
-                     "runs-on: macos-15", "runs-on: macos-15   # hosted:", "runs-on: macos-latest   # hosted: Xcode",
+                     "runs-on: macos-\u0661\u0665   # hosted: Xcode", "runs-on: macos-15", "runs-on: macos-15   # hosted:", "runs-on: macos-latest   # hosted: Xcode",
                      "runs-on: macos-15-xlarge   # hosted: Xcode", "runs-on: windows-2025   # hosted: tests",
                      "runs-on: ubuntu-latest", "runs-on: self-hosted", "runs-on: ${{ fromJSON(vars.RUNS_ON) }}",
                      "runs-on: ubuntu-latest   # hosted:"):
