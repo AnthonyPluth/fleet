@@ -64,7 +64,13 @@ class Workflow(unittest.TestCase):
         self.assertEqual(wf.check_workflow("x.yml", hosted), [])
         macos = GOOD.replace(wf.RUNS_ON, "runs-on: macos-15   # hosted: Xcode only runs on macOS")
         self.assertEqual(wf.check_workflow("x.yml", macos), [])
-        for bare in ("runs-on: macos-15", "runs-on: macos-15   # hosted:", "runs-on: macos-latest   # hosted: Xcode",
+        xcode = GOOD.replace(wf.RUNS_ON, "runs-on: xcode-27   # hosted: the iOS 27 SDK needs Xcode 27")
+        self.assertEqual(wf.check_workflow("x.yml", xcode), [])
+        for bare in ("runs-on: xcode-27", "runs-on: xcode-27   # hosted:", "runs-on: xcode-latest   # hosted: Xcode",
+                     "runs-on: xcode-   # hosted: Xcode", "runs-on: xcode-27; echo   # hosted: Xcode",
+                     "runs-on: xcode-27-beta   # hosted: Xcode", "runs-on: xcode-27-xlarge   # hosted: Xcode",
+                     "runs-on: xcode-2a   # hosted: Xcode", "runs-on: xcode-\u0662\u0667   # hosted: Xcode", "runs-on: Xcode-27   # hosted: Xcode",
+                     "runs-on: macos-\u0661\u0665   # hosted: Xcode", "runs-on: macos-15", "runs-on: macos-15   # hosted:", "runs-on: macos-latest   # hosted: Xcode",
                      "runs-on: macos-15-xlarge   # hosted: Xcode", "runs-on: windows-2025   # hosted: tests",
                      "runs-on: ubuntu-latest", "runs-on: self-hosted", "runs-on: ${{ fromJSON(vars.RUNS_ON) }}",
                      "runs-on: ubuntu-latest   # hosted:"):
@@ -378,8 +384,8 @@ class FixtureConsumers(unittest.TestCase):
         path.write_text(path.read_text().replace("   # hosted: Runway runs on GitHub's runners only", ""))
         self.assertEqual(checks(root), [".github/workflows/ci.yml: `runs-on: ubuntu-latest` should be fleet's RUNS_ON "
                                         "line (fleet_tools/checks/workflows.py), or `runs-on: ubuntu-latest   # hosted: "
-                                        "<why it needs GitHub's runners>` (a pinned `macos-<number>` runner may take the same "
-                                        "comment, for what only macOS can build)"])
+                                        "<why it needs GitHub's runners>` (a pinned `macos-<number>` or `xcode-<number>` runner "
+                                        "may take the same comment, for what only macOS can build)"])
 
     def test_a_composite_action_is_checked_too(self) -> None:
         root = copy(self, RUNWAY, repository=False)
